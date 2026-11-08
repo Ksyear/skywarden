@@ -1,0 +1,11 @@
+# Source record: YouTube Td9TYnibTl0
+- URL: https://www.youtube.com/watch?v=Td9TYnibTl0
+- Title: Sumida Park Tokyo Japan 4K Walking Tour | Riverside Walk & Skytree Views (隅田公園)
+- Channel / author: 4K Explore On Foot (https://www.youtube.com/channel/UCNNtRI0QVlMQgVNLndC6-BQ)
+- Upload date: 20261023
+- License (from YouTube metadata, checked 2026-11-09): Creative Commons Attribution license (reuse allowed) — attribution: "Sumida Park Tokyo Japan 4K Walking Tour | Riverside Walk & Skytree Views (隅田公園)" by 4K Explore On Foot, CC BY, https://www.youtube.com/watch?v=Td9TYnibTl0
+- Downloaded: 2026-11-09 with yt-dlp 2026.10.21 (project .venv), <=1080p mp4; section 0:25-1:25 (60 s), declared before mapping; one continuous walking take (0 cuts in the whole 602 s video)
+- File: Td9TYnibTl0_0025-0125.mp4, SHA-256 ff10657ea3e4e1c873d89ccfd7fd5df22432ba0d148909b281f296ec6c7342a7
+- Analysis copy: analysis_360p/Td9TYnibTl0_full360.mp4 (whole video, 360p, used only for shot/motion detection), SHA-256 d61a67aa655994db07456849331ce34433942a9ee1c5a31b7bc98cfd1c1f652c
+- Use here: local test input (mapping quality, tracking). Processed on this Mac; never uploaded. Labelled PUBLIC_DATASET.
+- People are visible; no identification, no re-identification, no redistribution of frames beyond local evidence.

@@ -27,9 +27,23 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--fps", type=float, default=3.0, help="target sampling rate for video sources")
     b.add_argument("--max-frames", type=int, default=150)
     b.add_argument("--source-note", default="")
+    b.add_argument("--mapper", choices=["global", "incremental"], default="global")
     r = sub.add_parser("replay", help="load a stored map and print its summary")
     r.add_argument("session_dir")
+    q = sub.add_parser("rate", help="evaluate map quality of an existing session (built before quality checks)")
+    q.add_argument("session_dir")
     a = ap.parse_args(argv)
+
+    if a.cmd == "rate":
+        from .rate import rate_session
+        try:
+            res = rate_session(Path(a.session_dir))
+        except ReplayError as e:
+            print(f"rate failed: {e}", file=sys.stderr)
+            return 2
+        print(json.dumps({"verdict": res["verdict"], "failed_checks": res["failed_checks"],
+                          "checks": {k: v["value"] for k, v in res["checks"].items()}}, indent=1))
+        return 0
 
     if a.cmd == "replay":
         try:
@@ -43,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     camera = json.loads(Path(a.camera_json).read_text()) if a.camera_json else None
     session = a.session or datetime.now().strftime("%Y%m%d-%H%M%S")
     req = BuildRequest(Path(a.input), Path(a.maps_root) / session, DataOrigin(a.origin), camera,
-                       SelectionConfig(target_fps=a.fps, max_frames=a.max_frames), a.source_note)
+                       SelectionConfig(target_fps=a.fps, max_frames=a.max_frames), a.source_note,
+                       mapper=a.mapper)
     # Run the build in a worker so this (main) thread stays in Python and can receive SIGTERM/SIGINT while
     # COLMAP is busy in C++; the signal only sets the event, the pipeline forwards it to COLMAP.
     cancel = threading.Event()
@@ -55,7 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     while worker.is_alive():
         worker.join(0.2)
     rep = result
-    print(json.dumps({k: rep.get(k) for k in ("session_id", "status", "labels", "frames", "reconstruction", "failure", "timings_s")}, indent=1))
+    q = rep.get("quality") or {}
+    print(json.dumps({**{k: rep.get(k) for k in ("session_id", "status", "labels", "frames", "input_check",
+                                                 "reconstruction", "failure", "timings_s")},
+                      "quality": {"verdict": q.get("verdict"), "failed_checks": q.get("failed_checks")}}, indent=1))
     return {"SUCCEEDED": 0, "CANCELLED": 130}.get(rep["status"], 1)
 
 
