@@ -68,7 +68,12 @@ def read_ply(path: Path) -> np.ndarray:
 
 def export_reconstruction(rec, out_dir: Path, frames_by_name: dict[str, dict]) -> dict:
     """Writes sparse.ply + trajectory.json for one pycolmap.Reconstruction. Returns basic counts."""
-    images = sorted((rec.image(i) for i in rec.reg_image_ids()), key=lambda im: im.name)
+    # Time order comes from the frame timestamps, never from image_id; the name (selection order) only breaks ties
+    # and orders frames without a clock.
+    def _when(im):
+        ts = frames_by_name.get(im.name, {}).get("timestamp_s")
+        return (0 if ts is not None else 1, ts if ts is not None else 0.0, im.name)
+    images = sorted((rec.image(i) for i in rec.reg_image_ids()), key=_when)
     rank = {im.image_id: k for k, im in enumerate(images)}
 
     poses = []
