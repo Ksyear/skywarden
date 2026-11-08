@@ -1,0 +1,235 @@
+// End-to-end UI check in a headless Chromium browser (Dia by default) over the DevTools protocol.
+// Usage: node tests/ui/ui_smoke.mjs [--browser /Applications/Dia.app/Contents/MacOS/Dia]
+// Starts its own console server on a free port with a temporary maps root (stored sessions are symlinked in),
+// so builds made by the test never mix with real outputs. Writes screenshots + results to outputs/evidence/ui/.
+import { spawn } from "node:child_process";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import net from "node:net";
+
+const ROOT = resolve(import.meta.dirname, "../..");
+const OUT = join(ROOT, "outputs/evidence/ui");
+const argBrowser = process.argv.indexOf("--browser");
+const BROWSER = argBrowser > 0 ? process.argv[argBrowser + 1] : "/Applications/Dia.app/Contents/MacOS/Dia";
+const REAL = "tum_fr1_desk_K4", SIM = "synthetic_room_seed7", TRACK = "tum_walking_xyz_nano";
+mkdirSync(OUT, { recursive: true });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const freePort = () => new Promise((r) => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+const results = []; const consoleErrors = [];
+const check = (name, ok, detail = "") => { results.push({ name, status: ok ? "PASS" : "FAIL", detail }); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`); };
+
+// ---------- server ----------
+const mapsRoot = mkdtempSync(join(tmpdir(), "sda-ui-maps-"));
+for (const s of [REAL, SIM]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
+const tracksRoot = mkdtempSync(join(tmpdir(), "sda-ui-tracks-"));
+if (existsSync(join(ROOT, "outputs/tracks", TRACK))) symlinkSync(join(ROOT, "outputs/tracks", TRACK), join(tracksRoot, TRACK));
+const port = await freePort();
+let server;
+const startServer = () => { server = spawn(join(ROOT, ".venv/bin/python"), [join(ROOT, "apps/desktop/server.py"), "--port", String(port), "--maps-root", mapsRoot, "--tracks-root", tracksRoot], { stdio: "ignore" }); };
+startServer();
+const BASE = `http://127.0.0.1:${port}`;
+for (let i = 0; i < 50; i++) { try { if ((await fetch(`${BASE}/api/health`)).ok) break; } catch {} await sleep(100); }
+
+// ---------- browser ----------
+const cdpPort = await freePort();
+const profile = mkdtempSync(join(tmpdir(), "sda-ui-profile-"));
+const browser = spawn(BROWSER, [`--headless=new`, `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--window-size=1600,1000", "about:blank"], { stdio: "ignore" });
+let wsUrl;
+for (let i = 0; i < 200 && !wsUrl; i++) {
+  try {
+    const t = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+    wsUrl = t.find((x) => x.type === "page")?.webSocketDebuggerUrl;
+    if (!wsUrl && i > 20) wsUrl = (await (await fetch(`http://127.0.0.1:${cdpPort}/json/new?about:blank`, { method: "PUT" })).json()).webSocketDebuggerUrl;
+  } catch {}
+  if (!wsUrl) await sleep(150);
+}
+if (!wsUrl) { console.error("browser did not expose a DevTools page"); process.exit(2); }
+const ws = new WebSocket(wsUrl);
+await new Promise((r) => ws.addEventListener("open", r));
+let seq = 0; const pending = new Map();
+ws.addEventListener("message", (m) => {
+  const msg = JSON.parse(m.data);
+  if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
+  if (msg.method === "Runtime.exceptionThrown") consoleErrors.push(msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text);
+  if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") consoleErrors.push(msg.params.args.map((a) => a.value ?? a.description).join(" "));
+});
+const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
+const evaluate = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description); return r.result?.result?.value; };
+const waitFor = async (expr, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await evaluate(expr)) return true; } catch {} await sleep(150); } return false; };
+const shot = async (name) => { const r = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(join(OUT, name), Buffer.from(r.result.data, "base64")); };
+const key = async (k, code = k) => { for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: k, code, windowsVirtualKeyCode: { ArrowRight: 39, ArrowLeft: 37, Tab: 9, " ": 32 }[k] || 0 }); };
+const text = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).textContent`);
+const clickSession = (sid) => evaluate(`[...document.querySelectorAll('#sessions button')].find(b => b.querySelector('.sid').textContent === ${JSON.stringify(sid)})?.click() ?? 'missing'`);
+
+await send("Page.enable"); await send("Runtime.enable");
+await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+await send("Page.navigate", { url: BASE + "/" });
+
+try {
+  // 1. connection + empty state
+  check("connects to local server", await waitFor(`document.getElementById('conn-badge').textContent === 'SERVER ONLINE'`));
+  check("shows empty state before any map", await evaluate(`!document.getElementById('map-empty').hidden && document.getElementById('empty-title').textContent === 'No map loaded'`));
+  check("HARDWARE_ARMED shown false", (await text("armed")) === "false");
+  check("replay controls disabled without map", await evaluate(`document.getElementById('play').disabled && document.getElementById('scrub').disabled`));
+  await waitFor(`document.querySelectorAll('#sessions button').length >= 2`);
+  await shot("01_empty_state.png");
+
+  // 2. load the real stored map
+  await clickSession(REAL);
+  check("real map loads", await waitFor(`document.getElementById('map-empty').hidden && document.getElementById('m-pts').textContent !== '—'`));
+  const badges = await text("badges");
+  check("labels: STORED_RECONSTRUCTION, RELATIVE, NOT_NAVIGATION_SAFE, PUBLIC_DATASET", ["STORED_RECONSTRUCTION", "SCALE RELATIVE", "NOT_NAVIGATION_SAFE", "PUBLIC_DATASET"].every((b) => badges.includes(b)), badges);
+  const report = await (await fetch(`${BASE}/api/sessions/${REAL}`)).json();
+  const pts = (await text("m-pts")).replace(/,/g, "");
+  check("UI point count equals map_report points3D", Number(pts) === report.report.reconstruction.points3D, `${pts} vs ${report.report.reconstruction.points3D}`);
+  check("viewer drew points", await waitFor(`document.getElementById('m-render').textContent.includes('pts')`, 5000), await text("m-render"));
+  check("camera frame image shown", await waitFor(`!document.getElementById('frame-img').hidden && document.getElementById('frame-img').naturalWidth > 0`));
+  await sleep(400);
+  await shot("02_real_map_loaded.png");
+
+  // 3. replay: keyboard stepping + growth mode
+  await evaluate(`document.body.focus()`);
+  for (let i = 0; i < 12; i++) await key("ArrowRight");
+  check("arrow keys step through poses", (await text("pose-count")).startsWith("13 /"), await text("pose-count"));
+  await evaluate(`document.getElementById('growth').click()`);
+  await sleep(1300);  // status bar refreshes once per second
+  const shownGrowth = await evaluate(`(() => { const m = document.getElementById('m-render').textContent.match(/\\(([\\d,]+) pts\\)/); return m ? Number(m[1].replace(/,/g,'')) : -1 })()`);
+  check("map growth hides points not yet observed", shownGrowth > 0 && shownGrowth < report.report.reconstruction.points3D, `${shownGrowth} drawn of ${report.report.reconstruction.points3D}`);
+  await key(" ");
+  await sleep(1300);
+  await key(" ");
+  const afterPlay = await text("pose-count");
+  check("Space plays and pauses replay", !afterPlay.startsWith("13 /"), afterPlay);
+  await shot("03_replay_growth.png");
+
+  // 4. simulated map is labelled as such
+  await clickSession(SIM);
+  check("synthetic map labelled SIMULATED", await waitFor(`document.getElementById('badges').textContent.includes('SIMULATED') && document.getElementById('map-overlay-tl').textContent.includes('SIMULATED')`));
+  await sleep(300);
+  await shot("04_simulated_map.png");
+
+  // 5. build from the UI (synthetic input, fast), then cancel a second build
+  await evaluate(`(() => { const s = document.getElementById('input-select'); s.value = [...s.options].find(o => o.value.includes('synthetic')).value; s.dispatchEvent(new Event('change')); })()`);
+  check("Build enabled for a valid input", await evaluate(`!document.getElementById('build').disabled && document.getElementById('build-form').checkValidity()`));
+  await evaluate(`document.getElementById('build').click()`);
+  check("build shows progress while running", await waitFor(`['RUNNING','STARTING'].includes(document.getElementById('job-badge').textContent) || document.getElementById('job-badge').textContent === 'SUCCEEDED'`, 5000));
+  check("build finishes and auto-loads", await waitFor(`document.getElementById('job-badge').textContent === 'SUCCEEDED' && document.getElementById('session-label').textContent.startsWith('room_seed7-')`, 60000), await text("job-msg"));
+  await shot("05_build_succeeded.png");
+
+  await evaluate(`(() => { const s = document.getElementById('input-select'); s.value = [...s.options].find(o => o.value.includes('tum')).value; s.dispatchEvent(new Event('change')); })()`);
+  await evaluate(`document.getElementById('build').click()`);
+  await waitFor(`document.getElementById('job-badge').textContent === 'RUNNING'`, 10000);
+  check("Build disabled while a job runs", await evaluate(`document.getElementById('build').disabled`));
+  await evaluate(`document.getElementById('cancel').click()`);
+  check("cancel asks for confirmation", await evaluate(`!document.getElementById('cancel-confirm').hidden`));
+  await evaluate(`document.getElementById('cancel-yes').click()`);
+  check("cancelled build ends as CANCELLED", await waitFor(`document.getElementById('job-badge').textContent === 'CANCELLED'`, 30000), await text("job-msg"));
+  await shot("06_build_cancelled.png");
+
+  // 6. focus visibility
+  await evaluate(`document.getElementById('build').disabled = false; document.getElementById('build').focus()`);
+  await key("Tab");
+  const outline = await evaluate(`getComputedStyle(document.activeElement).outlineStyle + ' ' + document.activeElement.id`);
+  check("keyboard focus has visible outline", outline.startsWith("solid"), outline);
+
+  // 7. narrow window: controls stay reachable
+  for (const [w, h] of [[1100, 800], [700, 900]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await sleep(400);
+    const vis = await evaluate(`(() => { const r = document.getElementById('build').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; })()`);
+    const noHScroll = await evaluate(`document.documentElement.scrollWidth <= innerWidth + 1`);
+    check(`at ${w}x${h}: Build button visible without scrolling, no horizontal overflow`, vis && noHScroll, `visible=${vis} noHScroll=${noHScroll}`);
+    await shot(`07_narrow_${w}.png`);
+  }
+  await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+
+  // 8. tracking workspace
+  await evaluate(`document.getElementById('mode-track').click()`);
+  check("Tracking tab shows the tracking workspace", await waitFor(`!document.getElementById('ws-track').hidden && document.getElementById('ws-map').hidden && location.hash === '#tracking'`));
+  check("tracking empty state before a run is loaded", await evaluate(`!document.getElementById('t-empty').hidden && document.getElementById('t-play').disabled`));
+  check("detector list offers the verified local model", await waitFor(`[...document.getElementById('t-model').options].some(o => o.value === 'yolox_nano' && !o.disabled)`));
+  await waitFor(`[...document.querySelectorAll('#t-runs button')].some(b => b.querySelector('.sid').textContent === '${TRACK}')`);
+  await shot("09_tracking_empty.png");
+  await evaluate(`[...document.querySelectorAll('#t-runs button')].find(b => b.querySelector('.sid').textContent === '${TRACK}').click()`);
+  check("recorded run loads with REAL_MODEL label", await waitFor(`document.getElementById('t-empty').hidden && document.getElementById('t-badges').textContent.includes('REAL_MODEL') && document.getElementById('t-badges').textContent.includes('yolox_nano')`), await text("t-badges"));
+  check("accuracy shown as undefined without ground truth", (await text("tm-acc")).includes("undefined"), await text("tm-acc"));
+  const rec = await (await fetch(`${BASE}/api/tracks/${TRACK}/files/tracks.json`)).json();
+  check("UI frame count equals tracks.json", (await text("t-count")).includes(`/ ${rec.frames.length}`), await text("t-count"));
+  // jump to the first frame whose lowest-id LOCKED track is also the first entry of the list (key 1)
+  const k0 = rec.frames.findIndex((f) => { const s = [...f.tracks].sort((a, b) => a.id - b.id); return s.length && s[0].state === "LOCKED"; });
+  await evaluate(`(() => { const s = document.getElementById('t-scrub'); s.value = ${k0}; s.dispatchEvent(new Event('input')); })()`);
+  await waitFor(`document.getElementById('t-count').textContent.startsWith('${k0 + 1} /')`);
+  const tid = [...rec.frames[k0].tracks].sort((a, b) => a.id - b.id)[0].id;
+  await evaluate(`document.body.focus()`);
+  await key("1", "Digit1");
+  check("key 1 selects the first track as target and shows LOCKED", await waitFor(`document.getElementById('r-tstate').textContent === 'LOCKED' && document.getElementById('r-tid').textContent === '#${tid}'`), await text("r-tstate"));
+  check("virtual command labelled MOCK and yaw within limit", await evaluate(`(() => { const m = document.getElementById('r-yaw').textContent.match(/yaw ([+-]?\\d+) \\/ ±(\\d+)/); return !!m && Math.abs(+m[1]) <= +m[2] && document.getElementById('r-cmd').textContent.includes('MOCK'); })()`), await text("r-yaw"));
+  await shot("10_tracking_target_locked.png");
+  const ctl = await (await fetch(`${BASE}/api/tracks/${TRACK}/control`, { method: "POST", body: JSON.stringify({ target_id: tid, select_k: k0 }) })).json();
+  const kp = ctl.frames.findIndex((r, i) => i > k0 && r.target_state !== "LOCKED");
+  if (kp > 0) {
+    await evaluate(`(() => { const s = document.getElementById('t-scrub'); s.value = ${kp}; s.dispatchEvent(new Event('input')); })()`);
+    const want = ctl.frames[kp].target_state;
+    check(`after the target is no longer detected the UI shows ${want} and STOP`, await waitFor(`document.getElementById('r-tstate').textContent === '${want}' && document.getElementById('r-stop').textContent.startsWith('STOP') && document.getElementById('r-yaw').textContent.startsWith('yaw 0')`), `${await text("r-tstate")} · ${await text("r-stop")}`);
+    await shot("11_tracking_target_not_locked.png");
+  }
+  await key("0", "Digit0");
+  check("key 0 clears the target", await waitFor(`document.getElementById('r-tstate').textContent === 'NO TARGET'`));
+  // canvas click selects the box under the pointer
+  await evaluate(`(() => { const s = document.getElementById('t-scrub'); s.value = ${k0}; s.dispatchEvent(new Event('input')); })()`);
+  await sleep(300);
+  const pt = await evaluate(`(() => { const c = document.getElementById('t-canvas').getBoundingClientRect(); const [W, H] = [${rec.image_wh[0]}, ${rec.image_wh[1]}]; const s = Math.min(c.width / W, c.height / H); const ox = (c.width - W * s) / 2, oy = (c.height - H * s) / 2; const b = ${JSON.stringify([...rec.frames[k0].tracks].sort((a, b) => a.id - b.id)[0].bbox)}; return [c.left + ox + (b[0] + b[2]) / 2 * s, c.top + oy + (b[1] + b[3]) / 2 * s]; })()`);
+  for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: pt[0], y: pt[1], button: "left", clickCount: 1 });
+  check("clicking a box selects that person", await waitFor(`document.getElementById('r-tid').textContent === '#${tid}'`), await text("r-tid"));
+  await evaluate(`document.getElementById('t-raw').click()`);
+  await key(" "); await sleep(1200); await key(" ");
+  check("Space plays the recorded run", !(await text("t-count")).startsWith(`${k0 + 1} /`), await text("t-count"));
+  await shot("12_tracking_playback_raw.png");
+
+  // run the real detector from the UI on the pedestrian clip, then cancel a longer run
+  await evaluate(`(() => { const s = document.getElementById('t-input'); s.value = [...s.options].find(o => o.value.includes('vtest')).value; s.dispatchEvent(new Event('change')); document.getElementById('t-max').value = 40; })()`);
+  await evaluate(`document.getElementById('t-run').click()`);
+  check("tracking run shows progress", await waitFor(`['RUNNING','STARTING','SUCCEEDED'].includes(document.getElementById('t-job-badge').textContent)`, 5000));
+  check("Build map disabled while a tracking run is active (one job at a time)", await waitFor(`document.getElementById('build').disabled || document.getElementById('t-job-badge').textContent === 'SUCCEEDED'`, 3000));
+  check("tracking run finishes and auto-loads", await waitFor(`document.getElementById('t-job-badge').textContent === 'SUCCEEDED' && document.getElementById('t-count').textContent.includes('/ 40')`, 60000), await text("t-job-msg"));
+  await shot("13_tracking_run_succeeded.png");
+  await evaluate(`document.getElementById('t-max').value = 3000; document.getElementById('t-run').click()`);
+  await waitFor(`document.getElementById('t-job-badge').textContent === 'RUNNING'`, 10000);
+  await evaluate(`document.getElementById('t-cancel').click()`);
+  check("tracking cancel asks for confirmation", await evaluate(`!document.getElementById('t-cancel-confirm').hidden`));
+  await evaluate(`document.getElementById('t-cancel-yes').click()`);
+  check("cancelled tracking run ends as CANCELLED", await waitFor(`document.getElementById('t-job-badge').textContent === 'CANCELLED'`, 30000), await text("t-job-msg"));
+  await shot("14_tracking_cancelled.png");
+  for (const [w, h] of [[1100, 800], [700, 900]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await sleep(400);
+    const noHScroll = await evaluate(`document.documentElement.scrollWidth <= innerWidth + 1`);
+    check(`tracking at ${w}x${h}: no horizontal overflow`, noHScroll);
+    await shot(`15_tracking_narrow_${w}.png`);
+  }
+  await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await send("Page.reload");
+  check("reload keeps the tracking workspace (#tracking)", await waitFor(`document.getElementById('conn-badge').textContent === 'SERVER ONLINE' && !document.getElementById('ws-track').hidden`));
+  await evaluate(`document.getElementById('mode-map').click()`);
+
+  // 9. server loss and reconnect
+  server.kill("SIGTERM");
+  check("server loss shown as DISCONNECTED", await waitFor(`document.getElementById('conn-badge').textContent === 'DISCONNECTED'`, 20000));
+  check("Build disabled while disconnected", await evaluate(`document.getElementById('build').disabled`));
+  check("Run tracking disabled while disconnected", await evaluate(`document.getElementById('t-run').disabled`));
+  await shot("08_disconnected.png");
+  startServer();
+  check("reconnects automatically", await waitFor(`document.getElementById('conn-badge').textContent === 'SERVER ONLINE'`, 20000));
+} catch (e) {
+  check("ui script ran without exception", false, String(e));
+} finally {
+  check("no JS errors in console", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
+  const summary = { browser: BROWSER, date: new Date().toISOString(), port, results, consoleErrors,
+    pass: results.filter((r) => r.status === "PASS").length, fail: results.filter((r) => r.status === "FAIL").length };
+  writeFileSync(join(OUT, "ui_smoke.json"), JSON.stringify(summary, null, 1));
+  console.log(`\n${summary.pass} passed, ${summary.fail} failed → ${join(OUT, "ui_smoke.json")}`);
+  ws.close(); browser.kill("SIGKILL"); server.kill();
+  process.exit(summary.fail ? 1 : 0);
+}

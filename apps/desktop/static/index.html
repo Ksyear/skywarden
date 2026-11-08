@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Drone A — Console</title>
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <h1>Security Drone A</h1>
+  <div class="segmented" role="group" aria-label="Workspace">
+    <button type="button" id="mode-map" aria-pressed="true" title="Mapping workspace (M)">Mapping</button>
+    <button type="button" id="mode-track" aria-pressed="false" title="Person tracking workspace (T)">Tracking</button>
+  </div>
+  <span class="session" id="session-label">no map loaded</span>
+  <div class="badges" id="badges" aria-label="Map labels"></div>
+  <span class="badge" id="conn-badge" data-tone="offline" role="status">CONNECTING</span>
+</header>
+
+<main class="workspace" id="ws-map">
+  <section class="panel camera" aria-labelledby="camera-title">
+    <div class="panel-head">
+      <h2 id="camera-title">Camera frame</h2>
+      <span class="spacer"></span>
+      <span class="frame-meta" id="frame-meta">—</span>
+    </div>
+    <div class="frame-view" id="frame-view">
+      <img id="frame-img" alt="Selected input frame for the current camera pose" hidden>
+      <p class="muted" id="frame-empty">No frames. Load a map to step through its registered frames.</p>
+    </div>
+    <div class="transport">
+      <button class="btn icon" id="prev" aria-label="Previous frame (Left arrow)" disabled>◀︎</button>
+      <button class="btn icon" id="play" aria-label="Play replay (Space)" aria-pressed="false" disabled>▶︎</button>
+      <button class="btn icon" id="next" aria-label="Next frame (Right arrow)" disabled>▶︎|</button>
+      <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Camera pose index" disabled>
+      <span class="frame-meta" id="pose-count">0 / 0</span>
+    </div>
+    <div class="filmstrip" id="filmstrip" aria-label="Nearby frames"></div>
+  </section>
+
+  <section class="panel map" aria-labelledby="map-title">
+    <div class="panel-head">
+      <h2 id="map-title">Sparse 3D map</h2>
+      <div class="legend" aria-hidden="true"><span><i></i>trajectory</span><span><i class="cur"></i>current camera</span></div>
+      <span class="spacer"></span>
+      <button class="btn" id="growth" aria-pressed="false" disabled title="Show only points observed up to the current frame">Map growth</button>
+      <button class="btn" id="reset-view" disabled title="Reset view (R)">Reset view</button>
+    </div>
+    <div class="map-stage">
+      <canvas id="map-canvas" tabindex="0" aria-label="3D point map. Drag to orbit, Shift+drag to pan, scroll or +/- to zoom, arrow keys to rotate, R to reset."></canvas>
+      <div class="overlay tl" id="map-overlay-tl"></div>
+      <div class="overlay bl" id="map-overlay-bl"></div>
+      <div class="empty" id="map-empty">
+        <img src="/static/empty_state_mapping_flow.jpg" alt="Illustration: move a camera sideways past a static scene, frames are matched, and a sparse 3D map with camera positions is reconstructed.">
+        <strong id="empty-title">No map loaded</strong>
+        <p id="empty-text">Choose an input on the right and press <b>Build map</b>, or open a stored map. Good input: a static scene filmed while moving the camera sideways (not just turning), slowly, with textured surfaces.</p>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side" aria-label="Controls">
+    <section class="panel" aria-labelledby="build-title">
+      <div class="panel-head"><h2 id="build-title">Build map</h2></div>
+      <form class="panel-body" id="build-form">
+        <div class="field">
+          <label for="input-select">Input</label>
+          <select id="input-select" required></select>
+          <span class="muted" id="input-origin" aria-live="polite"></span>
+        </div>
+        <div class="row">
+          <div class="field"><label for="fps">Sample rate (fps)</label><input id="fps" type="number" min="0.5" max="30" step="0.5" value="3"></div>
+          <div class="field"><label for="max-frames">Max frames</label><input id="max-frames" type="number" min="3" max="600" step="1" value="150"></div>
+        </div>
+        <label class="check"><input type="checkbox" id="use-calib" checked> Use camera calibration file if present</label>
+        <div class="row">
+          <button class="btn primary" id="build" type="submit" disabled>Build map</button>
+          <button class="btn danger" id="cancel" type="button" disabled>Cancel</button>
+        </div>
+        <div class="row" id="cancel-confirm" hidden>
+          <span class="muted">Stop this build? Frames so far are kept.</span>
+          <button class="btn danger" id="cancel-yes" type="button">Stop build</button>
+          <button class="btn" id="cancel-no" type="button">Keep running</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="job-title">
+      <div class="panel-head"><h2 id="job-title">Job progress</h2><span class="spacer"></span><span class="badge" id="job-badge" data-tone="offline">IDLE</span></div>
+      <div class="panel-body">
+        <div class="progress" aria-hidden="true"><div id="job-bar"></div></div>
+        <ol class="steps" id="steps"></ol>
+        <div class="notice" id="job-msg" role="status" aria-live="polite">No build running.</div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="stored-title">
+      <div class="panel-head"><h2 id="stored-title">Stored maps</h2><span class="spacer"></span><button class="btn icon" id="refresh" aria-label="Refresh stored maps">↻</button></div>
+      <div class="panel-body"><ul class="sessions" id="sessions"></ul></div>
+    </section>
+
+    <section class="panel safety" aria-labelledby="safety-title">
+      <div class="panel-head"><h2 id="safety-title">Vehicle link</h2><span class="spacer"></span><span class="badge" data-tone="offline">NO REAL DRONE</span></div>
+      <div class="panel-body">
+        <dl>
+          <dt>HARDWARE_ARMED</dt><dd id="armed">false</dd>
+          <dt>DRY_RUN</dt><dd id="dryrun">true</dd>
+          <dt>Map use</dt><dd>review only · NOT_NAVIGATION_SAFE</dd>
+        </dl>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<main class="workspace track-ws" id="ws-track" hidden>
+  <section class="panel tvideo" aria-labelledby="tvideo-title">
+    <div class="panel-head">
+      <h2 id="tvideo-title">Person tracking</h2>
+      <div class="badges" id="t-badges" aria-label="Tracking labels"></div>
+      <span class="spacer"></span>
+      <label class="check small"><input type="checkbox" id="t-raw"> Raw detections</label>
+    </div>
+    <div class="track-stage" id="t-stage">
+      <canvas id="t-canvas" tabindex="0" aria-label="Recorded frame with person boxes. Click a box to choose the target."></canvas>
+      <div class="overlay tl" id="t-overlay"></div>
+      <div class="empty" id="t-empty">
+        <strong id="t-empty-title">No tracking run loaded</strong>
+        <p id="t-empty-text">Choose an input on the right and press <b>Run tracking</b>, or open a recorded run. The detector runs locally on this Mac; nothing is uploaded.</p>
+      </div>
+    </div>
+    <div class="transport">
+      <button class="btn icon" id="t-prev" aria-label="Previous frame (Left arrow)" disabled>◀︎</button>
+      <button class="btn icon" id="t-play" aria-label="Play (Space)" aria-pressed="false" disabled>▶︎</button>
+      <button class="btn icon" id="t-next" aria-label="Next frame (Right arrow)" disabled>▶︎|</button>
+      <input type="range" id="t-scrub" min="0" max="0" value="0" aria-label="Frame index" disabled>
+      <span class="frame-meta" id="t-count">0 / 0</span>
+    </div>
+    <div class="timeline-wrap">
+      <canvas id="t-timeline" height="56" aria-label="Target state and virtual yaw command over time. Click to jump."></canvas>
+      <div class="legend tl-legend" aria-hidden="true"><span><i class="s-locked"></i>LOCKED</span><span><i class="s-pred"></i>PREDICTING</span><span><i class="s-lost"></i>LOST</span><span><i class="s-search"></i>no target</span><span><i class="s-yaw"></i>yaw cmd</span></div>
+    </div>
+    <div class="readouts">
+      <div class="readout" id="r-target">
+        <h3>Target</h3>
+        <div class="big"><span class="badge" id="r-tstate" data-tone="offline">NO TARGET</span> <span class="mono" id="r-tid"></span></div>
+        <p class="muted" id="r-thint">Click a box or press 1–9 to choose who to keep centred. The choice never switches to another person on its own.</p>
+        <button class="btn" id="r-clear" type="button" hidden>Clear target (0)</button>
+      </div>
+      <div class="readout" id="r-cmd">
+        <h3>Virtual yaw command <span class="badge" data-tone="sim">MOCK · NOT SENT</span></h3>
+        <div class="yawbar" aria-hidden="true"><div class="zero"></div><div class="fill" id="r-yawfill"></div></div>
+        <div class="big mono" id="r-yaw">—</div>
+        <p class="muted" id="r-stop">No target selected.</p>
+        <p class="muted small">Open-loop replay of a recorded clip with virtual telemetry: the camera did not turn. lateral / forward / vertical are always 0.</p>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side" aria-label="Tracking controls">
+    <section class="panel" aria-labelledby="trun-title">
+      <div class="panel-head"><h2 id="trun-title">Run tracking</h2><span class="spacer"></span><span class="badge" id="t-job-badge" data-tone="offline">IDLE</span></div>
+      <form class="panel-body" id="t-form">
+        <div class="field">
+          <label for="t-input">Input</label>
+          <select id="t-input" required></select>
+          <span class="muted" id="t-input-origin"></span>
+        </div>
+        <div class="field">
+          <label for="t-model">Detector (local, CPU)</label>
+          <select id="t-model"></select>
+        </div>
+        <div class="row">
+          <div class="field"><label for="t-fps">Sample rate (fps)</label><input id="t-fps" type="number" min="1" max="30" step="1" value="10"></div>
+          <div class="field"><label for="t-max">Max frames</label><input id="t-max" type="number" min="10" max="3000" step="10" value="600"></div>
+        </div>
+        <div class="row">
+          <button class="btn primary" id="t-run" type="submit" disabled>Run tracking</button>
+          <button class="btn danger" id="t-cancel" type="button" disabled>Cancel</button>
+        </div>
+        <div class="row" id="t-cancel-confirm" hidden>
+          <span class="muted">Stop this run? Frames so far are discarded from the replay.</span>
+          <button class="btn danger" id="t-cancel-yes" type="button">Stop run</button>
+          <button class="btn" id="t-cancel-no" type="button">Keep running</button>
+        </div>
+        <div class="progress" aria-hidden="true"><div id="t-job-bar"></div></div>
+        <div class="notice" id="t-job-msg" role="status" aria-live="polite">No run in progress.</div>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="ttracks-title">
+      <div class="panel-head"><h2 id="ttracks-title">Tracks in this frame</h2><span class="spacer"></span><span class="frame-meta" id="t-tcount">—</span></div>
+      <div class="panel-body"><ul class="tracklist" id="t-tracks"></ul></div>
+    </section>
+
+    <section class="panel" aria-labelledby="truns-title">
+      <div class="panel-head"><h2 id="truns-title">Recorded runs</h2><span class="spacer"></span><button class="btn icon" id="t-refresh" aria-label="Refresh recorded runs">↻</button></div>
+      <div class="panel-body"><ul class="sessions" id="t-runs"></ul></div>
+    </section>
+
+    <section class="panel safety" aria-labelledby="tsafety-title">
+      <div class="panel-head"><h2 id="tsafety-title">Vehicle link</h2><span class="spacer"></span><span class="badge" data-tone="offline">NO REAL DRONE</span></div>
+      <div class="panel-body">
+        <dl>
+          <dt>HARDWARE_ARMED</dt><dd class="armed-mirror">false</dd>
+          <dt>DRY_RUN</dt><dd class="dryrun-mirror">true</dd>
+          <dt>Commands</dt><dd>MOCK · yaw only · not transmitted</dd>
+          <dt>Distance</dt><dd>not estimated (no bbox-size ranging)</dd>
+        </dl>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<footer class="statusbar" id="statusbar-track" aria-label="Tracking metrics" hidden>
+  <span>frames <b id="tm-frames">—</b></span>
+  <span>detect p50/p95 <b id="tm-det">—</b></span>
+  <span>tracker p50/p95 <b id="tm-trk">—</b></span>
+  <span>processing <b id="tm-fps">—</b></span>
+  <span>confirmed tracks <b id="tm-tracks">—</b></span>
+  <span>MOTA/IDF1 <b id="tm-acc">—</b></span>
+  <span>API latency <b id="tm-api">—</b></span>
+</footer>
+<footer class="statusbar" id="statusbar" aria-label="Metrics">
+  <span>registered <b id="m-reg">—</b></span>
+  <span>3D points <b id="m-pts">—</b></span>
+  <span>reproj. error <b id="m-err">—</b></span>
+  <span id="m-ate-wrap">ATE <b id="m-ate">—</b></span>
+  <span>render p50/p95 <b id="m-render">—</b></span>
+  <span>API latency <b id="m-api">—</b></span>
+  <span id="m-age">data —</span>
+</footer>
+<div class="visually-hidden" aria-live="polite" id="announcer"></div>
+</body>
+</html>

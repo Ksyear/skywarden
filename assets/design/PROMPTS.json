@@ -1,0 +1,20 @@
+[
+ {
+  "asset": "assets/design/mockup_map_console_v1.png",
+  "generator": "codex-cli 0.165.0 `codex exec --skip-git-repo-check -s read-only` (built-in image generation, ChatGPT login)",
+  "source_file": "~/.codex/generated_images/01a1bb04-25e2-70f2-adb1-20f51974d1ad/exec-9b4ed138-6e51-40f1-9826-3665ac07935e.png",
+  "date": "2026-11-08",
+  "prompt": "Use your built-in image generation tool ($imagegen) to create ONE image. Do not write code. Purpose: UI design mockup for a desktop robotics ground-control web app (\"Security Drone A — Map Console\") used to review camera-only 3D sparse maps. 16:9, 1920x1080 look. Calm, dark slate background (#0f1418-ish), low-saturation, high legibility, no glow, no neon, no gradients, no decorative 3D chrome. Layout: thin top bar with app name, input source selector, and status badges (e.g. \"STORED_RECONSTRUCTION\", \"RELATIVE SCALE\", \"NOT NAVIGATION SAFE\", \"SIMULATED OFF\"); center-left large camera frame panel showing a generic office desk scene (fictional, no people, no faces) with a frame scrubber below; center-right equally large 3D point cloud viewer panel with sparse colored points and a camera trajectory polyline with small camera frustums; right narrow column with control panel (Build map button, cancel, settings collapsed) and job progress steps (Frames, Features, Matching, Mapping, Export); bottom status strip with small monospace metrics (registered frames, 3D points, reprojection error, p50/p95). Status colors: green ok, amber warning, red error, gray disconnected, each also with a text label. Rounded corners 6px, 1px borders. Exclude: logos of real companies, real people, photorealistic faces, watermarks.",
+  "note": "Design reference / illustration only. Not a measurement, map, or test evidence."
+ },
+ {
+  "asset": "assets/design/empty_state_mapping_flow.png",
+  "generator": "codex-cli 0.165.0 `codex exec --skip-git-repo-check -s read-only` (built-in image generation, ChatGPT login)",
+  "source_file": "~/.codex/generated_images/01a1bb07-12ea-7c53-ade1-092ecdd655fb/exec-92e91236-3081-43b8-bc4a-84fd91d00ae3.png",
+  "date": "2026-11-08",
+  "prompt": "Use your built-in image generation tool ($imagegen) to create ONE image. Do not write code. Purpose: reusable empty-state illustration for a dark-themed robotics map console, shown when no map is loaded; it explains how camera-only mapping works. Aspect ratio 16:9 wide, flat vector illustration style, minimal line art, 2px strokes, palette limited to slate gray lines (#9aa4ad), one muted cyan accent (#4cc3ff) and one muted amber accent (#ffb020), on a solid flat background color #171a21 (no texture, no vignette). Composition left to right in three steps with simple arrows between them: (1) a handheld smartphone slowly moving sideways past a simple desk with a monitor and a plant, with 3 faint ghosted phone positions showing translation (not rotation); (2) a short row of 4 overlapping video frame thumbnails with small dot features and thin lines connecting matching dots between frames; (3) a sparse 3D point cloud of the same desk drawn as dots, with a dotted camera trajectory line and 4 small pyramid camera frustums. NO text, NO letters, NO numbers, NO logos, NO people, NO faces, no UI chrome, no drop shadows, no gradients, no glow. Leave generous empty margin around the content.",
+  "note": "Design reference / illustration only. Not a measurement, map, or test evidence.",
+  "prompt_source": "copied from the Opus session's command text (stdout log kept only the tail)",
+  "ui_copy": "apps/desktop/static/empty_state_mapping_flow.jpg (cropped, 1200 px)"
+ }
+]

@@ -1,0 +1,6 @@
+# Installed into the project .venv only (python3 -m venv .venv). Versions verified 2026-11-08 on macOS 27.2 arm64.
+pycolmap==4.2.1
+opencv-python-headless==5.0.0.93
+numpy==2.5.4
+scipy==1.18.1
+pytest==9.2.0

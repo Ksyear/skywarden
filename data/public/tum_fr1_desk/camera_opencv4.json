@@ -1,0 +1,17 @@
+{
+ "model": "OPENCV",
+ "params": [
+  517.3,
+  516.5,
+  318.6,
+  255.3,
+  0.2624,
+  -0.9531,
+  -0.0054,
+  0.0026
+ ],
+ "width": 640,
+ "height": 480,
+ "source": "https://cvg.cit.tum.de/data/datasets/rgbd-dataset/file_formats (Freiburg 1 RGB: fx fy cx cy d0..d4)",
+ "note": "k3=1.1633 dropped: FULL_OPENCV run failed to initialise (see outputs/evidence/m1/build_tum_fr1_desk.log)"
+}
