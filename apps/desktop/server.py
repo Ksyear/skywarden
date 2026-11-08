@@ -201,8 +201,14 @@ class Console:
         return item
 
     def _new_session(self, kind: str, body: dict, item: dict) -> str:
-        sid = body.get("session") or f"{re.sub(r'[^A-Za-z0-9_-]', '_', item['label'])[:40]}-{datetime.now():%Y%m%d-%H%M%S}"
         root = self.kinds[kind].root
+        sid = body.get("session")
+        if not sid:  # auto id: second resolution, so two quick runs get -2, -3, ... instead of colliding
+            base = f"{re.sub(r'[^A-Za-z0-9_-]', '_', item['label'])[:40]}-{datetime.now():%Y%m%d-%H%M%S}"
+            sid, n = base, 1
+            while (root / sid).exists():
+                n += 1
+                sid = f"{base}-{n}"
         if not SESSION_ID.match(sid) or (root / sid).exists():
             raise ValueError(f"Invalid or existing session id: {sid}")
         (root / sid).mkdir(parents=True)

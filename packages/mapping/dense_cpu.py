@@ -319,13 +319,111 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60) -> dict:
     return summary
 
 
-def mesh(sd: Path, voxel: float) -> dict:
+def _write_ply_normals(path: Path, X: np.ndarray, N: np.ndarray, C: np.ndarray) -> None:
+    dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("nx", "<f4"), ("ny", "<f4"), ("nz", "<f4"),
+                   ("red", "u1"), ("green", "u1"), ("blue", "u1")])
+    a = np.zeros(len(X), dt)
+    a["x"], a["y"], a["z"] = X.T
+    a["nx"], a["ny"], a["nz"] = N.T
+    a["red"], a["green"], a["blue"] = C.T
+    head = ("ply\nformat binary_little_endian 1.0\n" f"element vertex {len(X)}\n"
+            "property float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\n"
+            "property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n")
+    path.write_bytes(head.encode() + a.tobytes())
+
+
+def read_mesh_ply(path: Path):
+    """Minimal reader for binary little-endian PLY meshes (vertex float xyz [+ uchar rgb], face list uchar int)."""
+    data = path.read_bytes()
+    end = data.index(b"end_header\n") + len(b"end_header\n")
+    lines = data[:end].decode("latin1").splitlines()
+    nv = nf = 0
+    vprops, cur = [], None
+    cnt_t, idx_t = "u1", "<i4"
+    for ln in lines:
+        p = ln.split()
+        if p[:2] == ["element", "vertex"]:
+            nv, cur = int(p[2]), "v"
+        elif p[:2] == ["element", "face"]:
+            nf, cur = int(p[2]), "f"
+        elif p and p[0] == "property" and cur == "v":
+            vprops.append((p[2], {"float": "<f4", "double": "<f8", "uchar": "u1", "int": "<i4", "uint": "<u4", "char": "i1"}[p[1]]))
+        elif p[:2] == ["property", "list"] and cur == "f":
+            cnt_t, idx_t = {"float": "<f4", "double": "<f8", "uchar": "u1", "int": "<i4", "uint": "<u4", "char": "i1"}[p[2]], {"float": "<f4", "double": "<f8", "uchar": "u1", "int": "<i4", "uint": "<u4", "char": "i1"}[p[3]]
+    vdt = np.dtype(vprops)
+    V = np.frombuffer(data, vdt, nv, end)
+    off = end + nv * vdt.itemsize
+    F = np.frombuffer(data, np.dtype([("n", cnt_t), ("i", idx_t, (3,))]), nf, off)
+    assert np.all(F["n"] == 3), "only triangle meshes are supported"
+    return V, F["i"].copy()
+
+
+def mesh(sd: Path, rank: int = 0, depth: int = 10, max_points: int = 400_000) -> dict:
+    """Poisson surface from dense_verified.ply only, trimmed to vertices within 2 voxels of a verified point."""
     out = sd / "dense"
-    src = out / "dense_verified.ply"
-    opts = pycolmap.PoissonMeshingOptions()
+    rep = json.loads((out / "dense_report.json").read_text())
+    D = read_ply(out / "dense_verified.ply")
+    X = np.stack([D["x"], D["y"], D["z"]], 1).astype(np.float64)
+    C = np.stack([D["red"], D["green"], D["blue"]], 1)
+    voxel = rep["voxel"]
+    if len(X) > max_points:  # coarser voxel grid for meshing input only
+        key = np.floor(X / (voxel * 2)).astype(np.int64)
+        _, idx = np.unique(key, axis=0, return_index=True)
+        X, C = X[idx], C[idx]
+    tree = cKDTree(X)
+    _, nn = tree.query(X, k=16)
+    Q = X[nn] - X[nn].mean(1, keepdims=True)
+    cov = np.einsum("nki,nkj->nij", Q, Q)
+    w, v = np.linalg.eigh(cov)
+    N = v[:, :, 0]  # smallest eigenvalue -> surface normal
+    report = json.loads((sd / "map_report.json").read_text())
+    models = (report.get("reconstruction") or {}).get("models")
+    traj = json.loads(((sd / "models" / str(rank)) if models else sd).joinpath("trajectory.json").read_text())
+    cams = np.array([np.array(p["T_world_camera"])[:3, 3] for p in traj["poses"]])
+    _, ci = cKDTree(cams).query(X)
+    flip = np.einsum("ij,ij->i", N, cams[ci] - X) < 0  # orient towards the nearest camera (the side that was seen)
+    N[flip] *= -1
+    _write_ply_normals(out / "mesh_input_oriented.ply", X, N, C)
     raw = out / "mesh_poisson_raw.ply"
-    pycolmap.poisson_meshing(str(src), str(raw), opts)
-    return {"raw_mesh": str(raw)}
+    # COLMAP's bundled Poisson aborts the whole process ("Failed to close loop") with multiple threads on this
+    # machine; it runs single-threaded in a child process so a crash cannot take the caller down.
+    import subprocess, sys
+    code = ("import pycolmap,sys; o=pycolmap.PoissonMeshingOptions(); o.depth=int(sys.argv[3]); o.num_threads=1; "
+            "pycolmap.poisson_meshing(sys.argv[1], sys.argv[2], o)")
+    r = subprocess.run([sys.executable, "-c", code, str(out / "mesh_input_oriented.ply"), str(raw), str(depth)],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not raw.exists() or raw.stat().st_size == 0:
+        res = {"status": "FAILED", "reason": f"poisson exit {r.returncode}: {r.stderr.strip().splitlines()[0] if r.stderr.strip() else ''}"}
+        rep["mesh"] = res
+        (out / "dense_report.json").write_text(json.dumps(rep, indent=1))
+        return res
+    V, F = read_mesh_ply(raw)
+    P = np.stack([V["x"], V["y"], V["z"]], 1).astype(np.float64)
+    dist, _ = tree.query(P)
+    keepv = dist <= 2 * voxel
+    edge = np.max(np.stack([np.linalg.norm(P[F[:, a]] - P[F[:, b]], axis=1) for a, b in ((0, 1), (1, 2), (2, 0))]), axis=0)
+    keepf = keepv[F].all(1) & (edge <= 4 * voxel)  # triangles longer than the observed spacing bridge unobserved gaps
+    F2 = F[keepf]
+    used = np.unique(F2)
+    remap = -np.ones(len(P), np.int64)
+    remap[used] = np.arange(len(used))
+    V2, F2 = V[used], remap[F2]
+    # write trimmed mesh (same vertex layout as the Poisson output)
+    head = ["ply", "format binary_little_endian 1.0", f"element vertex {len(V2)}"]
+    for name in V2.dtype.names:
+        t = {"<f4": "float", "<f8": "double", "|u1": "uchar", "u1": "uchar", "<i4": "int", "<u4": "uint", "|i1": "char"}[V2.dtype[name].str]
+        head.append(f"property {t} {name}")
+    head += [f"element face {len(F2)}", "property list uchar int vertex_indices", "end_header"]
+    fa = np.zeros(len(F2), np.dtype([("n", "u1"), ("i", "<i4", (3,))]))
+    fa["n"], fa["i"] = 3, F2.astype(np.int32)
+    (out / "mesh_verified.ply").write_bytes(("\n".join(head) + "\n").encode() + np.ascontiguousarray(V2).tobytes() + fa.tobytes())
+    res = {"label": "MESH_FROM_VERIFIED_DENSE (relative scale; unobserved areas are holes)", "poisson_depth": depth,
+           "input_points": int(len(X)), "raw_vertices": int(len(P)), "raw_faces": int(len(F)),
+           "kept_vertices": int(len(V2)), "kept_faces": int(len(F2)), "trim_rule": "vertex within 2 voxels of a verified dense point and every edge <= 4 voxels",
+           "kept_face_share": round(float(keepf.mean()), 3)}
+    rep["mesh"] = res
+    (out / "dense_report.json").write_text(json.dumps(rep, indent=1))
+    return res
 
 
 def main(argv=None) -> int:
@@ -333,7 +431,11 @@ def main(argv=None) -> int:
     ap.add_argument("session_dir")
     ap.add_argument("--model", type=int, default=0)
     ap.add_argument("--max-pairs", type=int, default=60)
+    ap.add_argument("--mesh-only", action="store_true", help="build the mesh from an existing dense_verified.ply")
     a = ap.parse_args(argv)
+    if a.mesh_only:
+        print(json.dumps(mesh(Path(a.session_dir), a.model), indent=1))
+        return 0
     s = run(Path(a.session_dir), a.model, a.max_pairs)
     print(json.dumps({k: v for k, v in s.items() if k != "views"} | {"view_status": [(p["ref"], p["status"], p.get("reason", ""), p.get("confident_share"), p.get("sparse_agreement"), p.get("consistency_kept_share")) for p in s["views"]]}, indent=1))
     return 0

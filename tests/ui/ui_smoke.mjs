@@ -16,18 +16,18 @@ const argBrowser = process.argv.indexOf("--browser");
 const BROWSER = argBrowser > 0 ? process.argv[argBrowser + 1] : "/Applications/Dia.app/Contents/MacOS/Dia";
 const argAttach = process.argv.indexOf("--attach");
 const ATTACH = argAttach > 0 ? process.argv[argAttach + 1] : null;
-const MQ_PARTIAL = "mq_bangkok_60s_after_mf300";
+const MQ_PARTIAL = "mq_bangkok_60s_after_mf300", MQ_DENSE = "mqg_sumida_0025_0125";
 const REAL = "tum_fr1_desk_K4", SIM = "synthetic_room_seed7", TRACK = "tum_walking_xyz_nano", TRACK_AMB = "tum_walking_xyz_nano_fixv3";
 mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const freePort = () => new Promise((r) => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
-const results = []; const consoleErrors = [];
+const results = []; const consoleErrors = []; const extensionErrors = [];
 const check = (name, ok, detail = "") => { results.push({ name, status: ok ? "PASS" : "FAIL", detail }); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`); };
 
 // ---------- server ----------
 const mapsRoot = mkdtempSync(join(tmpdir(), "sda-ui-maps-"));
-for (const s of [REAL, SIM, MQ_PARTIAL]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
+for (const s of [REAL, SIM, MQ_PARTIAL, MQ_DENSE]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
 const tracksRoot = mkdtempSync(join(tmpdir(), "sda-ui-tracks-"));
 for (const t of [TRACK, TRACK_AMB]) if (existsSync(join(ROOT, "outputs/tracks", t))) symlinkSync(join(ROOT, "outputs/tracks", t), join(tracksRoot, t));
 const port = await freePort();
@@ -65,8 +65,17 @@ let seq = 0; const pending = new Map();
 ws.addEventListener("message", (m) => {
   const msg = JSON.parse(m.data);
   if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
-  if (msg.method === "Runtime.exceptionThrown") consoleErrors.push(msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text);
-  if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") consoleErrors.push(msg.params.args.map((a) => a.value ?? a.description).join(" "));
+  // In --attach mode the user's own profile is used, so browser extensions can log errors into the page; those are
+  // counted separately and do not fail the console check.
+  const fromExtension = (d) => /chrome-extension:\/\//.test(JSON.stringify(d?.stackTrace || d?.url || "")) || /Receiving end does not exist/.test(JSON.stringify(d));
+  if (msg.method === "Runtime.exceptionThrown") {
+    const d = msg.params.exceptionDetails;
+    (fromExtension(d) ? extensionErrors : consoleErrors).push(d.exception?.description || d.text);
+  }
+  if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") {
+    const text = msg.params.args.map((a) => a.value ?? a.description).join(" ");
+    (fromExtension(msg.params) ? extensionErrors : consoleErrors).push(text);
+  }
 });
 const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
 const evaluate = async (expr) => { const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description); return r.result?.result?.value; };
@@ -138,6 +147,20 @@ try {
       check("second model loads in its own frame", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('model 2 of')`, 20000), await text("map-overlay-tl"));
       await shot("03c_partial_map_model2.png");
     }
+  }
+
+  // 3c. dense layer on a GOOD map: separate, labelled, more points than the sparse layer
+  if (existsSync(join(ROOT, "outputs/maps", MQ_DENSE, "dense", "dense_verified.ply"))) {
+    await clickSession(MQ_DENSE);
+    await waitFor(`document.getElementById('map-empty').hidden && document.getElementById('badges').textContent.includes('QUALITY GOOD')`, 20000);
+    check("dense layer offered only when verified dense exists", await evaluate(`!document.getElementById('layer').options[2].disabled`));
+    await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'dense'; s.dispatchEvent(new Event('change')); })()`);
+    check("dense layer loads with its own caption", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('DENSE · VERIFIED')`, 60000), await text("map-overlay-tl"));
+    await sleep(1500);
+    check("status bar reports raw / filtered / dense counts", /sparse raw [\d,]+ \/ filtered [\d,]+ · dense verified [\d,]+/.test(await text("m-render")), await text("m-render"));
+    await shot("03d_dense_layer.png");
+    await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'sparse'; s.dispatchEvent(new Event('change')); })()`);
+    await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('SPARSE POINTS (SfM)')`, 20000);
   }
 
   // 4. simulated map is labelled as such
@@ -286,7 +309,7 @@ try {
   check("ui script ran without exception", false, String(e));
 } finally {
   check("no JS errors in console", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
-  const summary = { browser: ATTACH ? `attached to existing Dia at ${ATTACH}` : BROWSER, date: new Date().toISOString(), port, results, consoleErrors,
+  const summary = { browser: ATTACH ? `attached to existing Dia at ${ATTACH}` : BROWSER, date: new Date().toISOString(), port, results, consoleErrors, extensionErrors,
     pass: results.filter((r) => r.status === "PASS").length, fail: results.filter((r) => r.status === "FAIL").length };
   writeFileSync(join(OUT, "ui_smoke.json"), JSON.stringify(summary, null, 1));
   console.log(`\n${summary.pass} passed, ${summary.fail} failed → ${join(OUT, "ui_smoke.json")}`);

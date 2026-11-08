@@ -235,7 +235,12 @@ def build_sparse_map(req: BuildRequest, cancel_event: threading.Event | None = N
                     f"tracking; for mapping use a clip where the camera moves sideways.")
         else:
             report["input_check"] = {"shots": 1, "cuts": 0, "note": "image folder: treated as one continuous take"}
-        if max_gap is not None and max_gap > MAX_KEPT_GAP_S:
+        # Fatal only when the frame cap caused the gap (silent thinning). Gaps left by blur/duplicate rejection are
+        # recorded and judged by the quality check (max_internal_gap_s): rejecting them here refused TUM fr1/desk,
+        # a ground-truth input that reconstructs GOOD (ATE 1.66-2.05 cm) with 1.34 s gaps.
+        report["frames"]["gap_guard"] = {"max_gap_s": report["frames"]["max_gap_s"], "limit_s": MAX_KEPT_GAP_S,
+                                         "fatal_only_when_caused_by_cap": True, "cap_dropped": sel.dropped_by_cap}
+        if max_gap is not None and max_gap > MAX_KEPT_GAP_S and sel.dropped_by_cap:
             cause = (f"the cap of {req.selection.max_frames} frames dropped {sel.dropped_by_cap} frames; use a shorter "
                      f"section or a higher --max-frames") if sel.dropped_by_cap else (
                      f"blur/low-texture/duplicate rejections ({sel.rejected_blur}/{sel.rejected_low_texture}/"
