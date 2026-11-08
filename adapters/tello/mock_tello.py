@@ -3,9 +3,15 @@
 Fault injection (seeded): reply drop probability, reply latency, battery drain. Flight is a kinematic toy:
 takeoff sets h=80 cm, rc yaw integrates heading, a 15 s command silence while flying triggers auto-land
 (mirrors the documented SDK safety behaviour).
+
+SIMULATED planar pose: rc forward/lateral drive a velocity with a first-order lag (`vel_tau_s`, so the toy keeps
+moving briefly after a STOP like a real aircraft) at `mps_per_rc` m/s per rc unit. `sim_pose()` exposes it in a
+SIMULATED_FRAME_ONLY frame (x forward at take-off heading, y to the right, metres). A real Tello reports no such
+position (only mission-pad x/y/z), so this exists to test logic such as a geofence guard, not localisation.
 """
 from __future__ import annotations
 
+import math
 import random
 import socket
 import threading
@@ -19,7 +25,7 @@ QUERY_REPLIES = {"battery?": lambda s: str(s["bat"]), "sdk?": lambda s: "30", "s
 
 class MockTello:
     def __init__(self, state_port: int, drop_prob: float = 0.0, latency_s: float = 0.0, battery: int = 90,
-                 seed: int = 0, state_hz: float = 10.0):
+                 seed: int = 0, state_hz: float = 10.0, mps_per_rc: float = 0.01, vel_tau_s: float = 0.4):
         self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.cmd_sock.bind(("127.0.0.1", 0))
         self.cmd_sock.settimeout(0.05)
@@ -33,6 +39,11 @@ class MockTello:
         self.sdk_mode = False
         self.flying = False
         self.rc_yaw = 0
+        self.rc_fb = self.rc_lr = 0
+        self.mps_per_rc, self.vel_tau_s = mps_per_rc, vel_tau_s
+        self._pos = [0.0, 0.0]   # SIMULATED_FRAME_ONLY, metres
+        self._vel = [0.0, 0.0]   # body-frame forward, right (m/s)
+        self._pose_lock = threading.Lock()
         self._heading = 0.0  # float; the state packet reports it rounded like the real SDK
         self.received: list[str] = []
         self.last_cmd_t = time.monotonic()
@@ -62,7 +73,10 @@ class MockTello:
             return QUERY_REPLIES[cmd](self.s)
         if v == "rc":
             vals = [int(p) for p in cmd.split()[1:]]
-            self.rc_yaw = vals[3] if len(vals) == 4 else 0
+            if len(vals) == 4:
+                self.rc_lr, self.rc_fb, _, self.rc_yaw = vals
+            else:
+                self.rc_lr = self.rc_fb = self.rc_yaw = 0
             return None  # no reply for rc
         if v == "takeoff":
             if self.s["bat"] < 10:
@@ -71,10 +85,11 @@ class MockTello:
             return "ok"
         if v in ("land", "emergency"):
             self.flying, self.s["h"], self.rc_yaw = False, 0, 0
+            self.rc_fb = self.rc_lr = 0
             return "ok"
         if v in ("streamon", "streamoff", "mon", "moff", "stop"):
             if v == "stop":
-                self.rc_yaw = 0
+                self.rc_yaw = self.rc_fb = self.rc_lr = 0
             return "ok"
         return "error Unknown command"
 
@@ -96,6 +111,21 @@ class MockTello:
                 time.sleep(self.latency_s)
             self.cmd_sock.sendto(reply.encode(), src)
 
+    def _step_pose(self, dt: float) -> None:
+        a = min(1.0, dt / self.vel_tau_s) if self.vel_tau_s > 0 else 1.0
+        cmd = (self.rc_fb * self.mps_per_rc, self.rc_lr * self.mps_per_rc)
+        with self._pose_lock:
+            self._vel = [v + (c - v) * a for v, c in zip(self._vel, cmd)]
+            psi = math.radians(self._heading)
+            fwd, right = self._vel
+            self._pos[0] += (fwd * math.cos(psi) - right * math.sin(psi)) * dt
+            self._pos[1] += (fwd * math.sin(psi) + right * math.cos(psi)) * dt
+
+    def sim_pose(self) -> tuple[float, float, float]:
+        """(x_m, y_m, heading_deg) in the SIMULATED_FRAME_ONLY frame."""
+        with self._pose_lock:
+            return self._pos[0], self._pos[1], self._heading
+
     def _state_loop(self) -> None:
         out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         period, t0 = 1.0 / self.state_hz, time.monotonic()
@@ -103,6 +133,7 @@ class MockTello:
             if self.flying:
                 self._heading = (self._heading + self.rc_yaw * 1.0 * period + 180) % 360 - 180  # ~1 deg/s per rc unit
                 self.s["yaw"] = int(round(self._heading))
+                self._step_pose(period)
                 if time.monotonic() - self.last_cmd_t > 15.0:
                     self.flying, self.s["h"], self.auto_landed = False, 0, True
             self.s["time"] = int(time.monotonic() - t0)

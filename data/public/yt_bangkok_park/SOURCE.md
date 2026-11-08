@@ -1,0 +1,10 @@
+# Source record: YouTube kjciube52gA
+- URL: https://www.youtube.com/watch?v=kjciube52gA
+- Title: Suan Luang Rama IX Park Bangkok | 4K Walking Tour, Lake, Gardens & Pavilion
+- Channel / author: Streets & Spaces | Travel Walks (https://www.youtube.com/channel/UCS2GOQcN_6C-PZrk-LEJHfw)
+- Upload date: 20260821
+- License (from YouTube metadata, checked 2026-11-09): Creative Commons Attribution license (reuse allowed) — attribution required: "Suan Luang Rama IX Park Bangkok | 4K Walking Tour, Lake, Gardens & Pavilion" by Streets & Spaces | Travel Walks, CC BY, https://www.youtube.com/watch?v=kjciube52gA
+- Downloaded: 2026-11-09 with yt-dlp 2026.10.21 (project .venv), format <=1080p mp4; section 0:30-1:30 of a 391 s video (yt-dlp --download-sections)
+- File: kjciube52gA_0030-0130.mp4, SHA-256 b404817b8d008a99568fc5ee841465ae90de02a67e40ee99c7f9c371a1b76dc8
+- Use here: local test input only (person detection/tracking, mapping). Processed on this Mac; never uploaded. Not the user's own video: labelled PUBLIC_DATASET, the "own video" gate stays NOT_RUN.
+- Faces of bystanders are visible; no identification, no re-ID, no redistribution of frames beyond local evidence.
