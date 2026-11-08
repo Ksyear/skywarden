@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Security Drone A — Console</title>
+<title>Skywarden — Console</title>
 <link rel="stylesheet" href="/static/app.css">
 <script type="module" src="/static/app.js"></script>
 </head>
 <body>
 <header class="topbar">
-  <h1>Security Drone A</h1>
+  <h1>Skywarden</h1>
   <div class="segmented" role="group" aria-label="Workspace">
     <button type="button" id="mode-map" aria-pressed="true" title="Mapping workspace (M)">Mapping</button>
     <button type="button" id="mode-track" aria-pressed="false" title="Person tracking workspace (T)">Tracking</button>
@@ -138,7 +138,7 @@
     </div>
     <div class="timeline-wrap">
       <canvas id="t-timeline" height="56" aria-label="Target state and virtual yaw command over time. Click to jump."></canvas>
-      <div class="legend tl-legend" aria-hidden="true"><span><i class="s-locked"></i>LOCKED</span><span><i class="s-pred"></i>PREDICTING</span><span><i class="s-lost"></i>LOST</span><span><i class="s-search"></i>no target</span><span><i class="s-yaw"></i>yaw cmd</span></div>
+      <div class="legend tl-legend" aria-hidden="true"><span><i class="s-locked"></i>LOCKED</span><span><i class="s-pred"></i>PREDICTING</span><span><i class="s-amb"></i>AMBIGUOUS</span><span><i class="s-lost"></i>LOST</span><span><i class="s-search"></i>no target</span><span><i class="s-yaw"></i>yaw cmd</span></div>
     </div>
     <div class="readouts">
       <div class="readout" id="r-target">

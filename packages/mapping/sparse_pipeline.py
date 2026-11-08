@@ -28,7 +28,7 @@ from .frame_source import InputError, open_source
 from .labels import NAV_SAFETY, is_synthetic_input, CalibrationStatus, DataOrigin, Geometry, MapSource, Scale, map_source_for
 
 STAGES = ["SELECT_FRAMES", "EXTRACT_FEATURES", "MATCH_FEATURES", "MAP", "EXPORT"]
-REPORT_SCHEMA = "security-drone-a/map_report@1"
+REPORT_SCHEMA = "skywarden/map_report@1"
 
 
 @dataclass

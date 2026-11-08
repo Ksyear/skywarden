@@ -17,7 +17,7 @@ COORDINATE_NOTE = ("COLMAP world frame, arbitrary origin and RELATIVE scale. Cam
 def write_ply(path: Path, points: np.ndarray) -> None:
     """points: structured array with PLY_DTYPE. first_seen = trajectory order of the first camera observing the point."""
     header = ("ply\nformat binary_little_endian 1.0\n"
-              "comment security-drone-a sparse map (RELATIVE scale, NOT_NAVIGATION_SAFE)\n"
+              "comment Skywarden sparse map (RELATIVE scale, NOT_NAVIGATION_SAFE)\n"
               f"element vertex {len(points)}\n"
               "property float x\nproperty float y\nproperty float z\n"
               "property uchar red\nproperty uchar green\nproperty uchar blue\n"
@@ -97,7 +97,7 @@ def export_reconstruction(rec, out_dir: Path, frames_by_name: dict[str, dict]) -
 
     cam = rec.camera(images[0].camera_id) if images else None
     traj = {
-        "schema": "security-drone-a/trajectory@1",
+        "schema": "skywarden/trajectory@1",
         "coordinate_frame": COORDINATE_NOTE,
         "scale": "RELATIVE",
         "camera": None if cam is None else {

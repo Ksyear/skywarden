@@ -1,5 +1,7 @@
 // End-to-end UI check in a headless Chromium browser (Dia by default) over the DevTools protocol.
-// Usage: node tests/ui/ui_smoke.mjs [--browser /Applications/Dia.app/Contents/MacOS/Dia]
+// Usage: node tests/ui/ui_smoke.mjs [--attach http://127.0.0.1:9222 | --browser /Applications/Dia.app/Contents/MacOS/Dia]
+//   --attach  use the Dia window that is already open (Dia started with --remote-debugging-port=9222): the test opens
+//             ONE tab there and closes only that tab at the end; no new browser process or window is started.
 // Starts its own console server on a free port with a temporary maps root (stored sessions are symlinked in),
 // so builds made by the test never mix with real outputs. Writes screenshots + results to outputs/evidence/ui/.
 import { spawn } from "node:child_process";
@@ -12,7 +14,9 @@ const ROOT = resolve(import.meta.dirname, "../..");
 const OUT = join(ROOT, "outputs/evidence/ui");
 const argBrowser = process.argv.indexOf("--browser");
 const BROWSER = argBrowser > 0 ? process.argv[argBrowser + 1] : "/Applications/Dia.app/Contents/MacOS/Dia";
-const REAL = "tum_fr1_desk_K4", SIM = "synthetic_room_seed7", TRACK = "tum_walking_xyz_nano";
+const argAttach = process.argv.indexOf("--attach");
+const ATTACH = argAttach > 0 ? process.argv[argAttach + 1] : null;
+const REAL = "tum_fr1_desk_K4", SIM = "synthetic_room_seed7", TRACK = "tum_walking_xyz_nano", TRACK_AMB = "tum_walking_xyz_nano_fixv3";
 mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -24,7 +28,7 @@ const check = (name, ok, detail = "") => { results.push({ name, status: ok ? "PA
 const mapsRoot = mkdtempSync(join(tmpdir(), "sda-ui-maps-"));
 for (const s of [REAL, SIM]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
 const tracksRoot = mkdtempSync(join(tmpdir(), "sda-ui-tracks-"));
-if (existsSync(join(ROOT, "outputs/tracks", TRACK))) symlinkSync(join(ROOT, "outputs/tracks", TRACK), join(tracksRoot, TRACK));
+for (const t of [TRACK, TRACK_AMB]) if (existsSync(join(ROOT, "outputs/tracks", t))) symlinkSync(join(ROOT, "outputs/tracks", t), join(tracksRoot, t));
 const port = await freePort();
 let server;
 const startServer = () => { server = spawn(join(ROOT, ".venv/bin/python"), [join(ROOT, "apps/desktop/server.py"), "--port", String(port), "--maps-root", mapsRoot, "--tracks-root", tracksRoot], { stdio: "ignore" }); };
@@ -33,10 +37,18 @@ const BASE = `http://127.0.0.1:${port}`;
 for (let i = 0; i < 50; i++) { try { if ((await fetch(`${BASE}/api/health`)).ok) break; } catch {} await sleep(100); }
 
 // ---------- browser ----------
-const cdpPort = await freePort();
-const profile = mkdtempSync(join(tmpdir(), "sda-ui-profile-"));
-const browser = spawn(BROWSER, [`--headless=new`, `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--window-size=1600,1000", "about:blank"], { stdio: "ignore" });
-let wsUrl;
+let browser = null, wsUrl, attachedTabId = null;
+if (ATTACH) {
+  try {
+    const t = await (await fetch(`${ATTACH}/json/new?about:blank`, { method: "PUT" })).json();
+    wsUrl = t.webSocketDebuggerUrl; attachedTabId = t.id;
+  } catch (e) { console.error(`cannot attach to ${ATTACH}: ${e.message}. Start Dia with --remote-debugging-port=9222.`); server.kill(); process.exit(2); }
+}
+const cdpPort = ATTACH ? null : await freePort();
+if (!ATTACH) {
+  const profile = mkdtempSync(join(tmpdir(), "sda-ui-profile-"));
+  browser = spawn(BROWSER, [`--headless=new`, `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--window-size=1600,1000", "about:blank"], { stdio: "ignore" });
+}
 for (let i = 0; i < 200 && !wsUrl; i++) {
   try {
     const t = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
@@ -188,6 +200,29 @@ try {
   check("Space plays the recorded run", !(await text("t-count")).startsWith(`${k0 + 1} /`), await text("t-count"));
   await shot("12_tracking_playback_raw.png");
 
+  // ambiguous target: recorded with the conservative tracker; the console must show AMBIGUOUS and STOP
+  await key("0", "Digit0");
+  await evaluate(`[...document.querySelectorAll('#t-runs button')].find(b => b.querySelector('.sid').textContent === '${TRACK_AMB}')?.click()`);
+  check("run with ambiguous frames loads", await waitFor(`document.getElementById('t-empty').hidden && document.getElementById('t-count').textContent.startsWith('1 /')`, 15000));
+  const recA = await (await fetch(`${BASE}/api/tracks/${TRACK_AMB}/files/tracks.json`)).json();
+  // first (k_sel, id) where id is LOCKED and the same id later becomes AMBIGUOUS
+  let pick = null;
+  for (const f of recA.frames) { for (const tr of f.tracks) { if (tr.state !== "LOCKED") continue; const later = recA.frames.find((g) => g.k > f.k && g.tracks.some((x) => x.id === tr.id && x.state === "AMBIGUOUS")); if (later) { pick = { k: f.k, id: tr.id, ka: later.k }; break; } } if (pick) break; }
+  check("recorded run contains a LOCKED track that later turns AMBIGUOUS", !!pick, JSON.stringify(pick));
+  if (pick) {
+    await evaluate(`(() => { const s = document.getElementById('t-scrub'); s.value = ${pick.k}; s.dispatchEvent(new Event('input')); })()`);
+    await waitFor(`document.getElementById('t-count').textContent.startsWith('${pick.k + 1} /')`);
+    await sleep(200);
+    const rank = [...recA.frames[pick.k].tracks].sort((a, b) => a.id - b.id).findIndex((x) => x.id === pick.id);
+    await evaluate(`document.querySelectorAll('#t-tracks button')[${rank}].click()`);
+    await waitFor(`document.getElementById('r-tid').textContent === '#${pick.id}' && document.getElementById('r-tstate').textContent === 'LOCKED'`);
+    await evaluate(`(() => { const s = document.getElementById('t-scrub'); s.value = ${pick.ka}; s.dispatchEvent(new Event('input')); })()`);
+    check("AMBIGUOUS target shows STOP · TARGET_AMBIGUOUS and yaw 0", await waitFor(`document.getElementById('r-tstate').textContent === 'AMBIGUOUS' && document.getElementById('r-stop').textContent.includes('TARGET_AMBIGUOUS') && document.getElementById('r-yaw').textContent.startsWith('yaw 0')`), `${await text("r-tstate")} · ${await text("r-stop")}`);
+    check("track list marks the AMBIGUOUS track", await evaluate(`[...document.querySelectorAll('#t-tracks button')].some(b => b.textContent.includes('AMBIGUOUS'))`));
+    await shot("16_tracking_ambiguous_stop.png");
+    await key("0", "Digit0");
+  }
+
   // run the real detector from the UI on the pedestrian clip, then cancel a longer run
   await evaluate(`(() => { const s = document.getElementById('t-input'); s.value = [...s.options].find(o => o.value.includes('vtest')).value; s.dispatchEvent(new Event('change')); document.getElementById('t-max').value = 40; })()`);
   await evaluate(`document.getElementById('t-run').click()`);
@@ -226,10 +261,13 @@ try {
   check("ui script ran without exception", false, String(e));
 } finally {
   check("no JS errors in console", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
-  const summary = { browser: BROWSER, date: new Date().toISOString(), port, results, consoleErrors,
+  const summary = { browser: ATTACH ? `attached to existing Dia at ${ATTACH}` : BROWSER, date: new Date().toISOString(), port, results, consoleErrors,
     pass: results.filter((r) => r.status === "PASS").length, fail: results.filter((r) => r.status === "FAIL").length };
   writeFileSync(join(OUT, "ui_smoke.json"), JSON.stringify(summary, null, 1));
   console.log(`\n${summary.pass} passed, ${summary.fail} failed → ${join(OUT, "ui_smoke.json")}`);
-  ws.close(); browser.kill("SIGKILL"); server.kill();
+  ws.close();
+  if (attachedTabId) { try { await fetch(`${ATTACH}/json/close/${attachedTabId}`); } catch {} }  // close only our tab
+  else browser.kill("SIGKILL");
+  server.kill();
   process.exit(summary.fail ? 1 : 0);
 }

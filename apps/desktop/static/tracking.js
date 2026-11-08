@@ -2,11 +2,12 @@
 // target, and show the MOCK yaw command the controller would have produced (computed by the server, never sent).
 const $ = (id) => document.getElementById(id);
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
-const TSTATE_TONE = { LOCKED: "ok", PREDICTING: "warn", LOST: "error", SEARCHING: "offline" };
+const TSTATE_TONE = { LOCKED: "ok", PREDICTING: "warn", AMBIGUOUS: "ambiguous", LOST: "error", SEARCHING: "offline" };
 const STATE_HINT = {
   SEARCHING: "Target chosen but not confirmed in this frame yet.",
   LOCKED: "Target detected in this frame. The controller turns to keep it centred.",
   PREDICTING: "Target not detected; position is predicted (up to 2 s). Command is STOP until it is seen again.",
+  AMBIGUOUS: "Another person is inside the target's gate, so motion alone cannot tell who is who. Command is STOP; the target is not refreshed and re-lock is not guaranteed.",
   LOST: "Target lost. The selector never switches to another person on its own — choose again.",
 };
 
@@ -24,7 +25,8 @@ export function initTracking(ctx) {
     const s = getComputedStyle(document.documentElement);
     const v = (n) => s.getPropertyValue(n).trim();
     colors = { accent: v("--accent"), ok: v("--ok"), warn: v("--warn"), error: v("--error"), muted: v("--muted"),
-      offline: v("--offline"), text: v("--text"), bg: v("--bg"), border: v("--border-strong"), panel2: v("--panel-2"), sim: v("--sim") };
+      offline: v("--offline"), text: v("--text"), bg: v("--bg"), border: v("--border-strong"), panel2: v("--panel-2"), sim: v("--sim"),
+      ambiguous: v("--ambiguous") };
   };
 
   // ---------------- lists ----------------
@@ -136,6 +138,7 @@ export function initTracking(ctx) {
       if (info.state !== "SUCCEEDED") throw new Error(`run is ${info.state}`);
       if (!rec.frames?.length || rec.frames.length !== info.report.frames_processed) throw new Error(`tracks.json has ${rec.frames?.length ?? 0} frames, report says ${info.report.frames_processed}`);
       T.run = { sid, report: info.report, frames: rec.frames, wh: rec.image_wh };
+      T.k = 0;  // the previous run may have been longer: never index past this run's frames
       T.images.clear();
       $("t-empty").hidden = true;
       renderLabels(); renderMetrics(); refreshRuns(); renderControls();
@@ -215,7 +218,7 @@ export function initTracking(ctx) {
       b.type = "button"; b.setAttribute("aria-pressed", String(T.target?.id === tr.id));
       const key = Object.assign(document.createElement("span"), { className: "key", textContent: i < 9 ? String(i + 1) : "" });
       const id = Object.assign(document.createElement("span"), { className: "tid", textContent: `#${tr.id}` });
-      const st = ctx.badge(tr.state, tr.state === "LOCKED" ? "ok" : tr.state === "PREDICTING" ? "warn" : "offline");
+      const st = ctx.badge(tr.state, { LOCKED: "ok", PREDICTING: "warn", AMBIGUOUS: "ambiguous" }[tr.state] || "offline");
       const meta = Object.assign(document.createElement("span"), { className: "meta", textContent: `σ ${tr.sigma_px.toFixed(0)} px · ${tr.hits} hits` });
       b.append(key, id, st, meta);
       b.disabled = !selectable(tr) || !ctx.isOnline();
@@ -248,9 +251,9 @@ export function initTracking(ctx) {
     g.font = `600 ${12 * dpr}px ui-monospace, Menlo, monospace`; g.textBaseline = "bottom";
     for (const tr of f.tracks) {
       const [x, y, w, h] = box(tr.bbox), isT = T.target?.id === tr.id;
-      const col = isT ? colors.accent : tr.state === "PREDICTING" ? colors.warn : tr.state === "LOCKED" ? colors.text : colors.offline;
+      const col = tr.state === "AMBIGUOUS" ? colors.ambiguous : isT ? colors.accent : tr.state === "PREDICTING" ? colors.warn : tr.state === "LOCKED" ? colors.text : colors.offline;
       g.strokeStyle = col; g.lineWidth = (isT ? 3 : 1.5) * dpr;
-      g.setLineDash(tr.state === "PREDICTING" ? [6 * dpr, 4 * dpr] : tr.state === "TENTATIVE" ? [2 * dpr, 3 * dpr] : []);
+      g.setLineDash(tr.state === "PREDICTING" || tr.state === "AMBIGUOUS" ? [6 * dpr, 4 * dpr] : tr.state === "TENTATIVE" ? [2 * dpr, 3 * dpr] : []);
       g.strokeRect(x, y, w, h);
       g.setLineDash([]);
       const label = `${isT ? "TARGET " : ""}#${tr.id} ${tr.state}`, tw = g.measureText(label).width + 8 * dpr, th = 16 * dpr;
@@ -273,7 +276,7 @@ export function initTracking(ctx) {
     const rows = T.replay?.frames;
     for (let k = 0; k < n; k++) {
       let col;
-      if (rows) col = { LOCKED: colors.ok, PREDICTING: colors.warn, LOST: colors.error, SEARCHING: colors.border }[rows[k].target_state];
+      if (rows) col = { LOCKED: colors.ok, PREDICTING: colors.warn, AMBIGUOUS: colors.ambiguous, LOST: colors.error, SEARCHING: colors.border }[rows[k].target_state];
       else { const locked = T.run.frames[k].tracks.filter((t) => t.state === "LOCKED").length; col = locked ? colors.muted : colors.border; g.globalAlpha = locked ? Math.min(1, 0.3 + 0.2 * locked) : 1; }
       g.fillStyle = col; g.fillRect(k * bw, 0, Math.ceil(bw), band); g.globalAlpha = 1;
     }

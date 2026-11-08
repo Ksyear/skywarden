@@ -288,7 +288,7 @@ class Console:
 
 class Handler(BaseHTTPRequestHandler):
     console: Console  # set by make_server
-    server_version = "SecurityDroneA/1"
+    server_version = "Skywarden/1"
 
     def log_request(self, code="-", size="-"):  # log only failures; polling would flood the terminal
         try:

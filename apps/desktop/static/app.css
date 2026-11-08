@@ -13,6 +13,7 @@
   --error: #ff6b6b;
   --offline: #8a919b;
   --sim: #b4a6ff;         /* reserved for SIMULATED */
+  --ambiguous: #f07ab8;   /* target evidence contested: control STOPs */
   --on-accent: #06131b;
   --focus: #ffffff;
 
@@ -82,6 +83,7 @@ h3 { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; le
 .badge[data-tone="sim"] { color: var(--sim); border-color: color-mix(in srgb, var(--sim) 45%, transparent); }
 .badge[data-tone="real"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .badge[data-tone="offline"] { color: var(--offline); }
+.badge[data-tone="ambiguous"] { color: var(--ambiguous); border-color: color-mix(in srgb, var(--ambiguous) 45%, transparent); }
 
 /* ---- Workspace: video + map in the centre, controls column always visible ---- */
 .workspace {
@@ -261,6 +263,7 @@ select, input[type=number] {
 .tl-legend i { height: 8px; width: 10px; }
 .tl-legend i.s-locked { background: var(--ok); }
 .tl-legend i.s-pred { background: var(--warn); }
+.tl-legend i.s-amb { background: var(--ambiguous); }
 .tl-legend i.s-lost { background: var(--error); }
 .tl-legend i.s-search { background: var(--border-strong); }
 .tl-legend i.s-yaw { background: var(--accent); height: 2px; }

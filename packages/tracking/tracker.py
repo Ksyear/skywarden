@@ -1,8 +1,24 @@
-"""Multi-person tracker: constant-velocity Kalman filter per track, Mahalanobis gating, Hungarian assignment.
+"""Multi-person tracker: constant-velocity Kalman filter per track, Mahalanobis gating, conservative association.
 
-Track states: TENTATIVE -> LOCKED (detected this update) <-> PREDICTING (coasting on the model, at most
-`max_coast_s`) -> LOST (removed). There is no appearance model and no re-identification: a person who
-reappears after LOST gets a new id.
+Track states: TENTATIVE -> LOCKED (trusted detection this update) <-> PREDICTING (no detection in the gate) /
+AMBIGUOUS (detections in the gate are contested) -> LOST (removed). There is no appearance model and no
+re-identification: a person who reappears after LOST gets a new id.
+
+Association (motion only, so it cannot tell two people apart when their gates overlap):
+  * Expiry first. A track is alive while t - last_hit_t <= max_coast_s, where last_hit_t is the time of its last
+    TRUSTED detection; strictly greater expires. Expired tracks are removed before any detection is considered, so
+    an id can never be revived by a late detection, whatever the frame spacing.
+  * Gate = squared Mahalanobis distance within chi2 AND pixel distance within max_gate_box_frac x box height.
+  * Confirmed tracks first (LOCKED / PREDICTING / AMBIGUOUS; a selectable target is always one of these). Tracks and
+    detections are linked when the squared Mahalanobis distance is within the chi2 gate. In a connected component
+    with exactly one confirmed track and one detection the detection is trusted (Kalman correction, hits,
+    last_hit_t). Any component with more than one track or more than one detection is AMBIGUOUS: its tracks are not
+    corrected and their last_hit_t is not refreshed (so they still expire on time), and its detections are withheld.
+  * TENTATIVE tracks then take the detections no confirmed track claimed, with gated Hungarian assignment as
+    before; whatever is left starts new tracks. Tentative tracks have wide gates, so letting them make confirmed
+    tracks ambiguous would only churn ids without protecting the target.
+This deliberately trades re-lock rate for safety: a target walking right next to another person stays AMBIGUOUS
+(and the controller stops) until they separate, and a re-lock after a crossing is not guaranteed.
 """
 from __future__ import annotations
 
@@ -20,6 +36,7 @@ class TrackState(str, Enum):
     TENTATIVE = "TENTATIVE"
     LOCKED = "LOCKED"
     PREDICTING = "PREDICTING"
+    AMBIGUOUS = "AMBIGUOUS"
     LOST = "LOST"
 
 
@@ -51,6 +68,10 @@ class TrackerConfig:
     meas_noise_px: float = 6.0
     gate_chi2: float = CHI2_2DOF_99
     max_coast_s: float = 2.0
+    # Physical cap on the association radius: a detection further than this fraction of the track's box height from
+    # the prediction is never linked, however large the coasting covariance has grown. Without it a track coasting
+    # for 1.5 s (gate ~500 px) swallows unrelated people and makes everyone around it ambiguous.
+    max_gate_box_frac: float = 0.5
     confirm_hits: int = 3
     min_score: float = 0.3
 
@@ -88,6 +109,9 @@ class TrackerStats:
     rejected_invalid: int = 0
     created: int = 0
     lost: int = 0
+    expired_before_association: int = 0
+    ambiguous_track_updates: int = 0
+    detections_withheld: int = 0  # contested detections that neither corrected a track nor started one
 
 
 class MultiTracker:
@@ -133,39 +157,95 @@ class MultiTracker:
         for tr in self.tracks:
             self._predict(tr, dt)
 
-        # Gated Hungarian assignment on squared Mahalanobis distance.
-        matched_t, matched_d = set(), set()
-        if self.tracks and dets:
+        # 1. Expire before association: no detection may revive a track older than the coast limit.
+        for tr in self.tracks:
+            if t - tr.last_hit_t > self.cfg.max_coast_s:
+                tr.state = TrackState.LOST
+                self.stats.lost += 1
+                self.stats.expired_before_association += 1
+        self.tracks = [tr for tr in self.tracks if tr.state != TrackState.LOST]
+
+        def gated(tr: Track, d: Detection) -> float | None:
+            y, S = self._innovation(tr, d.center)
+            m2 = float(y @ np.linalg.solve(S, y))
+            near = float(np.hypot(*y)) <= self.cfg.max_gate_box_frac * float(tr.size[1])
+            return m2 if m2 <= self.cfg.gate_chi2 and near else None
+
+        confirmed = [tr for tr in self.tracks if tr.state != TrackState.TENTATIVE]
+        tentative = [tr for tr in self.tracks if tr.state == TrackState.TENTATIVE]
+
+        # 2. Gate graph of confirmed tracks vs all detections; connected components via union-find
+        #    (tracks 0..n-1, detections n..n+m-1).
+        n, m = len(confirmed), len(dets)
+        parent = list(range(n + m))
+
+        def root(a: int) -> int:
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for i, tr in enumerate(confirmed):
+            for j, d in enumerate(dets):
+                if gated(tr, d) is not None:
+                    parent[root(i)] = root(n + j)
+        comp_tracks: dict[int, list[int]] = {}
+        comp_dets: dict[int, list[int]] = {}
+        for i in range(n):
+            comp_tracks.setdefault(root(i), []).append(i)
+        for j in range(m):
+            comp_dets.setdefault(root(n + j), []).append(j)
+
+        # 3. Update confirmed tracks per component.
+        free = []
+        for c in set(comp_tracks) | set(comp_dets):
+            ti, dj = comp_tracks.get(c, []), comp_dets.get(c, [])
+            if not ti:
+                free += dj  # no confirmed track claims these detections
+            elif len(ti) == 1 and len(dj) == 1:
+                tr = confirmed[ti[0]]
+                self._correct(tr, dets[dj[0]])
+                tr.hits += 1
+                tr.last_hit_t = t
+                tr.state = TrackState.LOCKED if tr.hits >= self.cfg.confirm_hits else TrackState.TENTATIVE
+            elif not dj:
+                for i in ti:
+                    confirmed[i].state = TrackState.PREDICTING
+            else:  # contested: no correction, no trusted time, detections withheld
+                self.stats.detections_withheld += len(dj)
+                for i in ti:
+                    confirmed[i].state = TrackState.AMBIGUOUS
+                    self.stats.ambiguous_track_updates += 1
+
+        # 4. Tentative tracks take unclaimed detections (gated Hungarian); the rest start new tracks.
+        spawn, hit_now = set(free), set()
+        if tentative and free:
             big = 1e6
-            cost = np.full((len(self.tracks), len(dets)), big)
-            for i, tr in enumerate(self.tracks):
-                for j, d in enumerate(dets):
-                    y, S = self._innovation(tr, d.center)
-                    m2 = float(y @ np.linalg.solve(S, y))
-                    if m2 <= self.cfg.gate_chi2:
-                        cost[i, j] = m2
-            for i, j in zip(*linear_sum_assignment(cost)):
-                if cost[i, j] < big:
-                    self._correct(self.tracks[i], dets[j])
-                    tr = self.tracks[i]
+            cost = np.full((len(tentative), len(free)), big)
+            for i, tr in enumerate(tentative):
+                for jj, j in enumerate(free):
+                    m2 = gated(tr, dets[j])
+                    if m2 is not None:
+                        cost[i, jj] = m2
+            for i, jj in zip(*linear_sum_assignment(cost)):
+                if cost[i, jj] < big:
+                    tr = tentative[i]
+                    self._correct(tr, dets[free[jj]])
                     tr.hits += 1
                     tr.last_hit_t = t
                     tr.state = TrackState.LOCKED if tr.hits >= self.cfg.confirm_hits else TrackState.TENTATIVE
-                    matched_t.add(i)
-                    matched_d.add(j)
-
-        for i, tr in enumerate(self.tracks):
-            if i in matched_t:
-                continue
-            if tr.state == TrackState.TENTATIVE or t - tr.last_hit_t > self.cfg.max_coast_s:
-                tr.state = TrackState.LOST
+                    hit_now.add(tr.id)
+                    spawn.discard(free[jj])
+        for tr in tentative:
+            if tr.id not in hit_now:
+                tr.state = TrackState.LOST  # an unconfirmed track that misses a frame is dropped
+        for tr in self.tracks:
+            if tr.state == TrackState.LOST:
                 self.stats.lost += 1
-            else:
-                tr.state = TrackState.PREDICTING
 
         self.tracks = [tr for tr in self.tracks if tr.state != TrackState.LOST]
         for j, d in enumerate(dets):
-            if j not in matched_d:
+            if j in spawn:
                 P = np.diag([self.cfg.meas_noise_px ** 2] * 2 + [200.0 ** 2] * 2)
                 self.tracks.append(Track(self._next_id, np.r_[d.center, 0.0, 0.0], P, d.size.copy(),
                                          last_hit_t=t, created_t=t))
@@ -184,29 +264,35 @@ class TargetState(str, Enum):
     SEARCHING = "SEARCHING"  # no target chosen
     LOCKED = "LOCKED"
     PREDICTING = "PREDICTING"
+    AMBIGUOUS = "AMBIGUOUS"  # detections near the target are contested: motion alone cannot tell who is who
     LOST = "LOST"  # the chosen id is gone; the operator must pick again (no automatic re-acquisition)
 
 
 @dataclass
 class TargetSelector:
-    """The operator picks one track id. The selector never switches to another person on its own."""
+    """The operator picks one track id. The selector never switches to another person on its own, and once the
+    target is LOST it stays LOST until the operator calls select() again."""
     target_id: int | None = None
     history: list[tuple[float, str]] = field(default_factory=list)
+    _lost: bool = False
 
     def select(self, track_id: int | None) -> None:
         self.target_id = track_id
+        self._lost = False
 
     def evaluate(self, tracker: MultiTracker) -> tuple[TargetState, Track | None]:
         if self.target_id is None:
             st, tr = TargetState.SEARCHING, None
         else:
-            tr = tracker.get(self.target_id)
+            tr = None if self._lost else tracker.get(self.target_id)
             if tr is None:
-                st = TargetState.LOST
+                st, self._lost = TargetState.LOST, True
             elif tr.state == TrackState.LOCKED:
                 st = TargetState.LOCKED
             elif tr.state == TrackState.PREDICTING:
                 st = TargetState.PREDICTING
+            elif tr.state == TrackState.AMBIGUOUS:
+                st = TargetState.AMBIGUOUS
             else:
                 st = TargetState.SEARCHING  # still tentative
         if not self.history or self.history[-1][1] != st.value:

@@ -72,6 +72,7 @@ def replay_control(frames: list[dict], image_width: int, target_id: int, select_
             "frames_after_select": len(after),
             "locked": sum(1 for r in after if r["target_state"] == "LOCKED"),
             "predicting": sum(1 for r in after if r["target_state"] == "PREDICTING"),
+            "ambiguous": sum(1 for r in after if r["target_state"] == "AMBIGUOUS"),
             "lost_from_k": next((r["k"] for r in after if r["target_state"] == "LOST"), None),
             "nonzero_yaw": sum(1 for r in after if r["yaw"] != 0),
             "nonzero_yaw_while_not_locked": sum(1 for r in after if r["yaw"] != 0 and r["target_state"] != "LOCKED"),
