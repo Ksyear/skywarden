@@ -13,6 +13,7 @@
   <div class="segmented" role="group" aria-label="Workspace">
     <button type="button" id="mode-map" aria-pressed="true" title="Mapping workspace (M)">Mapping</button>
     <button type="button" id="mode-track" aria-pressed="false" title="Person tracking workspace (T)">Tracking</button>
+    <button type="button" id="mode-live" aria-pressed="false" title="Live run: play a video (or webcam) through detection, tracking, VO and MOCK control (L)">Live</button>
   </div>
   <span class="session" id="session-label">no map loaded</span>
   <div class="badges" id="badges" aria-label="Map labels"></div>
@@ -224,6 +225,83 @@
   </aside>
 </main>
 
+<main class="workspace track-ws" id="ws-live" hidden>
+  <section class="panel tvideo" aria-labelledby="live-title">
+    <div class="panel-head">
+      <h2 id="live-title">Live run</h2>
+      <div class="badges" id="l-badges"></div>
+      <span class="spacer"></span>
+      <span class="badge" id="l-state" data-tone="offline">NO RUN</span>
+    </div>
+    <div class="track-stage" id="l-stage">
+      <canvas id="l-canvas" tabindex="0" aria-label="Latest processed frame with person boxes. Click a confirmed box to choose the target."></canvas>
+      <div class="overlay tl" id="l-overlay"></div>
+      <div class="empty" id="l-empty">
+        <strong id="l-empty-title">No live run</strong>
+        <p id="l-empty-text">Pick a video (or a webcam) on the right and press <b>Start</b>. Frames are processed at their original time base; when processing falls behind, older frames are dropped and counted.</p>
+      </div>
+    </div>
+    <div class="transport">
+      <button class="btn icon" id="l-pause" aria-label="Pause (Space)" disabled>❚❚</button>
+      <button class="btn icon" id="l-resume" aria-label="Resume" disabled>▶︎</button>
+      <input type="range" id="l-seek" min="0" max="0" step="0.1" value="0" aria-label="Seek to media time (file sources)" disabled>
+      <span class="frame-meta" id="l-time">—</span>
+      <button class="btn danger" id="l-stop" disabled>Stop</button>
+    </div>
+    <div class="readouts">
+      <div class="readout">
+        <h3>Target <span class="badge" id="l-tstate" data-tone="offline">NO TARGET</span> <span class="mono" id="l-tid"></span></h3>
+        <div class="yawbar" aria-hidden="true"><div class="zero"></div><div class="fill" id="l-yawfill"></div></div>
+        <div class="big mono" id="l-yaw">—</div>
+        <p class="muted" id="l-stop-reasons">Click a confirmed (LOCKED) box to choose the target. LOST needs a new choice; nothing is chosen automatically.</p>
+        <button class="btn" id="l-clear" type="button" disabled>Clear target</button>
+        <p class="muted small">MOCK yaw from the live pipeline; never transmitted. lateral / forward / vertical are always 0.</p>
+      </div>
+      <div class="readout">
+        <h3>Camera pose (VO) <span class="badge" id="l-vostate" data-tone="offline">—</span></h3>
+        <canvas id="l-vo" height="150" aria-label="Top view of the visual-odometry path of the current segment"></canvas>
+        <p class="muted small" id="l-vometa">VO path of the current segment only: relative scale, no loop closure. Map position: NOT_AVAILABLE (relocalisation in a stored map is not implemented).</p>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side" aria-label="Live run controls">
+    <section class="panel" aria-labelledby="lrun-title">
+      <div class="panel-head"><h2 id="lrun-title">Start a run</h2></div>
+      <form class="panel-body" id="l-form">
+        <div class="field"><label for="l-input">Input</label><select id="l-input"></select></div>
+        <div class="row">
+          <div class="field"><label for="l-rate">Pace</label><select id="l-rate"><option value="realtime">original time base</option><option value="max">as fast as possible</option></select></div>
+          <div class="field"><label for="l-max">Max seconds</label><input id="l-max" type="number" min="1" max="600" step="1" value="30"></div>
+        </div>
+        <button class="btn primary" id="l-start" type="submit" disabled>Start</button>
+        <div class="notice" id="l-msg" role="status" aria-live="polite">Idle.</div>
+      </form>
+    </section>
+    <section class="panel" aria-labelledby="levents-title">
+      <div class="panel-head"><h2 id="levents-title">Events</h2></div>
+      <div class="panel-body"><ul class="tracklist" id="l-events"></ul></div>
+    </section>
+    <section class="panel safety" aria-labelledby="lsafety-title">
+      <div class="panel-head"><h2 id="lsafety-title">Vehicle link</h2><span class="spacer"></span><span class="badge" data-tone="offline">NO REAL DRONE</span></div>
+      <div class="panel-body"><dl>
+        <dt>HARDWARE_ARMED</dt><dd class="armed-mirror">false</dd>
+        <dt>DRY_RUN</dt><dd class="dryrun-mirror">true</dd>
+        <dt>Commands</dt><dd>MOCK · not transmitted</dd>
+        <dt>Person position</dt><dd>2D box only (no 3D)</dd>
+      </dl></div>
+    </section>
+  </aside>
+</main>
+
+<footer class="statusbar" id="statusbar-live" aria-label="Live run metrics" hidden>
+  <span>input <b id="lm-input">—</b></span>
+  <span>processed <b id="lm-fps">—</b></span>
+  <span>latency p95 <b id="lm-lat">—</b></span>
+  <span>dropped <b id="lm-drop">—</b></span>
+  <span>epoch <b id="lm-epoch">—</b></span>
+  <span>data <b id="lm-age">—</b></span>
+</footer>
 <footer class="statusbar" id="statusbar-track" aria-label="Tracking metrics" hidden>
   <span>frames <b id="tm-frames">—</b></span>
   <span>detect p50/p95 <b id="tm-det">—</b></span>

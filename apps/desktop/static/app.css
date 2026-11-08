@@ -303,3 +303,6 @@ select, input[type=number] {
 .cov-legend i.c-jump { background: var(--warn); }
 .cov-legend i.c-cut { background: var(--text); width: 2px; }
 #model-select { width: auto; max-width: 100%; }
+
+#l-vo { width: 100%; height: 150px; display: block; border-radius: var(--radius); background: var(--panel); }
+.badge[data-tone="stale"] { color: var(--warn); border-color: var(--warn); }

@@ -30,6 +30,7 @@ from mapping.frame_source import IMAGE_SUFFIXES, VIDEO_SUFFIXES  # noqa: E402
 from mapping.labels import DataOrigin, is_synthetic_input  # noqa: E402
 from control.virtual_replay import replay_control  # noqa: E402
 from vision.person_detector import MODELS  # noqa: E402
+from vision.live_run import verify_run  # noqa: E402
 
 HARDWARE_ARMED = False  # this app never talks to a drone; kept explicit for the UI contract
 DRY_RUN = True
@@ -39,6 +40,8 @@ SESSION_FILES = {"sparse.ply", "trajectory.json", "frames.json", "map_report.jso
                  "dense/dense_verified.ply", "dense/dense_report.json"}
 MODEL_FILE = re.compile(r"^models/\d{1,3}/(sparse\.ply|sparse_filtered\.ply|trajectory\.json|model_report\.json)$")
 TRACK_FILES = {"tracks.json", "tracking_report.json"}
+RUN_FILES = {"tracks.json", "run_report.json", "timeline.jsonl", "frames/latest.jpg"}
+RUN_OPS = {"pause", "resume", "seek", "stop", "select", "clear"}
 FRAME_FILE = re.compile(r"^frames/f\d{6}\.jpg$")
 STALE_AFTER_S = 20.0  # a running build that has not updated status.json for this long is shown as stale
 
@@ -77,12 +80,16 @@ class JobKind:
 
 
 class Console:
-    def __init__(self, maps_root: Path, input_roots: dict[Path, DataOrigin], tracks_root: Path | None = None):
+    def __init__(self, maps_root: Path, input_roots: dict[Path, DataOrigin], tracks_root: Path | None = None,
+                 runs_root: Path | None = None):
         self.maps_root = maps_root
         self.input_roots = input_roots
         self.kinds = {"maps": JobKind("maps", maps_root, "map_report.json", frozenset(SESSION_FILES)),
                       "tracks": JobKind("tracks", tracks_root or maps_root.parent / "tracks", "tracking_report.json",
-                                        frozenset(TRACK_FILES))}
+                                        frozenset(TRACK_FILES)),
+                      "runs": JobKind("runs", runs_root or maps_root.parent / "runs", "run_report.json", frozenset(RUN_FILES))}
+        self._verify_cache: dict[str, tuple[float, dict]] = {}
+        self._control_seq: dict[str, int] = {}
         self._procs: dict[tuple[str, str], subprocess.Popen] = {}
         self._lock = threading.Lock()
         self._start_lock = threading.Lock()  # serialises check-then-spawn so two requests cannot both start
@@ -141,6 +148,15 @@ class Console:
             tail = (sd / "process.log").read_text(errors="replace").strip().splitlines()[-1:] or ["no output"]
             return {"id": sid, "state": "INTERRUPTED", "status": {"message": tail[0]}, "evaluation": None}
         state = (status or {}).get("state") or report.get("status")
+        if kind == "runs" and state != "RUNNING":
+            # a finished live run counts as complete only if its files check out (rows, sha256, frames manifest)
+            key = (sd / "run_report.json").stat().st_mtime if (sd / "run_report.json").exists() else 0.0
+            cached = self._verify_cache.get(sid)
+            if not cached or cached[0] != key:
+                cached = (key, verify_run(sd))
+                self._verify_cache[sid] = cached
+            state = cached[1]["state"]
+            status = {**(status or {}), "verify": cached[1]}
         info = {"id": sid, "state": state, "status": status}
         if kind == "maps":
             info["evaluation"] = _read_json(sd / "evaluation.json")
@@ -169,6 +185,13 @@ class Console:
             except KeyError:
                 continue
             rep = s.get("report") or {}
+            if kind == "runs":
+                out.append({"id": d.name, "state": s["state"], "kind": "runs", "labels": rep.get("labels"),
+                            "model": (rep.get("detector") or {}).get("name"),
+                            "frames": (rep.get("counts") or {}).get("processed"),
+                            "tracks_confirmed": None, "end_reason": rep.get("end_reason"),
+                            "created_at": (s.get("status") or {}).get("started_at")})
+                continue
             if kind == "tracks":
                 out.append({"id": d.name, "state": s["state"], "labels": rep.get("labels"),
                             "model": (rep.get("detector") or {}).get("name"), "frames": rep.get("frames_processed"),
@@ -228,8 +251,8 @@ class Console:
             return self._start_job(body)
 
     def _start_job(self, body: dict) -> str:
-        if self.running_job() or self.running_job("tracks"):
-            raise RuntimeError("Another job is running (map build or tracking run). Cancel it or wait for it to finish.")
+        if self.running_job() or self.running_job("tracks") or self.running_job("runs"):
+            raise RuntimeError("Another job is running (map build, tracking or live run). Cancel it or wait for it to finish.")
         item = self._input(body)
         fps = float(body.get("fps", 3.0))
         max_frames = int(body.get("max_frames", 150))
@@ -247,8 +270,8 @@ class Console:
     def start_track_job(self, body: dict) -> str:
         with self._start_lock:
             # One job at a time across both kinds: COLMAP and the detector would otherwise skew each other's timings.
-            if self.running_job("tracks") or self.running_job():
-                raise RuntimeError("Another job is running (map build or tracking run). Cancel it or wait for it to finish.")
+            if self.running_job("tracks") or self.running_job() or self.running_job("runs"):
+                raise RuntimeError("Another job is running (map build, tracking or live run). Cancel it or wait for it to finish.")
             item = self._input(body)
             model = body.get("model", "yolox_nano")
             fps = float(body.get("fps", 10.0))
@@ -264,11 +287,111 @@ class Console:
                                         "--max-frames", str(max_frames)])
             return sid
 
-    def control_replay(self, sid: str, body: dict) -> dict:
-        state = self.session_state(sid, "tracks")
+    def start_run_job(self, body: dict) -> str:
+        with self._start_lock:
+            if self.running_job() or self.running_job("tracks") or self.running_job("runs"):
+                raise RuntimeError("Another job is running (map build, tracking or live run). Stop it or wait.")
+            src = str(body.get("input_id") or "")
+            if re.fullmatch(r"webcam:\d{1,2}", src):
+                item, target = {"label": src.replace(":", "_"), "origin": "REAL_VIDEO"}, src
+            else:
+                item = self._input(body)
+                if item["kind"] != "video":
+                    raise ValueError("Live runs need a video file (or webcam:N)")
+                target = str(ROOT / item["id"])
+            rate = body.get("rate", "realtime")
+            if rate not in ("realtime", "max"):
+                raise ValueError("rate must be realtime or max")
+            sid = self._new_session("runs", body, item)
+            cmd = [sys.executable, "-m", "vision.live_run", target, "--session", sid,
+                   "--runs-root", str(self.kinds["runs"].root), "--rate", rate]
+            if body.get("max_seconds"):
+                cmd += ["--max-seconds", str(float(body["max_seconds"]))]
+            self._spawn("runs", sid, cmd)
+            self._control_seq[sid] = 0
+            return sid
+
+    def run_control(self, sid: str, body: dict) -> dict:
+        """Queue a control command for a running live run (atomic control.json with increasing seq)."""
+        op = body.get("op")
+        if op not in RUN_OPS:
+            raise ValueError(f"op must be one of {sorted(RUN_OPS)}")
+        sd = self.session_dir(sid, "runs")
+        if not sd.is_dir():
+            raise KeyError(sid)
+        with self._lock:
+            proc = self._procs.get(("runs", sid))
+        if proc is None or proc.poll() is not None:
+            raise RuntimeError("This run is not running (controls only apply to a live run)")
+        status = _read_json(sd / "status.json") or {}
+        applied = int(status.get("control_seq_applied") or 0)
+        seq = max(self._control_seq.get(sid, 0), applied) + 1
+        self._control_seq[sid] = seq
+        args = body.get("args") if isinstance(body.get("args"), dict) else {}
+        prev = _read_json(sd / "control.json") or {}
+        queue = [c for c in prev.get("queue", []) if c.get("seq", 0) > applied] + [{"seq": seq, "op": op, "args": args}]
+        tmp = sd / ".control.json.tmp"
+        tmp.write_text(json.dumps({"queue": queue}))
+        tmp.replace(sd / "control.json")
+        return {"seq": seq, "queued": len(queue), "applied_so_far": applied}
+
+    def run_latest(self, sid: str) -> dict:
+        """Status plus the newest frame row of the timeline (read from the file tail, never the whole file)."""
+        sd = self.session_dir(sid, "runs")
+        st = self.session_state(sid, "runs")
+        row = None
+        tl = sd / "timeline.jsonl"
+        if tl.exists():
+            with open(tl, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - 262144))
+                for line in reversed(fh.read().splitlines()):
+                    try:
+                        r = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if r.get("type") == "frame":
+                        row = r
+                        break
+        header = None
+        if tl.exists():
+            with open(tl) as fh:
+                try:
+                    header = json.loads(fh.readline())
+                except json.JSONDecodeError:
+                    header = None
+        return {"state": st, "row": row, "image_wh": (header or {}).get("image_wh"),
+                "labels": (header or {}).get("labels"), "server_time": time.time()}
+
+    def run_vo_path(self, sid: str) -> dict:
+        """Camera positions of the newest VO segment of the newest epoch (relative scale; not a map frame)."""
+        sd = self.session_dir(sid, "runs")
+        rows = []
+        tl = sd / "timeline.jsonl"
+        if tl.exists():
+            for line in tl.read_text().splitlines():
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("type") == "frame":
+                    rows.append(r)
+        if not rows:
+            return {"segment": None, "points": []}
+        last = rows[-1]
+        seg = [r for r in rows if r.get("epoch") == last.get("epoch") and r.get("vo_segment") == last.get("vo_segment")
+               and r.get("T_world_camera")]
+        pts = [[r["run_t"], r["T_world_camera"][0][3], r["T_world_camera"][1][3], r["T_world_camera"][2][3], r.get("vo_state")]
+               for r in seg[:: max(1, len(seg) // 600)]]
+        return {"epoch": last.get("epoch"), "segment": last.get("vo_segment"), "points": pts,
+                "label": "VO path of the current segment: relative scale, no loop closure, not registered to any map"}
+
+    def control_replay(self, sid: str, body: dict, kind: str = "tracks") -> dict:
+        state = self.session_state(sid, kind)
         if state["state"] != "SUCCEEDED":
             raise RuntimeError(f"Tracking run {sid} is {state['state']}; only finished runs can be replayed.")
-        rec = _read_json(self.session_dir(sid, "tracks") / "tracks.json")
+        rec = _read_json(self.session_dir(sid, kind) / "tracks.json")
         if rec is None:
             raise RuntimeError("tracks.json is missing or unreadable")
         try:
@@ -362,12 +485,29 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._json({"ok": True, "hardware_armed": HARDWARE_ARMED, "dry_run": DRY_RUN,
                                    "server_time": datetime.now(timezone.utc).isoformat(), "running_job": c.running_job(),
-                                   "running_track_job": c.running_job("tracks")})
+                                   "running_track_job": c.running_job("tracks"), "running_run_job": c.running_job("runs")})
             if path == "/api/models":
                 return self._json([{"name": m.name, "license": m.license, "input_size": m.input_size,
                                     "available": (ROOT / "data/models/yolox" / m.file).is_file()} for m in MODELS.values()])
             if path == "/api/tracks":
                 return self._json(c.sessions("tracks"))
+            if path == "/api/runs":
+                return self._json(c.sessions("runs"))
+            m = re.match(r"^/api/runs/([^/]+)$", path)
+            if m:
+                return self._json(c.session_state(m.group(1), "runs"))
+            m = re.match(r"^/api/runs/([^/]+)/latest$", path)
+            if m:
+                return self._json(c.run_latest(m.group(1)))
+            m = re.match(r"^/api/runs/([^/]+)/vo$", path)
+            if m:
+                return self._json(c.run_vo_path(m.group(1)))
+            m = re.match(r"^/api/runs/([^/]+)/files/(.+)$", path)
+            if m:
+                sid, name = m.groups()
+                if name not in RUN_FILES and not FRAME_FILE.match(name):
+                    return self._error(404, "file not served")
+                return self._file(c.session_dir(sid, "runs") / name, "no-store" if name == "frames/latest.jpg" or not name.startswith("frames/") else "private, max-age=3600")
             m = re.match(r"^/api/tracks/([^/]+)$", path)
             if m:
                 return self._json(c.session_state(m.group(1), "tracks"))
@@ -417,6 +557,18 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/tracks/([^/]+)/control$", path)
             if m:
                 return self._json(self.console.control_replay(m.group(1), body))
+            if path == "/api/run-jobs":
+                return self._json({"session": self.console.start_run_job(body)}, 202)
+            m = re.match(r"^/api/runs/([^/]+)/control$", path)
+            if m:
+                return self._json(self.console.run_control(m.group(1), body), 202)
+            m = re.match(r"^/api/runs/([^/]+)/replay$", path)
+            if m:
+                return self._json(self.console.control_replay(m.group(1), body, "runs"))
+            m = re.match(r"^/api/run-jobs/([^/]+)/cancel$", path)
+            if m:
+                ok = self.console.cancel_job(m.group(1), "runs")
+                return self._json({"cancelled": ok}, 202 if ok else 409)
             return self._error(404, "not found")
         except KeyError:
             return self._error(404, "unknown session")
@@ -429,13 +581,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def make_server(host: str, port: int, maps_root: Path, input_roots: dict[Path, DataOrigin] | None = None,
-                tracks_root: Path | None = None):
+                tracks_root: Path | None = None, runs_root: Path | None = None):
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("Refusing to bind beyond localhost; this console has no authentication.")
     roots = input_roots or {ROOT / "assets" / "input": DataOrigin.REAL_VIDEO,
                             ROOT / "data" / "public": DataOrigin.PUBLIC_DATASET,
                             ROOT / "outputs" / "synthetic": DataOrigin.SYNTHETIC}
-    handler = type("BoundHandler", (Handler,), {"console": Console(maps_root, roots, tracks_root)})
+    handler = type("BoundHandler", (Handler,), {"console": Console(maps_root, roots, tracks_root, runs_root)})
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     return httpd
@@ -447,9 +599,10 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8780)
     ap.add_argument("--maps-root", default=str(ROOT / "outputs" / "maps"))
     ap.add_argument("--tracks-root", default=str(ROOT / "outputs" / "tracks"))
+    ap.add_argument("--runs-root", default=str(ROOT / "outputs" / "runs"))
     a = ap.parse_args()
     try:
-        httpd = make_server(a.host, a.port, Path(a.maps_root), tracks_root=Path(a.tracks_root))
+        httpd = make_server(a.host, a.port, Path(a.maps_root), tracks_root=Path(a.tracks_root), runs_root=Path(a.runs_root))
     except OSError as e:
         raise SystemExit(f"Cannot listen on {a.host}:{a.port} ({e.strerror}). Another program uses this port; "
                          f"run scripts/run_demo.sh --port <free port>.")

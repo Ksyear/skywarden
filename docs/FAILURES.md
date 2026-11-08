@@ -99,8 +99,70 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 
 **Verification:** `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` against the user's already-open Dia window — 51 / 51, 0 console errors, "tracking run finishes and auto-loads" PASS with detail "Run finished. 40 frames, 5 confirmed tracks.". Attach mode needed two test-script fixes (not product bugs): `Page.bringToFront` because background tabs get throttled timers (disconnect/reconnect checks timed out), and a pre-reload marker so the reload check cannot pass on the pre-reload document. Headless `--browser` mode still exists.
 
+## F-07 Frame-gap guard refused valid inputs (mapping quality work, 2026-11-09)
+
+**Status:** fixed (guard narrowed); the three refused runs are kept as FAILED reports.
+
+**Observed** (`outputs/maps/*/map_report.json`, `status=FAILED`, `failure.stage=SELECT_FRAMES`, `recoverable=true`):
+- `mq_bangkok_60s_after`: "selected frames are up to 1.33 s apart (> 1.0 s): the cap of 150 frames would break overlap. Use a shorter section or a higher --max-frames." (180 candidates, 4 blur-rejected, 26 dropped by cap, 18 cuts).
+- `mq_utrecht_follow_0035_0135`: same message, 1.33 s (27 dropped by cap).
+- `mq_utrecht_follow_0035_0135_mf300`: "up to 1.00 s apart (> 1.0 s)" — the measured gap was 1.001 s with 0 frames dropped by the cap, so the cap was not the cause.
+- Implementer-reported, no report archived: the same guard refused TUM fr1/desk, which rates GOOD and has ground truth.
+
+**Diagnosis:** the guard treated any kept-pair gap above 1.0 s as fatal, including gaps that come from the clip itself (blur rejection, cuts, 3 fps sampling) rather than from the 150-frame cap.
+
+**Fix:** the gap check is fatal only when the frame cap caused the gap; `frames.max_gap_s` is still written and the quality verdict still checks `max_internal_gap_s <= 2.0 s`. Recovery runs that followed: `mq_bangkok_60s_after_mf300` (`--max-frames 300`, 176 selected, 0 dropped, max gap 1.0 s) built but rated POOR; `mq_utrecht_follow_0035_0135_fps5` (step 6, 298 selected, max gap 0.601 s) rated PARTIAL.
+
+## F-08 Per-segment diagnosis detector does not separate the FSC drift (plan B, 2026-11-09)
+
+**Status:** FAIL against the frozen expectation; reported, not tuned. Drift cause not confirmed by it.
+
+**Expected (frozen in `docs/PLAN_GEOMETRY_AND_DENSE.md` B):** FSC windows covering 59.7-70.4 s carry at least one flag, windows before 55 s none; Sumida zero flags.
+
+**Observed:** `outputs/maps/mq_sumida_0025_0125/diagnosis_segments.json` flags 9 of 23 windows (`new_over_old_out_of_band`, `r_out_of_band`) on a GOOD map with 0 jumps; `outputs/maps/mq_fsc_campus_aerial/diagnosis_segments.json` flags 0 of 28 windows although the same model has 23 time-normalised jumps at 59.7-70.7 s. `outputs/evidence/geometry/diagnose_mq_fsc_campus_aerial.json`: r median 2.074, by thirds 2.221 / 1.515 / 3.094 — the late third is inside the [1/3, 3] band. The disagreement itself is measured in `outputs/evidence/geometry/fsc_late_stretch_speed.json`: incremental camera speed 10.3x the clip median at 59.7-71 s (0.97-1.06x before), global 1.04x, while source image flow at 58-70 s is 0.34-0.41 px/frame against 0.43-1.18 at 10-50 s.
+
+**What was done instead:** the comparison experiment C1 (global mapper) removed the FSC jumps (23 -> 0) and kept the Sumida guard, so the global mapper became the default on the strength of jumps, registration, reprojection and point counts; the "flagged windows decrease" criterion was declared not evaluable. The `low_confidence_windows` field stays in `coverage.json` but is not used as a guard.
+
+**Next test:** redefine or recalibrate the window statistics only in a new plan section with a new baseline table (the plan forbids silent threshold edits); until then, FSC drift under the incremental mapper is "reconstruction and image motion disagree in 59.7-70.4 s; cause not confirmed".
+
+## F-09 Dense route: rectified SGBM degenerate for forward motion; mesh visual check FAIL (2026-11-09)
+
+**Status:** depth method replaced (criteria unchanged), dense PASS on two sessions; mesh remains EXPERIMENTAL with a FAIL visual check.
+
+**Observed 1 (method):** the planned rectified two-view SGBM has no usable disparity when the baseline lies along the optical axis (walking or flying forward puts the epipole inside the image). Recorded in every `dense_report.json` under `deviation_from_plan`. Replacement: CPU plane-sweep MVS (ZNCC, best 2 of 4 neighbours, 640 px). D3 verification thresholds (sparse agreement >= 0.70, consistency kept >= 0.30) unchanged.
+
+**Observed 2 (PatchMatch):** `outputs/evidence/dense/patch_match_probe.txt` — pycolmap 4.2.1 raises "Dense stereo reconstruction requires CUDA or HIP, neither of which is available on your system." BLOCKED on this Mac, not retried.
+
+**Observed 3 (synthetic acceptance):** `outputs/evidence/dense/synthetic_room_surface_check.json` — dense points lie on the true room surfaces (p50 0.0095 room units, 97.8 % within 0.05) yet acceptance is FAIL because only 3 of 8 views pass the consistency share, whose frozen definition counts non-overlapping pixels. Definition kept; the FAIL stands beside the surface measurement.
+
+**Observed 4 (mesh):** Poisson depth 10 on verified dense points. The multi-threaded run aborts, so it runs single-threaded in a child process. `mesh.visual_check.result = FAIL` in `outputs/maps/mqg_{sumida_0025_0125,fsc_campus_aerial}/dense/dense_report.json`: FSC shows roofs and trees but radial streak artefacts converging near the image centre (cause not confirmed); Sumida covers only a few trees (no ground points). Decision: not offered as a console layer; verified dense points remain the shape result. Evidence `outputs/evidence/dense/*_mesh_sameview*.jpg`.
+
+**Remaining gaps:** ground directly in front of the walking camera mostly empty (repetitive paving at a steep angle); some cloud points at the top of Sumida views; 9 of 117 Sumida views REJECTED.
+
+## F-10 Monocular VO against SfM fails with an estimated focal length (2026-11-09)
+
+**Status:** FAIL for the independent configuration; PASS only with a non-independent focal. Kept as measured.
+
+**Observed** (`outputs/evidence/vo/README.txt`, `sumida_fxest_vs_colmap.json`, `sumida_fxcolmap_vs_colmap.json`): Sumida 0-60 s, 900 processed frames. Estimated K (fx = 0.9 x width): Sim(3) RMSE vs the SfM trajectory 3.644 over an SfM path of 15.663 = 23.3 % (criterion <= 15 %) -> FAIL. Focal borrowed from the SfM-refined camera (about 0.52 x width, distortion ignored): 0.401 / 15.666 = 2.56 % -> PASS, but the reference and the intrinsics come from the same reconstruction, so it is not independent evidence.
+
+**Reading:** the wide-angle clip makes the 0.9 x width focal guess wrong; a calibrated camera matters more than the tracker. Also recorded: one development fix before these numbers (homography preferred on a planar-dominant synthetic scene discarded real translation; fixed, criteria unchanged, first failing run kept under `outputs/evidence/vo/dev_log/`).
+
+**Next test:** a clip with a known calibration (or the user's own camera with a checkerboard) so the VO focal is independent of SfM.
+
+## F-11 Utrecht follow clip: PARTIAL under both mappers, unresolved (2026-11-09)
+
+**Observed:** incremental at 5 fps (`mq_utrecht_follow_0035_0135_fps5`): 2 models 216 + 37 of 298, PARTIAL (two models >= 10 %), 0 jumps. Global (`mqg_utrecht_fps5`): one model 298/298, 81,007 points, 0.517 px, but 43 time-normalised jumps: 35 consecutive 0.2 s steps at 0.40-7.21 s with factors 6.3-12.5 (start of the path stretched), 4 at 44.6-45.8 s (factors 42-215), 4 at 50.3-51.1 s (11-210), 1 at 52.3 s (5.9) -> PARTIAL. View `outputs/evidence/map_quality/views/utrecht_global_topview.jpg`.
+
+**Hypothesis:** the camera follows a walking person who fills much of the frame; features on the person are not static scene and RANSAC alone may not reject them.
+
+**Test run (not adopted):** `outputs/experiments/utrecht_global_masked/map_report.json` (`packages/mapping/mask_people_experiment.py`) — same 298 frames, YOLOX-nano person boxes padded 10 % and masked out of feature extraction (masked pixel share p50 20.6 %, max 62.8 %), global mapper, 200.2 s. Result: 298/298, 74,303 points, 0.552 px, jumps 43 -> 38, still PARTIAL. The 50.3-51.1 s spikes disappeared, the 44.6-45.6 s spike fell from 215x to 77x, the stretched start (0.4-7.2 s, factors 5.8-11.2) is unchanged, and one new jump appears at 0.0-0.2 s (56.5x). Reading: the walking person contributes to the mid-clip spikes (measured by removal); the stretched start has another cause, not identified. Masking is not adopted into the pipeline because the Sumida / FSC regression guard of plan C was not run with it.
+
+**Next test:** run the masked variant on Sumida and FSC against the guard (150/150, points >= 0.9x, reproj <= 0.60 px on Sumida, 0 jumps); and declare a Utrecht sub-section starting after 7.2 s to test whether the stretched start is an initialisation effect.
+
 ## Not failures, but open gates
 
 - REAL_VIDEO route NOT_RUN: `assets/input/` is empty. Command in `docs/PROGRESS.md`.
 - STALE_DATA banner in the web UI not yet asserted (NOT_RUN); the stale-frame STOP itself is verified in `outputs/evidence/m3/tracking_sim.json` (`stale_frame_stops: 5`, `nonzero_yaw_during_freeze_after_0.3s: 0`).
 - (closed 2026-11-09) UI smoke re-run after F-06: 51 / 51; `scripts/test_all.sh` after the Skywarden rename: 94 passed (`outputs/evidence/tests/pytest-20261109-023923.log`).
+- (closed 2026-11-09) E4 test archive: `tests/test_appearance.py` 3 passed inside `outputs/evidence/tests/pytest-20261109-024540.log` (97 passed) and every later log.
+- Live run / timeline replay: in progress on a separate branch (NOT_RUN here). Stored-map relocalisation: NOT_IMPLEMENTED (VO labels say so). Bangkok per-boundary cause classification (plan D1 field): not written.

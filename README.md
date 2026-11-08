@@ -10,8 +10,10 @@ Skywarden은 스마트폰·웹캠·Tello EDU급 소형 드론의 단안 영상�
 
 | 영역 | 구현 내용 | 결과물 |
 |---|---|---|
-| 희소 3D 지도 | 영상 파일 또는 이미지 폴더 → 프레임 선별(블러·저질감·중복 제거) → pycolmap SIFT/매칭/증분 SfM → PLY + 카메라 궤적 + 보고서. 보정 파일이 없으면 COLMAP이 SIMPLE_RADIAL 내부 파라미터를 추정 | `outputs/maps/<session>/{sparse.ply,trajectory.json,map_report.json,log.txt}` |
-| 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등) | `apps/desktop/` |
+| 희소 3D 지도 | 영상 파일 또는 이미지 폴더 → 샷(컷) 검출·정지 카메라 판정 → 프레임 선별(블러·저질감·중복 제거, 컷을 넘는 매칭 없음) → pycolmap SIFT/매칭 → **전역(global) 매퍼 기본**, `--mapper incremental` 선택 → 모델별 PLY + 카메라 궤적 + 보고서(`skywarden/map_report@2`). 보정 파일이 없으면 COLMAP이 SIMPLE_RADIAL 내부 파라미터를 추정. 작업 상태(`status`)와 별개로 **품질 판정** `quality.verdict` GOOD / PARTIAL / POOR을 고정 임계값(등록률 ≥ 0.6, 시간 커버리지 ≥ 0.7, 내부 공백 ≤ 2 s, 재투영 ≤ 1.5 px, 10 % 이상 모델 정확히 1개, 시간 정규화 궤적 점프 0, 점 ≥ 2,000)과 함께 기록. 여러 모델은 각자 좌표계로 따로 내보내며 절대 합치지 않음. 표시용 점 필터(`sparse_filtered.ply`: 삼각측량각 < 1.5°, 트랙 < 3, 재투영 > 2 × 중앙값 제거)는 원본 PLY를 바꾸지 않음 | `outputs/maps/<session>/{sparse.ply,sparse_filtered.ply,trajectory.json,map_report.json,coverage.json,shots.json,models/<i>/,log.txt}` |
+| 검증된 밀집 점군 (CPU) | GOOD 지도의 포즈로 CPU 평면 스윕 MVS(ZNCC, 이웃 4개 중 상위 2개, 640 px) → 뷰마다 희소점 일치율 ≥ 0.70 **그리고** 다중 뷰 일관성 ≥ 0.30을 통과한 깊이만 융합 → `DENSE_VERIFIED (relative scale)`. PatchMatch(CUDA/HIP 전용)는 이 Mac에서 BLOCKED. Poisson 메시는 시각 검사 FAIL로 **실험 단계**, 콘솔 레이어 아님 | `outputs/maps/<session>/dense/{dense_report.json,dense_verified.ply}` |
+| 단안 시각 주행거리계 (VO, 오프라인) | 저장된 영상에서 프레임 간 상대 포즈 추적. 모든 출력에 `kind=VO, scale=RELATIVE, loop_closure=false, relocalization=NOT_IMPLEMENTED, NOT_NAVIGATION_SAFE` 라벨. 컷·추적 실패 시 새 세그먼트(독립 좌표계, 연결하지 않음) | `packages/vision/vo.py`, `outputs/evidence/vo/` |
+| 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등), **품질 배지 GOOD / PARTIAL / POOR / UNRATED(READY 제거)**, 모델 선택기("partial: model i of N"), 샷 변화·궤적 점프를 표시하는 커버리지 띠(점프를 가로질러 경로를 그리지 않음), 기하 레이어 선택(희소 원본 / 필터 / 검증 밀집), 주 관측 영역 vs 전체 범위 프레이밍, `raw / filtered / drawn` 점 수 | `apps/desktop/` |
 | 사람 검출·추적 | YOLOX-nano ONNX(Apache-2.0)를 OpenCV DNN CPU로 실행(`source=REAL_MODEL`), 등속 Kalman 기반 `MultiTracker`: 마지막 **신뢰** 검출 후 2.0 s가 지난 트랙을 연관 **이전에** 만료, 게이트 = Mahalanobis χ² 9.21 **그리고** 픽셀 거리 ≤ 0.5 × 박스 높이, 확정 트랙은 게이트 그래프의 연결 성분으로 연관(트랙 1 : 검출 1만 신뢰, 그 외는 `AMBIGUOUS` — 보정·갱신 없음, 해당 검출은 보류), 잠정(TENTATIVE) 트랙만 남은 검출에 게이트된 Hungarian 적용. 한 명을 고르는 `TargetSelector`는 LOST 후 다시 선택하기 전까지 LOST 유지(자동 재선택 없음) | `outputs/tracks/<session>/{tracks.json,tracking_report.json,status.json,frames/}` |
 | Tracking 탭 | 프레임 위 박스 오버레이, 트랙 목록에서 대상 선택, 대상 상태(LOCKED / PREDICTING / AMBIGUOUS / LOST) 타임라인, 기록된 트랙 위에서 계산한 **가상** yaw 명령(`MOCK`, 송신 안 함). AMBIGUOUS 프레임은 배지와 `STOP · TARGET_AMBIGUOUS`로 표시되며 yaw는 0 | 콘솔 `Tracking` 탭 |
 | 제어 · Mock 기체 | yaw 전용 `YawController`(PID, 클램프, anti-windup, STOP 사유), Tello SDK 2.0 텍스트 프로토콜 파서, 루프백 UDP `MockTello`, 가상 경계 `GeofenceGuard` | `packages/control/`, `adapters/tello/` |
@@ -101,14 +103,14 @@ node tests/ui/ui_smoke.mjs
 ```
 apps/desktop/            # server.py (stdlib HTTP, 127.0.0.1:8780) + static/{index.html,app.js,tracking.js,viewer.js,app.css}
 packages/
-  mapping/               # frame_source, frame_selection, sparse_pipeline(pycolmap), export(PLY/trajectory), evaluate(ATE), replay, labels, cli
-  vision/                # person_detector(YoloxDetector), track_video(offline job), bbox_distance_eval(E1)
+  mapping/               # frame_source, frame_selection, shots(컷·정지 카메라 검출), sparse_pipeline(pycolmap, 전역/증분 매퍼), quality(판정·임계값), export(모델별 PLY/trajectory, 점 필터), diagnose(구간 진단), dense(CPU 평면 스윕 MVS + 검증), evaluate(ATE), replay, labels, cli(build / rate)
+  vision/                # person_detector(YoloxDetector), track_video(offline job), bbox_distance_eval(E1), vo(단안 VO, 오프라인)
   tracking/              # tracker: Detection, MultiTracker(Kalman, 만료 우선, 게이트 그래프 성분 연관 + AMBIGUOUS, 잠정 트랙만 Hungarian), TargetSelector(sticky LOST)
   control/               # yaw_controller(PID, SafetyLimits, DroneCommand), virtual_replay, geofence(Geofence, GeofenceGuard)
   sim/                   # synthetic_scene, tracking_scenario(SIMULATED 폐루프), two_person_crossing(E2), geofence_scenario(E3)
 adapters/tello/          # protocol(SDK 2.0 텍스트), client(TelloClient + HardwareDisarmed 게이트), mock_tello(MockTello, 루프백 UDP)
 scripts/                 # run_demo.sh, build_sparse_map.sh, replay_map.sh, run_tracking.sh, run_tracking_sim.sh, fetch_models.sh, test_all.sh
-tests/                   # pytest 13개 모듈(94 tests, test_tracker_ambiguity.py 11개 포함) + ui/ui_smoke.mjs(51 checks)
+tests/                   # pytest 16개 모듈(112 tests; test_quality 8, test_export_geometry 3, test_vo 3 포함) + ui/ui_smoke.mjs(62 checks)
 data/public/<set>/SOURCE.md   # 데이터셋 출처·라이선스·SHA-256 (데이터 자체는 git 제외)
 data/models/yolox/SOURCE.md   # 가중치 출처·SHA-256 (가중치는 git 제외)
 assets/input/            # 사용자 본인 영상을 두는 곳 (git 제외)
@@ -128,8 +130,22 @@ docs/                    # 설계·계획·검증 기록
 | 희소 지도, OPENCV 4계수 보정 | TUM fr1/desk, 613 → 53 프레임 (PUBLIC_DATASET) | PASS | 49/53 등록(92.5 %), 4,297점, 재투영 0.831 px, 약 5 s. ATE RMSE 2.05 cm(Sim(3), 정답 스케일 차용, 평가 전용) |
 | 희소 지도, 보정 없이 추정 | 동일 | PASS | 48/53 등록, 3,987점, 0.665 px, ATE 1.86 cm |
 | 희소 지도, 공식 FULL_OPENCV 5계수 보정 | 동일 | FAIL | 초기 이미지 쌍 생성 실패. 원인 미확인(F-01), 위 두 경로로 복구 |
-| 희소 지도, 핸드헬드 공원 산책 영상 60 s | CC BY YouTube 클립 (PUBLIC_DATASET) | PASS (게이트 `registered_ratio>=0.5` 미달) | 49/150 등록(0.327), 10,814점, 0.848 px, 약 5.9 min. 4개 모델로 분할, 최대 모델 내보냄 |
-| 희소 지도, 고정 카메라 거리 영상 | CC BY YouTube 클립 (PUBLIC_DATASET) | FAIL (예상된 실패, 보고 경로 검증) | "COLMAP registered no image pair" — 카메라가 이동하지 않아 베이스라인 없음 |
+| 희소 지도, 편집된 공원 산책 영상 60 s (방콕), **기준선** | CC BY YouTube 클립 (PUBLIC_DATASET) | PASS (빌드); 오프라인 품질 판정 **PARTIAL** | 49/150 등록(0.327), 10,814점, 0.848 px, 약 5.9 min. 4개 모델(49/16/12/8), 시간 커버리지 0.302, 궤적 점프 13회(25.3–37.3 s). 60 s 구간에 컷 18개 — 최대 모델이 여러 컷을 가로질러 이어진 것으로 보임(추론) — `outputs/evidence/map_quality/baseline_bangkok_60s/` |
+| 희소 지도, 같은 방콕 영상, 컷 존중 매칭 후 | 동일, `--max-frames 300` | PASS (빌드); 판정 **POOR** (개선 없음) | 증분 매퍼: 176 프레임 중 최대 모델 12(0.068), 모델 4개가 각각 한 샷 안, 점프 0. 전역 매퍼: 모델 14개, 최대 15/176(0.085). 컷을 넘는 연결이 사라지며 점프는 0이 됐지만 커버리지는 0.327 → 0.068. 컷 18개짜리 편집 영상은 지도 한 장이 되지 않음(기록만, 수정 없음) |
+| 희소 지도, 강변 산책 한 테이크 60 s (스미다) | CC BY YouTube 클립, 컷 0 (PUBLIC_DATASET) | PASS, 판정 **GOOD** (증분·전역 모두) | 증분: 150/150 등록, 33,904점(필터 27,524), 0.454 px, 점프 0, MAP 38.5 s. 전역: 150/150, 37,430점(필터 28,559), 0.512 px, 점프 0, MAP 93.2 s. 두 매퍼 경로 일치(Sim(3), 150 포즈): RMSE 경로 길이의 1.75 %, 마지막 프레임(59.7 s)에서 최대 10.28 % — 정답이 없어 어느 쪽이 맞는지는 미결 (`outputs/evidence/geometry/sumida_global_vs_incremental.json`) |
+| 희소 지도, 캠퍼스 항공 촬영 71 s (FSC) | CC BY YouTube 클립, 컷 0 (PUBLIC_DATASET) | 증분 **PARTIAL** → 전역 **GOOD** | 증분: 150/150, 99,293점, 0.837 px, 59.7–70.7 s에 시간 정규화 점프 **23회**, MAP 271.8 s. 전역: 150/150, 96,344점, 0.708 px, 점프 **0**, MAP 116.7 s. 증분 지도의 59.7–71 s 구간 카메라 속도는 클립 중앙값의 10.3×(그 전 0.97–1.06×)인데 같은 구간의 영상 흐름은 0.34–0.41 px/frame로 앞부분(0.43–1.18)보다 작음; 전역 매퍼는 1.04× (`outputs/evidence/geometry/fsc_late_stretch_speed.json`). 증분 드리프트의 원인은 미확인. 전역 지도에서 야구장이 형태를 유지(`views/fsc_global_topview.jpg`, 이미지 관찰) |
+| 희소 지도, 사람을 따라가는 드론 영상 60 s (위트레흐트), 5 fps | CC BY YouTube 클립 (PUBLIC_DATASET) | PASS (빌드); **PARTIAL** (두 매퍼 모두, 미해결) | 증분: 모델 2개 216 + 37 / 298. 전역: 한 모델 298/298, 81,007점, 0.517 px이나 점프 43회(0.4–7.2 s 구간 6–12배 늘어남, 44.6–45.8 s·50.3–51.1 s 급등). 피사체가 화면을 크게 차지하는 영상. 사람 박스 마스킹 실험(`outputs/experiments/utrecht_global_masked/`, 마스크 픽셀 중앙값 20.6 %): 점프 43 → 38, 50.3–51 s 급등 소멸, 44.6–45.6 s 급등 215× → 77×, 시작 구간은 그대로, 여전히 PARTIAL — 스미다·FSC 회귀 가드를 마스킹과 함께 돌리지 않아 **미채택**(F-11) |
+| 희소 지도, 고정 카메라 거리 영상 (몬트리올) | CC BY YouTube 클립 (PUBLIC_DATASET) | FAIL (예상된 실패; 측정 근거 있는 거부) | "camera is static (median flow 0.006 px/frame < 0.1) for 100% of the input" — COLMAP 실행 전에 정지 카메라로 판정해 거부, 추적용으로 안내 |
+| 프레임 간격 가드 (첫 버전) | 방콕·위트레흐트 3개 세션 | **FAIL** → 가드 축소 | 1.0 s 초과 간격을 모두 치명 처리해 1.33 / 1.335 / 1.001 s 간격의 입력을 거부(정답 있는 TUM fr1/desk도 거부, 구현자 기록). 이제 150 프레임 캡이 간격의 원인일 때만 치명(F-07) |
+| TUM fr1/desk, 증분 vs 전역 매퍼, 정답 궤적 대비 | PUBLIC_DATASET, OPENCV 4계수 | PASS | 증분 49 포즈 ATE RMSE 2.05 cm / 최대 6.81 cm; **전역 53/53 포즈 1.66 cm / 5.01 cm**, 4,351점, 0.650 px. Sim(3) 스케일은 평가용으로만 차용 — `outputs/evidence/geometry/global_vs_incremental_tum_ate.json` |
+| 내보내기·표시 vs 복원 오류 분리 | 스미다·FSC·TUM 세션 3개 | PASS (결함은 복원 단계) | 내보낸 포즈·점을 COLMAP 투영과 재비교: 최대 차이 0.0078 / 0.0136 / 0.00008 px, 카메라 뒤 점 0, 포즈 순서 = 시간 순서 — `outputs/evidence/geometry/verify_export_*.json` |
+| 구간별 LOW_CONFIDENCE 검출기 (5 s 창) | 스미다·FSC 증분 지도 | **FAIL** (구분하지 못함; 보고만, 조정 안 함) | 사전 기대: 스미다 0개, FSC 59.7–70.4 s 창에 플래그. 관측: 스미다 23개 중 9개 플래그, FSC 28개 중 0개. 드리프트 원인은 이 검출기로 확인되지 않음(F-08) |
+| 검증된 밀집 점군, 스미다 (전역 포즈) | GOOD 지도 | PASS (수용 기준 3개 모두 충족) | 참조 뷰 117개 중 108개 VERIFIED, 융합 917,498점(덮인 뷰 희소점 36,470의 25배), 58.6 s. v1(경계 깊이 미제거) 104 뷰 / 1,120,031점 보존. 카메라 바로 앞 보도는 대부분 비어 있음 — `outputs/maps/mqg_sumida_0025_0125/dense/` |
+| 검증된 밀집 점군, FSC (전역 포즈) | GOOD 지도 | PASS | 145/145 뷰 VERIFIED, 1,942,876점(희소의 20배), 76.8 s — `outputs/maps/mqg_fsc_campus_aerial/dense/` |
+| 밀집 수용 기준, 합성 방 (정답 표면 있음) | 생성기 8 뷰 (SIMULATED) | 실행 PASS; 수용 **FAIL** 3/8 (정의상) | 밀집점의 실제 표면까지 거리 p50 0.0095, 97.8 %가 0.05 룸 단위 이내(희소 p50 0.0035). 고정된 일관성 비율이 겹치지 않는 픽셀을 분모에 넣어 FAIL; 정의는 바꾸지 않음 |
+| PatchMatch 밀집 스테레오 | pycolmap 4.2.1 | BLOCKED | "requires CUDA or HIP" — 이 Mac에서 재시도 없음 (`outputs/evidence/dense/patch_match_probe.txt`) |
+| Poisson 메시 (검증 밀집점 기반) | 스미다·FSC | 실험 단계; 시각 검사 **FAIL** | FSC: 지붕·나무는 보이나 화면 중심으로 모이는 방사형 줄무늬(원인 미확인); 스미다: 나무 몇 그루만. 콘솔 레이어로 제공하지 않음(F-09) |
+| 단안 VO (오프라인) | 합성 방 / 스미다·방콕·몬트리올 0–60 s | 기준 6개 PASS, **1개 FAIL** | 합성 ATE 1.82 %(≤ 5 %), 순수 회전 yaw 19.995° vs 20°, 컷 → 새 세그먼트, 방콕 컷 재현율 16/18 = 0.889, 몬트리올 삼각대 TRACKING 0 %, p50 2.6–4.8 ms/frame PASS. **스미다 vs SfM 궤적 23.3 %(≤ 15 %) FAIL**(초점거리 추정 0.9 × 폭); SfM 초점거리를 빌리면 2.56 %이나 독립 증거 아님(F-10) — `outputs/evidence/vo/` |
 | 희소 지도, 합성 방 | 생성기 8프레임 (SIMULATED) | PASS (파이프라인 점검용) | 8/8 등록, 3,845점, 0.084 px, ATE 0.5 mm. 실제 데이터 게이트에 집계하지 않음 |
 | **본인 영상 지도·추적 (REAL_VIDEO)** | `assets/input/` | **NOT_RUN** | `.gitkeep`만 존재. 위 공개 클립은 타인 영상이라 이 게이트를 닫지 못함 |
 | 사람 추적, 주 증거 | TUM fr3/walking_xyz 859 → 287 프레임 (REAL_MODEL / PUBLIC_DATASET) | PASS | 검출 p50/p95 8.94/10.45 ms, 109.5 fps(검출+추적), 349 검출, 트랙 33개 중 24개 확정, MOTA/IDF1 미정의 |
@@ -142,8 +158,8 @@ docs/                    # 설계·계획·검증 기록
 | 수정 후 추적기, 실제 클립 재추적 (같은 검출 재사용) | TUM walking / `vtest.avi` / 몬트리올 거리 (REAL_MODEL / PUBLIC_DATASET) | PASS (실행; 정확도 지표 아님) | id 33→34 / 39→56 / 438→680, 프레임당 LOCKED 1.01→0.84 / 6.32→4.74 / 7.33→4.41, AMBIGUOUS 트랙이 있는 프레임 50/287 · 369/600 · 987/1,390, vtest 확정 지속 p50 13.0→3.65 s. 혼잡할수록 STOP이 늘고 트랙이 짧아지는 의도된 대가 |
 | E4 옷 색으로 두 사람을 구분할 수 있는가 (얼굴·생체 식별은 처음부터 제외; 머리 영역 미사용, 메모리 전용 HSV 히스토그램, Hellinger 거리) | fix_v3 재추적 3개 클립의 LOCKED 트랙 의사 라벨 (REAL_MODEL / PUBLIC_DATASET, 정답 신원 없음) | 실행 PASS, **판정 NO_GO** (vtest FAIL, 거리 FAIL, TUM BLOCKED) | 사전 기준 TPR ≥ 0.60 @ FPR ≤ 1 % 를 2개 클립 이상. vtest AUC 0.870, TPR@1 % 0.154(871/2,484쌍); 몬트리올 거리 AUC 0.874, TPR@1 % 0.493(5,083/5,756쌍); TUM AUC 0.963이나 음성 쌍 55개(< 200)로 BLOCKED. 1 % 오매칭에서 진짜 매칭의 15–49 %만 회수 → 추적기에 통합하지 않음, AMBIGUOUS → STOP 유지 — `outputs/evidence/e4_appearance/` |
 | E3 가상 경계에서 이동을 멈추는가 | MockTello 운동학 토이, 10 × 10 m, 여유 1 m (SIMULATED_FRAME_ONLY) | PASS (추적기 수정 후 재실행도 PASS) | 사전 6개 체크 모두 참. 보호 시 최소 거리 경계 안쪽 1.175 m(여유 구간 미진입), 비보호 대조군은 0.485 m 침범, 포즈 끊김 3–4 s 동안 `NO_POSE_FOR_GEOFENCE` 정지 10회·이동 0, 비루프백 패킷 0. 재실행 `outputs/evidence/e3_geofence_after_tracker_fix/`: 6개 체크·거리 수치 동일, 10 Hz 루프 지터로 차단 프레임 수만 1프레임 차이(42→43) |
-| 자동 테스트 | `scripts/test_all.sh` | PASS | 94 passed in 36.10 s, Skywarden 이름 변경 후 실행 (`outputs/evidence/tests/pytest-20261109-023923.log`; 이전 022116 / 023130 로그도 94 passed). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
-| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | 51/51 checks, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 02:39 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 Dia 창에 탭 하나를 열어 실행하고 그 탭만 닫음). AMBIGUOUS 신규 체크 4개 PASS(로드, 배지, `STOP · TARGET_AMBIGUOUS` + yaw 0, 트랙 목록 표시; `outputs/evidence/ui/16_tracking_ambiguous_stop.png`). 직전 실행(02:23 KST)은 50/51로 "tracking run finishes and auto-loads"가 실패해 더 짧은 실행을 로드할 때 프레임 인덱스가 초기화되지 않던 기존 UI 버그를 드러냈고, `tracking.js` 수정 후 이 재실행에서 PASS(F-06). 헤드리스 모드(`--browser`)도 유지 |
+| 자동 테스트 | `scripts/test_all.sh` | PASS | **112 passed in 41.37 s** (`outputs/evidence/tests/pytest-20261109-040916.log`; 035618 로그도 112 passed). 신규: `test_quality.py` 8, `test_export_geometry.py` 3, `test_vo.py` 3. 이전 단계: 94 passed(023923, 이름 변경 후), 97 passed(024540, `test_appearance.py` 포함). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
+| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | **62/62 checks**, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 04:08 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 Dia 창에 탭 하나를 열어 실행하고 그 탭만 닫음). 신규 11개: 세션 목록에 READY 없음, 품질 배지 표시, PARTIAL/POOR 지도 로드와 `PARTIAL RECONSTRUCTION` 라벨, 모델 선택기에 모든 모델, 두 번째 모델이 자기 좌표계로 로드, 커버리지 띠, 검증 밀집이 있을 때만 밀집 레이어 제공(자체 캡션), `raw / filtered / dense` 점 수, 희소점 캡션. 이전 51개(AMBIGUOUS 체크 4개 포함, F-06 수정 후)도 유지. 헤드리스 모드(`--browser`)도 유지 |
 | 실기체 비행 | — | BLOCKED | 정책상 금지, 기체 없음 |
 
 ## 알려진 한계 / 다음 단계
@@ -153,8 +169,12 @@ docs/                    # 설계·계획·검증 기록
 3. **E2 수정의 대가.** `TARGET_AMBIGUOUS` STOP과 만료 우선 규칙으로 대상 id가 다른 사람의 검출을 물려받거나 2 s를 넘겨 살아남는 일은 없어졌지만(E2 PASS), 교차·근접 후 **같은 id 재획득은 보장되지 않습니다**(모션 전용). 혼잡한 클립에서는 STOP 시간이 늘고 트랙이 짧아집니다(위 표). 외모 Re-ID는 설계상 도입하지 않습니다. 실험 E4에서 얼굴·생체 식별 없이 옷 색만으로 AMBIGUOUS를 풀 수 있는지 측정했으나 1 % 오매칭률에서 진짜 매칭 회수율이 15–49 %에 그쳐 NO_GO로 닫았고(위 표), 학습된 재식별 임베딩은 라이선스·정책 결정 전까지 NOT_RUN입니다. 수정 후 회귀(94 tests, UI 51/51, E3 재실행)는 모두 PASS입니다.
 4. **지오펜스는 포즈 소스가 필요합니다.** Tello EDU는 절대 위치를 주지 않습니다. E3의 가드는 시뮬레이터의 포즈를 읽었고, 0.4 s 지연 모델은 토이입니다. 실제 기체에서는 미션 패드 등 별도 포즈 소스와 측량된 지도 앵커 없이는 쓸 수 없습니다.
 5. **F-01 원인 미확인.** FULL_OPENCV 5계수(k3 = 1.1633) 보정으로 초기화가 실패하는 이유는 가설 단계입니다. 다음 테스트는 5계수로 사전 왜곡 보정한 프레임을 PINHOLE로 빌드하는 것입니다.
-6. **미구현 (NOT_RUN):** 실시간 웹캠 VO/SLAM, 상대 깊이 추정 모델, 녹화 UI, AprilTag/체커보드 기반 미터 앵커링, 지도 뷰의 STALE_DATA 배너, `yolox_tiny` 비교 실행. 미터 앵커링 전까지 어떤 지도에도 미터 거리를 붙이지 않습니다.
+6. **미구현 (NOT_RUN / NOT_IMPLEMENTED):** 실시간 웹캠 실행과 타임라인 재생(별도 브랜치에서 진행 중), 저장된 지도에 대한 재측위(VO 출력에 `relocalization=NOT_IMPLEMENTED`), 상대 깊이 추정 모델(계획 D5), 녹화 UI, AprilTag/체커보드 기반 미터 앵커링, 지도 뷰의 STALE_DATA 배너, `yolox_tiny` 비교 실행. 미터 앵커링 전까지 어떤 지도에도 미터 거리를 붙이지 않습니다.
 7. **단일 환경.** 모든 수치는 Apple M6 / 16 GiB / macOS 27.2 한 대에서 측정했습니다.
+8. **품질 판정은 지도가 "맞다"는 뜻이 아닙니다.** GOOD은 등록률·커버리지·재투영·모델 수·점프 수의 고정 임계값을 통과했다는 뜻이며, 정답 궤적과 비교한 지도는 TUM fr1/desk뿐입니다(증분 2.05 cm, 전역 1.66 cm ATE RMSE, 스케일 차용). 스미다·FSC·위트레흐트 지도에는 정답이 없어 절대 정확도를 주장하지 않습니다. FSC 증분 지도의 후반부 드리프트는 전역 매퍼로 사라졌지만 원인은 확인되지 않았고(F-08), 위트레흐트는 두 매퍼 모두 PARTIAL로 남아 있습니다(F-11).
+9. **편집된 영상은 지도가 되지 않습니다.** 방콕 60 s 구간(컷 18개)은 컷을 넘는 매칭을 막은 뒤 커버리지 0.068–0.085의 POOR로 남았습니다. 한 테이크 영상(스미다·FSC)만 GOOD입니다.
+10. **밀집 점군은 "검증된 상대 스케일 점"이지 표면이 아닙니다.** 평면 스윕 결과 중 희소점 일치와 다중 뷰 일관성을 통과한 점만 남기며, 카메라 바로 앞 보도처럼 반복 질감이 가파른 각도로 보이는 영역은 비어 있습니다. Poisson 메시는 시각 검사 FAIL로 콘솔에 제공하지 않습니다(F-09). 합성 방에서는 밀집점의 97.8 %가 실제 표면 0.05 룸 단위 이내였지만 고정된 수용 정의로는 FAIL(3/8 뷰)입니다.
+11. **VO는 보정된 카메라가 필요합니다.** 초점거리를 0.9 × 폭으로 추정한 스미다 VO는 SfM 궤적 대비 23.3 %로 기준(15 %)에 미달했고, SfM의 초점거리를 빌리면 2.56 %지만 독립 증거가 아닙니다(F-10).
 
 ## 데이터 · 모델 출처
 
@@ -177,6 +197,7 @@ Tello EDU 연동 근거: Ryze Tello SDK 2.0 사용자 가이드(UDP 8889 명령,
 - `docs/FAILURES.md` — 관찰된 실패, 시도한 대안, 다음 테스트
 - `docs/ARCHITECTURE.md`, `docs/VISUAL_MAPPING.md`, `docs/CAMERA_ONLY_EXECUTION_PLAN.md` — 설계와 지도 정확도 계층
 - `docs/IMPLEMENTATION_PLAN.md`, `docs/PLAN_M4_DETECTOR_TRACKING_PANEL.md`, `docs/PLAN_E2_TRACKER_FIX.md` — 마일스톤 계획, 종료 테스트, E2 추적기 수정 계획과 구현 결과
+- `docs/PLAN_MAPPING_QUALITY.md`, `docs/PLAN_GEOMETRY_AND_DENSE.md` — 지도 품질 판정·샷 처리 계획, 기하 진단·매퍼 비교·CPU 밀집 경로 계획, 각각 끝에 "Result" 절(기준별 PASS/FAIL/BLOCKED/NOT_RUN)
 - `docs/VERIFICATION_CONTRACT.md`, `docs/RECOVERY_MATRIX.md`, `docs/PHASES_AND_ACCEPTANCE.md` — 검증 기준, 복구 매트릭스, 품질 게이트
 - `docs/TELLO_SDK.md`, `docs/ENV_AUDIT.md`, `docs/DESIGN_ASSETS.md`, `docs/SOURCES_AND_ASSUMPTIONS.md`
 

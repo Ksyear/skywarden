@@ -29,10 +29,11 @@ const check = (name, ok, detail = "") => { results.push({ name, status: ok ? "PA
 const mapsRoot = mkdtempSync(join(tmpdir(), "sda-ui-maps-"));
 for (const s of [REAL, SIM, MQ_PARTIAL, MQ_DENSE]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
 const tracksRoot = mkdtempSync(join(tmpdir(), "sda-ui-tracks-"));
+const runsRoot = mkdtempSync(join(tmpdir(), "sda-ui-runs-"));
 for (const t of [TRACK, TRACK_AMB]) if (existsSync(join(ROOT, "outputs/tracks", t))) symlinkSync(join(ROOT, "outputs/tracks", t), join(tracksRoot, t));
 const port = await freePort();
 let server;
-const startServer = () => { server = spawn(join(ROOT, ".venv/bin/python"), [join(ROOT, "apps/desktop/server.py"), "--port", String(port), "--maps-root", mapsRoot, "--tracks-root", tracksRoot], { stdio: "ignore" }); };
+const startServer = () => { server = spawn(join(ROOT, ".venv/bin/python"), [join(ROOT, "apps/desktop/server.py"), "--port", String(port), "--maps-root", mapsRoot, "--tracks-root", tracksRoot, "--runs-root", runsRoot], { stdio: "ignore" }); };
 startServer();
 const BASE = `http://127.0.0.1:${port}`;
 for (let i = 0; i < 50; i++) { try { if ((await fetch(`${BASE}/api/health`)).ok) break; } catch {} await sleep(100); }
@@ -297,11 +298,58 @@ try {
   check("reload keeps the tracking workspace (#tracking)", await waitFor(`!window.__beforeReload && document.readyState === 'complete' && document.getElementById('conn-badge')?.textContent === 'SERVER ONLINE' && !document.getElementById('ws-track').hidden`));
   await evaluate(`document.getElementById('mode-map').click()`);
 
+  // 8b. live run: start, frame + boxes, pause/resume, select a target by clicking, stop, verified, replay
+  await evaluate(`document.getElementById('mode-live').click()`);
+  check("Live tab shows the live workspace", await waitFor(`!document.getElementById('ws-live').hidden && location.hash === '#live'`));
+  await waitFor(`[...document.getElementById('l-input').options].some(o => o.value.includes('vtest'))`);
+  await evaluate(`(() => { const s = document.getElementById('l-input'); s.value = [...s.options].find(o => o.value.includes('vtest')).value; document.getElementById('l-max').value = 14; })()`);
+  await evaluate(`document.getElementById('l-start').click()`);
+  check("live run shows processed frames", await waitFor(`document.getElementById('l-empty').hidden && document.getElementById('l-state').textContent === 'LIVE'`, 30000), await text("l-state"));
+  check("live status bar shows fps, latency and drops", await waitFor(`/fps/.test(document.getElementById('lm-fps').textContent) && /ms/.test(document.getElementById('lm-lat').textContent) && / of /.test(document.getElementById('lm-drop').textContent)`, 5000), `${await text("lm-fps")} · ${await text("lm-lat")} · ${await text("lm-drop")}`);
+  check("map position is shown as not available (no 3D person, no map registration)", (await text("l-vometa")).includes("NOT_AVAILABLE"));
+  await evaluate(`document.getElementById('l-pause').click()`);
+  check("pause reaches the worker (PAUSED)", await waitFor(`document.getElementById('l-state').textContent === 'PAUSED'`, 5000), await text("l-state"));
+  await evaluate(`document.getElementById('l-resume').click()`);
+  check("resume returns to LIVE", await waitFor(`document.getElementById('l-state').textContent === 'LIVE'`, 5000), await text("l-state"));
+  // click the centre of a LOCKED box from the newest row
+  // pause first so the frame on screen and the frame read from the API are the same one, then click a LOCKED box
+  let picked = null;
+  for (let i = 0; i < 12 && !picked; i++) {
+    await evaluate(`document.getElementById('l-pause').click()`);
+    await waitFor(`document.getElementById('l-state').textContent === 'PAUSED'`, 5000);
+    await sleep(600);
+    const runs = await (await fetch(`${BASE}/api/runs`)).json();
+    const lt = runs.length ? await (await fetch(`${BASE}/api/runs/${runs[0].id}/latest`)).json() : null;
+    const tr = lt?.row?.tracks?.find((t) => t.state === "LOCKED");
+    if (tr) {
+      const pt = await evaluate(`(() => { const c = document.getElementById('l-canvas').getBoundingClientRect(); const [W, H] = ${JSON.stringify(lt.image_wh)}; const s = Math.min(c.width / W, c.height / H); const ox = (c.width - W * s) / 2, oy = (c.height - H * s) / 2; const b = ${JSON.stringify(tr.bbox)}; return [c.left + ox + (b[0] + b[2]) / 2 * s, c.top + oy + (b[1] + b[3]) / 2 * s]; })()`);
+      for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: pt[0], y: pt[1], button: "left", clickCount: 1 });
+      picked = tr.id;
+    } else {
+      await evaluate(`document.getElementById('l-resume').click()`);
+      await sleep(700);
+    }
+  }
+  check("clicking a LOCKED box selects it as the target", picked != null && await waitFor(`document.getElementById('l-tid').textContent !== '' || document.getElementById('l-events').textContent.includes('SELECT')`, 8000), `picked #${picked} · ${await text("l-tid")} · ${await text("l-events")}`);
+  await shot("17_live_run.png");
+  await evaluate(`document.getElementById('l-resume').click()`);
+  await sleep(800);
+  await evaluate(`document.getElementById('l-stop').click()`);
+  check("stopped run finishes with verified files", await waitFor(`document.getElementById('l-state').textContent === 'SUCCEEDED' && document.getElementById('l-msg').textContent.includes('verified')`, 30000), await text("l-msg"));
+  await shot("18_live_finished.png");
+  await evaluate(`document.getElementById('mode-track').click()`);
+  await evaluate(`document.getElementById('t-refresh').click()`);
+  check("finished live run is listed for replay", await waitFor(`[...document.querySelectorAll('#t-runs .meta')].some(m => m.textContent.startsWith('LIVE RUN'))`, 10000));
+  await evaluate(`[...document.querySelectorAll('#t-runs button')].find(b => b.querySelector('.meta').textContent.startsWith('LIVE RUN')).click()`);
+  check("live run replays as OPEN_LOOP_REPLAY", await waitFor(`document.getElementById('t-badges').textContent.includes('OPEN_LOOP_REPLAY')`, 15000), await text("t-badges"));
+  await evaluate(`document.getElementById('mode-map').click()`);
+
   // 9. server loss and reconnect
   server.kill("SIGTERM");
   check("server loss shown as DISCONNECTED", await waitFor(`document.getElementById('conn-badge').textContent === 'DISCONNECTED'`, 20000));
   check("Build disabled while disconnected", await evaluate(`document.getElementById('build').disabled`));
   check("Run tracking disabled while disconnected", await evaluate(`document.getElementById('t-run').disabled`));
+  check("Live start disabled while disconnected", await evaluate(`document.getElementById('l-start').disabled`));
   await shot("08_disconnected.png");
   startServer();
   check("reconnects automatically", await waitFor(`document.getElementById('conn-badge').textContent === 'SERVER ONLINE'`, 20000));

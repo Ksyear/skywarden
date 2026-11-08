@@ -1,5 +1,6 @@
 import { PointViewer, parsePly } from "./viewer.js";
 import { initTracking } from "./tracking.js";
+import { initLive } from "./live.js";
 
 const $ = (id) => document.getElementById(id);
 const STAGES = { SELECT_FRAMES: "Frames", EXTRACT_FEATURES: "Features", MATCH_FEATURES: "Matching", MAP: "Mapping", EXPORT: "Export" };
@@ -30,7 +31,8 @@ const state = {
   renderMs: [],
 };
 
-let tracking = null;  // tracking workspace (tracking.js), created once the helpers below exist
+let tracking = null;
+let live = null;  // tracking workspace (tracking.js), created once the helpers below exist
 const viewer = new PointViewer($("map-canvas"), {
   onRender: (ms) => { state.renderMs.push(ms); if (state.renderMs.length > 120) state.renderMs.shift(); },
 });
@@ -67,6 +69,7 @@ function setConn(c) {
   announce(`Server ${c.toLowerCase()}`);
   renderControls();
   tracking?.renderControls();
+  live?.renderControls();
 }
 
 async function healthLoop() {
@@ -76,6 +79,7 @@ async function healthLoop() {
     if (h.hardware_armed !== false) { $("armed").style.color = "var(--error)"; }
     if (h.running_job && !state.jobSid) { state.jobSid = h.running_job; pollJob(); }  // reattach after reload/reconnect
     tracking.onHealth(h);
+    if (h.running_run_job) live.reattach(h.running_run_job);
     if (!state.inputs.length) await refreshInputs();
   } catch {}
   const delay = state.conn === "ONLINE" ? 2000 : Math.min(10000, 1000 * 2 ** state.failures);
@@ -371,7 +375,7 @@ function stopPlay() { if (state.playing) togglePlay(); }
 // ---------------- controls & status bar ----------------
 function renderControls() {
   const online = state.conn === "ONLINE", has = !!state.loaded, running = !!state.jobSid;
-  const trackRunning = tracking?.trackJobRunning() ?? false;
+  const trackRunning = (tracking?.trackJobRunning() ?? false) || (live?.running() ?? false);
   $("build").disabled = !online || running || trackRunning || !$("input-select").value;
   $("build").title = trackRunning ? "A tracking run is in progress; one job at a time" : "";
   $("cancel").disabled = !online || !running;
@@ -399,15 +403,21 @@ function statusTick() {
 
 // ---------------- workspace mode ----------------
 function setMode(mode) {
-  const track = mode === "tracking";
-  document.body.dataset.mode = track ? "tracking" : "mapping";
-  $("ws-map").hidden = track; $("statusbar").hidden = track;
-  $("ws-track").hidden = !track; $("statusbar-track").hidden = !track;
-  $("badges").hidden = track; $("session-label").hidden = track;
-  $("mode-map").setAttribute("aria-pressed", String(!track)); $("mode-track").setAttribute("aria-pressed", String(track));
-  if (track) { stopPlay(); tracking.enter(); }
-  if (location.hash !== (track ? "#tracking" : "")) history.replaceState(null, "", track ? "#tracking" : location.pathname);
-  announce(track ? "Tracking workspace" : "Mapping workspace");
+  const m = ["tracking", "live"].includes(mode) ? mode : "mapping";
+  document.body.dataset.mode = m;
+  $("ws-map").hidden = m !== "mapping"; $("statusbar").hidden = m !== "mapping";
+  $("ws-track").hidden = m !== "tracking"; $("statusbar-track").hidden = m !== "tracking";
+  $("ws-live").hidden = m !== "live"; $("statusbar-live").hidden = m !== "live";
+  $("badges").hidden = m !== "mapping"; $("session-label").hidden = m !== "mapping";
+  $("mode-map").setAttribute("aria-pressed", String(m === "mapping"));
+  $("mode-track").setAttribute("aria-pressed", String(m === "tracking"));
+  $("mode-live").setAttribute("aria-pressed", String(m === "live"));
+  if (m !== "mapping") stopPlay();
+  if (m === "tracking") tracking.enter();
+  if (m === "live") live.enter();
+  const hash = m === "mapping" ? "" : `#${m}`;
+  if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
+  announce(`${m[0].toUpperCase()}${m.slice(1)} workspace`);
 }
 
 // ---------------- wiring ----------------
@@ -435,10 +445,13 @@ $("growth").addEventListener("click", () => {
 });
 $("mode-map").addEventListener("click", () => setMode("mapping"));
 $("mode-track").addEventListener("click", () => setMode("tracking"));
+$("mode-live").addEventListener("click", () => setMode("live"));
 document.addEventListener("keydown", (e) => {
   if (e.target.closest("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "m" || e.key === "M") return setMode("mapping");
   if (e.key === "t" || e.key === "T") return setMode("tracking");
+  if (e.key === "l" || e.key === "L") return setMode("live");
+  if (document.body.dataset.mode === "live") return live.onKey(e);
   if (document.body.dataset.mode === "tracking") return tracking.onKey(e);
   if (e.key === "Escape" && !$("cancel-confirm").hidden) { $("cancel-confirm").hidden = true; return; }
   if (e.target === $("map-canvas")) return;  // canvas handles its own arrow/zoom keys
@@ -450,9 +463,12 @@ document.addEventListener("keydown", (e) => {
 });
 
 tracking = initTracking({ api, badge, announce, pct, isOnline: () => state.conn === "ONLINE", apiMs: () => state.apiMs,
-  mapJobRunning: () => !!state.jobSid, onJobChange: () => renderControls() });
+  mapJobRunning: () => !!state.jobSid || (live?.running() ?? false), onJobChange: () => renderControls() });
+live = initLive({ api, badge, isOnline: () => state.conn === "ONLINE",
+  otherJobRunning: () => !!state.jobSid || tracking.trackJobRunning(),
+  onJobChange: () => { renderControls(); tracking.renderControls(); } });
 renderControls();
-setMode(location.hash === "#tracking" ? "tracking" : "mapping");
+setMode(location.hash.slice(1) || "mapping");
 healthLoop();
 refreshSessions();
 setInterval(statusTick, 1000);

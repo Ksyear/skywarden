@@ -53,7 +53,10 @@ export function initTracking(ctx) {
   }
 
   async function refreshRuns() {
-    try { T.runs = await ctx.api("/api/tracks"); } catch { return; }
+    try {
+      const [tr, lv] = await Promise.all([ctx.api("/api/tracks"), ctx.api("/api/runs").catch(() => [])]);
+      T.runs = [...tr.map((r) => ({ ...r, kind: "tracks" })), ...lv.map((r) => ({ ...r, kind: "runs" }))];
+    } catch { return; }
     const ul = $("t-runs"); ul.replaceChildren();
     if (!T.runs.length) { const li = document.createElement("li"); li.className = "muted"; li.textContent = "No recorded runs yet."; ul.append(li); }
     for (const r of T.runs) {
@@ -66,7 +69,8 @@ export function initTracking(ctx) {
       meta.textContent = ok ? `${r.frames} frames · ${r.tracks_confirmed} tracks · ${r.model} · ${r.labels?.data_origin}` : (r.created_at || "").slice(0, 19).replace("T", " ");
       b.append(sid, st, meta);
       b.disabled = !ok; b.title = ok ? "Open this recorded run" : "Only finished runs can be opened";
-      b.addEventListener("click", () => loadRun(r.id));
+      if (r.kind === "runs") meta.textContent = `LIVE RUN · ${meta.textContent}`;
+      b.addEventListener("click", () => loadRun(r.id, r.kind));
       li.append(b); ul.append(li);
     }
   }
@@ -127,17 +131,19 @@ export function initTracking(ctx) {
   }
 
   // ---------------- loading a run ----------------
-  async function loadRun(sid) {
+  const baseOf = (sid, kind) => `/api/${kind === "runs" ? "runs" : "tracks"}/${encodeURIComponent(sid)}`;
+  async function loadRun(sid, kind = "tracks") {
     const token = ++T.loadToken;
     stopPlay(); clearTarget(false);
     setEmpty("Loading run…", `Reading ${sid} (tracks + report).`, "");
     try {
-      const base = `/api/tracks/${encodeURIComponent(sid)}`;
+      const base = baseOf(sid, kind);
       const [info, rec] = await Promise.all([ctx.api(base), ctx.api(`${base}/files/tracks.json`, { timeout: 30000 })]);
       if (token !== T.loadToken) return;
       if (info.state !== "SUCCEEDED") throw new Error(`run is ${info.state}`);
-      if (!rec.frames?.length || rec.frames.length !== info.report.frames_processed) throw new Error(`tracks.json has ${rec.frames?.length ?? 0} frames, report says ${info.report.frames_processed}`);
-      T.run = { sid, report: info.report, frames: rec.frames, wh: rec.image_wh };
+      const expected = kind === "runs" ? info.report.counts?.processed : info.report.frames_processed;
+      if (!rec.frames?.length || rec.frames.length !== expected) throw new Error(`tracks.json has ${rec.frames?.length ?? 0} frames, report says ${expected}`);
+      T.run = { sid, kind, report: normaliseReport(info.report, rec, kind), frames: rec.frames, wh: rec.image_wh };
       T.k = 0;  // the previous run may have been longer: never index past this run's frames
       T.images.clear();
       $("t-empty").hidden = true;
@@ -163,7 +169,8 @@ export function initTracking(ctx) {
       ctx.badge(R.labels.detector_source, "real", `${d.name} · ${d.license} · ${d.runtime} · sha256 ${d.sha256.slice(0, 12)}…`),
       ctx.badge(d.name, "real"),
       ctx.badge(R.labels.data_origin, R.labels.data_origin === "SYNTHETIC" ? "sim" : "real"),
-      ctx.badge("RECORDED CLIP", "warn", "Replay of a recorded run, not a live camera"),
+      ctx.badge(T.run.kind === "runs" ? "LIVE RUN · OPEN_LOOP_REPLAY" : "RECORDED CLIP", "warn",
+        T.run.kind === "runs" ? "Replay of a recorded live run; commands are recomputed open-loop (the video did not react)" : "Replay of a recorded run, not a live camera"),
     );
     const chip = (t, cls = "") => Object.assign(document.createElement("span"), { className: `chip ${cls}`, textContent: t });
     ov.append(chip(`Replay of recorded clip · ${d.name} on CPU · no identity re-ID`));
@@ -179,9 +186,21 @@ export function initTracking(ctx) {
     $("tm-acc").textContent = R ? (R.accuracy.MOTA == null ? "undefined (no ground truth)" : `${R.accuracy.MOTA}/${R.accuracy.IDF1}`) : "—";
   }
 
+  // A live run's report has a different shape; map it onto the fields the panel shows (nothing invented).
+  function normaliseReport(r, rec, kind) {
+    if (kind !== "runs") return r;
+    const lt = r.latency_ms || {}, dt = r.detect_ms || {};
+    return { ...r, frames_processed: rec.frames.length, clip_duration_s: r.media_seconds ?? 0,
+      labels: { ...(r.labels || {}), detector_source: r.labels?.detector_source || "REAL_MODEL", data_origin: r.labels?.data_origin || "LIVE_RUN" },
+      detector: { name: r.detector?.name || "?", license: r.detector?.license || "", runtime: r.detector?.runtime || "", sha256: r.detector?.sha256 || "" },
+      timing: { detect_ms_p50: dt.p50, detect_ms_p95: dt.p95, track_ms_p50: "—", track_ms_p95: "—", processing_fps: r.processed_fps },
+      tracks: { tracks_confirmed: "—", track_ids_created: "—" },
+      accuracy: { MOTA: null }, live: { latency_ms: lt, dropped: r.counts?.dropped } };
+  }
+
   // ---------------- frames ----------------
   function frameImage(k) {
-    const f = T.run.frames[k], url = `/api/tracks/${encodeURIComponent(T.run.sid)}/files/${f.image}`;
+    const f = T.run.frames[k], url = `${baseOf(T.run.sid, T.run.kind)}/files/${f.image}`;
     if (T.images.has(url)) return T.images.get(url);
     const p = new Promise((resolve) => { const im = new Image(); im.onload = () => resolve(im); im.onerror = () => resolve(null); im.src = url; });
     T.images.set(url, p);
@@ -303,7 +322,7 @@ export function initTracking(ctx) {
     T.target = { id, select_k: T.k }; T.replay = null;
     renderTrackList(); renderReadouts(); draw();
     try {
-      const r = await ctx.api(`/api/tracks/${encodeURIComponent(T.run.sid)}/control`, { method: "POST", body: JSON.stringify({ target_id: id, select_k: T.k }) });
+      const r = await ctx.api(`${baseOf(T.run.sid, T.run.kind)}/${T.run.kind === "runs" ? "replay" : "control"}`, { method: "POST", body: JSON.stringify({ target_id: id, select_k: T.k }) });
       if (tok !== T.replayToken) return;
       T.replay = r; ctx.announce(`Target #${id} chosen at frame ${T.k + 1}`);
     } catch (e) {

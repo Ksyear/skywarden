@@ -186,3 +186,57 @@ def test_track_job_runs_real_model_end_to_end(console):
     assert rep["detections"]["total"] == 0  # the synthetic room has no people: no false positives expected
     code, h = call(f"{base}/api/health")
     assert h["running_track_job"] is None
+
+
+# ---------- live runs ----------
+def _video(path, n=40, fps=10):
+    import cv2
+    import numpy as np
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (320, 240))
+    rng = np.random.default_rng(0)
+    base = cv2.GaussianBlur(cv2.resize(rng.integers(0, 255, (60, 80, 3), dtype=np.uint8), (640, 480)), (21, 21), 0)
+    for k in range(n):
+        vw.write(base[100:340, 10 + 3 * k:330 + 3 * k].copy())
+    vw.release()
+
+
+def test_live_run_lifecycle_control_and_integrity(tmp_path):
+    vids = tmp_path / "in"
+    vids.mkdir()
+    _video(vids / "pan.mp4")
+    httpd = make_server("127.0.0.1", 0, tmp_path / "maps", {vids: DataOrigin.PUBLIC_DATASET}, runs_root=tmp_path / "runs")
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    con = httpd.RequestHandlerClass.console
+    try:
+        _, inputs = call(f"{base}/api/inputs")
+        iid = next(i["id"] for i in inputs if i["kind"] == "video")
+        assert call(f"{base}/api/run-jobs", {"input_id": iid, "rate": "warp"})[0] == 400
+        code, r = call(f"{base}/api/run-jobs", {"input_id": iid, "rate": "realtime", "session": "lv1"})
+        assert code == 202
+        assert call(f"{base}/api/jobs", {"input_id": iid, "session": "m1"})[0] == 409  # one job at a time
+        assert call(f"{base}/api/runs/lv1/control", {"op": "dance"})[0] == 400
+        t0 = time.time()
+        while time.time() - t0 < 60:
+            code, info = call(f"{base}/api/runs/lv1")
+            if code == 200 and info["state"] not in ("RUNNING", "STARTING"):
+                break
+            time.sleep(0.2)
+        assert info["state"] == "SUCCEEDED", info
+        assert info["status"]["verify"]["state"] == "SUCCEEDED"
+        assert call(f"{base}/api/runs/lv1/control", {"op": "pause"})[0] == 409  # not running any more
+        code, latest = call(f"{base}/api/runs/lv1/latest")
+        assert code == 200 and latest["row"]["type"] == "frame" and latest["row"]["map_position"] == "NOT_AVAILABLE"
+        with urllib.request.urlopen(f"{base}/api/runs/lv1/files/timeline.jsonl", timeout=10) as r:
+            assert r.status == 200 and r.read().count(b"\n") >= 3
+        assert call(f"{base}/api/runs/lv1/files/process.log")[0] == 404
+        # tamper with the saved timeline: the run must no longer count as finished
+        tl = tmp_path / "runs" / "lv1" / "timeline.jsonl"
+        tl.write_text(tl.read_text() + '{"row": 99999}\n')
+        (tmp_path / "runs" / "lv1" / "run_report.json").touch()
+        con._verify_cache.clear()
+        code, info = call(f"{base}/api/runs/lv1")
+        assert info["state"] == "INCOMPLETE" and info["status"]["verify"]["problems"]
+    finally:
+        con.shutdown()
+        httpd.shutdown()
