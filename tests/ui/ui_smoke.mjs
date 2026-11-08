@@ -76,6 +76,9 @@ const text = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).te
 const clickSession = (sid) => evaluate(`[...document.querySelectorAll('#sessions button')].find(b => b.querySelector('.sid').textContent === ${JSON.stringify(sid)})?.click() ?? 'missing'`);
 
 await send("Page.enable"); await send("Runtime.enable");
+// An attached tab in an existing window would be a background tab, and Chromium throttles its timers (the console's
+// health polling) after a few minutes; keep it in front for the duration of the test. It is closed at the end.
+if (ATTACH) await send("Page.bringToFront");
 await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
 await send("Page.navigate", { url: BASE + "/" });
 
@@ -245,8 +248,9 @@ try {
     await shot(`15_tracking_narrow_${w}.png`);
   }
   await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`window.__beforeReload = 1`);  // gone once the new document has replaced the old one
   await send("Page.reload");
-  check("reload keeps the tracking workspace (#tracking)", await waitFor(`document.getElementById('conn-badge').textContent === 'SERVER ONLINE' && !document.getElementById('ws-track').hidden`));
+  check("reload keeps the tracking workspace (#tracking)", await waitFor(`!window.__beforeReload && document.readyState === 'complete' && document.getElementById('conn-badge')?.textContent === 'SERVER ONLINE' && !document.getElementById('ws-track').hidden`));
   await evaluate(`document.getElementById('mode-map').click()`);
 
   // 9. server loss and reconnect
