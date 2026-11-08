@@ -13,6 +13,7 @@ Skywarden은 스마트폰·웹캠·Tello EDU급 소형 드론의 단안 영상�
 | 희소 3D 지도 | 영상 파일 또는 이미지 폴더 → 샷(컷) 검출·정지 카메라 판정 → 프레임 선별(블러·저질감·중복 제거, 컷을 넘는 매칭 없음) → pycolmap SIFT/매칭 → **전역(global) 매퍼 기본**, `--mapper incremental` 선택 → 모델별 PLY + 카메라 궤적 + 보고서(`skywarden/map_report@2`). 보정 파일이 없으면 COLMAP이 SIMPLE_RADIAL 내부 파라미터를 추정. 작업 상태(`status`)와 별개로 **품질 판정** `quality.verdict` GOOD / PARTIAL / POOR을 고정 임계값(등록률 ≥ 0.6, 시간 커버리지 ≥ 0.7, 내부 공백 ≤ 2 s, 재투영 ≤ 1.5 px, 10 % 이상 모델 정확히 1개, 시간 정규화 궤적 점프 0, 점 ≥ 2,000)과 함께 기록. 여러 모델은 각자 좌표계로 따로 내보내며 절대 합치지 않음. 표시용 점 필터(`sparse_filtered.ply`: 삼각측량각 < 1.5°, 트랙 < 3, 재투영 > 2 × 중앙값 제거)는 원본 PLY를 바꾸지 않음 | `outputs/maps/<session>/{sparse.ply,sparse_filtered.ply,trajectory.json,map_report.json,coverage.json,shots.json,models/<i>/,log.txt}` |
 | 검증된 밀집 점군 (CPU) | GOOD 지도의 포즈로 CPU 평면 스윕 MVS(ZNCC, 이웃 4개 중 상위 2개, 640 px) → 뷰마다 희소점 일치율 ≥ 0.70 **그리고** 다중 뷰 일관성 ≥ 0.30을 통과한 깊이만 융합 → `DENSE_VERIFIED (relative scale)`. PatchMatch(CUDA/HIP 전용)는 이 Mac에서 BLOCKED. Poisson 메시는 시각 검사 FAIL로 **실험 단계**, 콘솔 레이어 아님 | `outputs/maps/<session>/dense/{dense_report.json,dense_verified.ply}` |
 | 단안 시각 주행거리계 (VO, 오프라인) | 저장된 영상에서 프레임 간 상대 포즈 추적. 모든 출력에 `kind=VO, scale=RELATIVE, loop_closure=false, relocalization=NOT_IMPLEMENTED, NOT_NAVIGATION_SAFE` 라벨. 컷·추적 실패 시 새 세그먼트(독립 좌표계, 연결하지 않음) | `packages/vision/vo.py`, `outputs/evidence/vo/` |
+| 라이브 실행 (한 시간축) | 영상 파일을 **원래 시간 기준**(`--rate realtime`) 또는 최대 속도(`--rate max`)로, 혹은 `webcam:N`을 입력으로 받아 검출 → Kalman 추적 → 대상 선택 → MOCK yaw → VO를 한 워커에서 처리. 처리가 밀리면 오래된 프레임을 버리고 **세어서 기록**(1칸 버퍼). 두 시계를 분리 기록: `media_t`(영상 시간)와 `run_t`(벽시계). `control.json`(순번 `seq`)로 pause / resume / seek / stop / select / clear; seek마다 `epoch`이 늘고 추적기·선택기·제어기·VO 세그먼트가 초기화. 완료 판정은 파일 기반: `timeline.jsonl` 줄 수·SHA-256·프레임 매니페스트가 맞을 때만 `SUCCEEDED`, 워커가 죽으면 `INCOMPLETE`, SIGTERM은 `CANCELLED`. 끝난 실행은 Tracking 탭에서 `OPEN_LOOP_REPLAY`로 재생. `map_position=NOT_AVAILABLE`, `relocalization=NOT_IMPLEMENTED`, 명령 `MOCK`·미송신 | `outputs/runs/<session>/{timeline.jsonl,run_report.json,tracks.json,status.json,frames/}` |
 | 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등), **품질 배지 GOOD / PARTIAL / POOR / UNRATED(READY 제거)**, 모델 선택기("partial: model i of N"), 샷 변화·궤적 점프를 표시하는 커버리지 띠(점프를 가로질러 경로를 그리지 않음), 기하 레이어 선택(희소 원본 / 필터 / 검증 밀집), 주 관측 영역 vs 전체 범위 프레이밍, `raw / filtered / drawn` 점 수 | `apps/desktop/` |
 | 사람 검출·추적 | YOLOX-nano ONNX(Apache-2.0)를 OpenCV DNN CPU로 실행(`source=REAL_MODEL`), 등속 Kalman 기반 `MultiTracker`: 마지막 **신뢰** 검출 후 2.0 s가 지난 트랙을 연관 **이전에** 만료, 게이트 = Mahalanobis χ² 9.21 **그리고** 픽셀 거리 ≤ 0.5 × 박스 높이, 확정 트랙은 게이트 그래프의 연결 성분으로 연관(트랙 1 : 검출 1만 신뢰, 그 외는 `AMBIGUOUS` — 보정·갱신 없음, 해당 검출은 보류), 잠정(TENTATIVE) 트랙만 남은 검출에 게이트된 Hungarian 적용. 한 명을 고르는 `TargetSelector`는 LOST 후 다시 선택하기 전까지 LOST 유지(자동 재선택 없음) | `outputs/tracks/<session>/{tracks.json,tracking_report.json,status.json,frames/}` |
 | Tracking 탭 | 프레임 위 박스 오버레이, 트랙 목록에서 대상 선택, 대상 상태(LOCKED / PREDICTING / AMBIGUOUS / LOST) 타임라인, 기록된 트랙 위에서 계산한 **가상** yaw 명령(`MOCK`, 송신 안 함). AMBIGUOUS 프레임은 배지와 `STOP · TARGET_AMBIGUOUS`로 표시되며 yaw는 0 | 콘솔 `Tracking` 탭 |
@@ -73,7 +74,13 @@ scripts/run_tracking.sh assets/input/<clip>.mp4 my_people_01 --origin REAL_VIDEO
 # 6) SIMULATED 폐루프 약 20 s: 합성 검출기 -> Kalman -> yaw PID -> MockTello (루프백 UDP)
 scripts/run_tracking_sim.sh
 
-# 7) 자동 테스트 (원시 로그를 outputs/evidence/tests/ 에 남김) / 헤드리스 UI 테스트
+# 7) 라이브 실행: 영상을 원래 시간 기준으로(또는 webcam:0) 검출+추적+MOCK yaw+VO 한 시간축에 기록 (콘솔 Live 탭과 동일)
+PYTHONPATH=packages .venv/bin/python -m vision.live_run assets/input/<clip>.mp4 --session live_01 --rate realtime --max-seconds 30
+#    옵션: --rate realtime|max  --max-seconds S  --no-vo  --fx F | --calib camera.json  --vo-width 640  --runs-root outputs/runs
+#    실행 중 제어: outputs/runs/live_01/control.json 에 {"seq": n, "op": "pause|resume|seek|stop|select|clear", "args": {...}} 를 원자적으로 기록
+PYTHONPATH=packages .venv/bin/python -m vision.live_run --verify outputs/runs/live_01   # 줄 수·SHA-256·프레임 검증만 수행
+
+# 8) 자동 테스트 (원시 로그를 outputs/evidence/tests/ 에 남김) / 헤드리스 UI 테스트
 scripts/test_all.sh
 node tests/ui/ui_smoke.mjs
 ```
@@ -88,38 +95,40 @@ node tests/ui/ui_smoke.mjs
 
 **Mapping 탭** — 입력 선택 후 `Build map`으로 빌드(단계: Frames → Features → Matching → Mapping → Export, 취소 가능), `Stored maps`에서 저장된 세션 로드. 프레임 스크러버를 움직이면 궤적과 점군이 그 시점까지 그려집니다. 하단 상태 줄에 등록 프레임 수, 3D 점 수, 재투영 오차, 렌더 시간이 표시됩니다.
 
-**Tracking 탭** — 입력과 검출기(로컬에서 해시가 확인된 모델만 목록에 뜸)를 고르고 `Run tracking`. 완료된 실행은 `Recorded runs`에서 재생합니다. 프레임 위 박스(대상 강조, PREDICTING 점선, TENTATIVE 점박이, 원시 검출 토글), 트랙 목록, 대상 상태 배지, 가상 yaw 바와 STOP 사유, 상태별 색 타임라인이 표시됩니다. 대상 선택은 **개루프 재생**입니다: 녹화 카메라는 돌지 않았으므로 yaw 값은 `MOCK · NOT SENT`로만 표시됩니다. 지도 빌드와 추적 실행은 한 번에 하나만 가능합니다(409).
+**Tracking 탭** — 입력과 검출기(로컬에서 해시가 확인된 모델만 목록에 뜸)를 고르고 `Run tracking`. 완료된 실행은 `Recorded runs`에서 재생합니다. 프레임 위 박스(대상 강조, PREDICTING 점선, TENTATIVE 점박이, 원시 검출 토글), 트랙 목록, 대상 상태 배지, 가상 yaw 바와 STOP 사유, 상태별 색 타임라인이 표시됩니다. 대상 선택은 **개루프 재생**입니다: 녹화 카메라는 돌지 않았으므로 yaw 값은 `MOCK · NOT SENT`로만 표시됩니다. 끝난 라이브 실행도 이 목록에 `LIVE RUN · OPEN_LOOP_REPLAY`로 올라옵니다. 지도 빌드·추적 실행·라이브 실행은 한 번에 하나만 가능합니다(409).
+
+**Live 탭** — 입력(영상 파일 또는 `webcam:N`), 속도(원래 시간 기준 / 최대 속도), 최대 초(기본 30)를 고르고 `Start`. 워커는 매 프레임을 검출 → 추적 → 대상 선택 → MOCK yaw → VO로 처리해 `timeline.jsonl`에 기록하고, 콘솔은 250 ms마다 `status.json`과 `frames/latest.jpg`를 읽어 최신 프레임과 박스를 그립니다. 상단 배지는 `LIVE / PAUSED / STALLED / STALE_DATA / DISCONNECTED / SUCCEEDED / FAILED / INCOMPLETE / CANCELLED`, 하단 상태 줄은 처리 fps · 지연 p95 · 버린 프레임 수 · epoch · 데이터 나이입니다. **확정(LOCKED) 박스를 클릭**하면 대상이 되고(`SELECT` 이벤트), LOST 뒤에는 다시 골라야 합니다(자동 재선택 없음). `Pause`/`Resume`/시크 슬라이더(파일만)/`Stop`은 `control.json`을 거쳐 워커에 전달되며, seek는 추적기·선택기·제어기·VO 세그먼트를 초기화합니다. "Camera pose (VO)" 패널은 **현재 세그먼트의 상대 스케일 경로**일 뿐 지도가 아니며 `Map position: NOT_AVAILABLE`로 표시됩니다. yaw는 라이브 파이프라인이 계산한 `MOCK` 값이고 송신되지 않습니다. `Stop`으로 끝낸 실행은 파일 검증 후 `SUCCEEDED (STOP_REQUESTED)`가 되고 Tracking 탭의 `Recorded runs`에서 재생할 수 있습니다.
 
 | 키 | 동작 |
 |---|---|
-| `M` / `T` | Mapping / Tracking 탭 전환(URL 해시 `#tracking` 유지) |
-| `Space`, `←` / `→` | 재생·일시정지, 한 프레임 이동 |
+| `M` / `T` / `L` | Mapping / Tracking / Live 탭 전환(URL 해시 `#tracking` 유지) |
+| `Space`, `←` / `→` | 재생·일시정지, 한 프레임 이동 (Live 탭에서는 `Space`가 워커에 pause/resume 전달) |
 | `R`, `+` / `-`, `G` | (Mapping) 뷰 리셋, 줌, 지도 성장 모드 토글 |
-| `1`–`9`, `0`, 박스 클릭 | (Tracking) n번째 트랙을 대상으로 선택, 대상 해제, 클릭 선택 |
+| `1`–`9`, `0`, 박스 클릭 | (Tracking) n번째 트랙을 대상으로 선택, 대상 해제, 클릭 선택. (Live) LOCKED 박스 클릭으로만 선택, `Clear target` 버튼으로 해제 |
 | `Esc` | 취소 확인 창 닫기 |
 
 ## 프로젝트 구조
 
 ```
-apps/desktop/            # server.py (stdlib HTTP, 127.0.0.1:8780) + static/{index.html,app.js,tracking.js,viewer.js,app.css}
+apps/desktop/            # server.py (stdlib HTTP, 127.0.0.1:8780) + static/{index.html,app.js,tracking.js,live.js,viewer.js,app.css}
 packages/
   mapping/               # frame_source, frame_selection, shots(컷·정지 카메라 검출), sparse_pipeline(pycolmap, 전역/증분 매퍼), quality(판정·임계값), export(모델별 PLY/trajectory, 점 필터), diagnose(구간 진단), dense(CPU 평면 스윕 MVS + 검증), evaluate(ATE), replay, labels, cli(build / rate)
-  vision/                # person_detector(YoloxDetector), track_video(offline job), bbox_distance_eval(E1), vo(단안 VO, 오프라인)
+  vision/                # person_detector(YoloxDetector), track_video(offline job), bbox_distance_eval(E1), vo(단안 VO), live_source(FileSource realtime|max, WebcamSource, 1칸 LatestFrameBuffer), live_run(한 시간축 워커: timeline.jsonl / status.json / run_report.json / tracks.json, control.json, --verify)
   tracking/              # tracker: Detection, MultiTracker(Kalman, 만료 우선, 게이트 그래프 성분 연관 + AMBIGUOUS, 잠정 트랙만 Hungarian), TargetSelector(sticky LOST)
   control/               # yaw_controller(PID, SafetyLimits, DroneCommand), virtual_replay, geofence(Geofence, GeofenceGuard)
   sim/                   # synthetic_scene, tracking_scenario(SIMULATED 폐루프), two_person_crossing(E2), geofence_scenario(E3)
 adapters/tello/          # protocol(SDK 2.0 텍스트), client(TelloClient + HardwareDisarmed 게이트), mock_tello(MockTello, 루프백 UDP)
 scripts/                 # run_demo.sh, build_sparse_map.sh, replay_map.sh, run_tracking.sh, run_tracking_sim.sh, fetch_models.sh, test_all.sh
-tests/                   # pytest 16개 모듈(112 tests; test_quality 8, test_export_geometry 3, test_vo 3 포함) + ui/ui_smoke.mjs(62 checks)
+tests/                   # pytest 17개 모듈(124 tests; test_live_run 11, test_quality 8, test_export_geometry 3, test_vo 3 포함) + ui/ui_smoke.mjs(73 checks)
 data/public/<set>/SOURCE.md   # 데이터셋 출처·라이선스·SHA-256 (데이터 자체는 git 제외)
 data/models/yolox/SOURCE.md   # 가중치 출처·SHA-256 (가중치는 git 제외)
 assets/input/            # 사용자 본인 영상을 두는 곳 (git 제외)
 assets/design/           # 레이아웃 목업 이미지 (결과 아님)
-outputs/                 # maps/, tracks/, evidence/ — 실행 산출물 (git 제외)
+outputs/                 # maps/, tracks/, runs/(라이브 실행), evidence/ — 실행 산출물 (git 제외)
 docs/                    # 설계·계획·검증 기록
 ```
 
-서버 API: `GET /api/health`, `/api/inputs`, `/api/sessions[/<id>[/files/*]]`, `/api/models`, `/api/tracks[/<id>[/files/*]]`; `POST /api/jobs`, `/api/jobs/<id>/cancel`, `/api/track-jobs`, `/api/track-jobs/<id>/cancel`, `/api/tracks/<id>/control`. 세션 id로 `.`/`..`는 거부되고 파일 경로는 허용 목록으로 제한됩니다.
+서버 API: `GET /api/health`, `/api/inputs`, `/api/sessions[/<id>[/files/*]]`, `/api/models`, `/api/tracks[/<id>[/files/*]]`, `/api/runs`, `/api/runs/<id>`(상태 + 완료 검증, 워커가 죽었으면 `INCOMPLETE`), `/api/runs/<id>/latest`, `/api/runs/<id>/vo`, `/api/runs/<id>/files/{timeline.jsonl,run_report.json,tracks.json,frames/latest.jpg,frames/fNNNNNN.jpg}`; `POST /api/jobs`, `/api/jobs/<id>/cancel`, `/api/track-jobs`, `/api/track-jobs/<id>/cancel`, `/api/tracks/<id>/control`, `/api/run-jobs`(`{input_id | "webcam:N", rate, session}`, 202), `/api/run-jobs/<id>/cancel`(SIGTERM → `CANCELLED`), `/api/runs/<id>/control`(`{op, args}` → `control.json`에 순번 부여, 202; 실행 중이 아니면 409, 모르는 op는 400), `/api/runs/<id>/replay`(끝난 실행의 `tracks.json`을 `OPEN_LOOP_REPLAY`로). 지도 빌드·추적·라이브 실행은 통틀어 한 번에 하나(409). 세션 id로 `.`/`..`는 거부되고 파일 경로는 허용 목록으로 제한되며, 라이브 입력은 입력 목록의 id 또는 `webcam:N` 문자열만 받습니다.
 
 ## 검증 결과
 
@@ -147,6 +156,11 @@ docs/                    # 설계·계획·검증 기록
 | Poisson 메시 (검증 밀집점 기반) | 스미다·FSC | 실험 단계; 시각 검사 **FAIL** | FSC: 지붕·나무는 보이나 화면 중심으로 모이는 방사형 줄무늬(원인 미확인); 스미다: 나무 몇 그루만. 콘솔 레이어로 제공하지 않음(F-09) |
 | 단안 VO (오프라인) | 합성 방 / 스미다·방콕·몬트리올 0–60 s | 기준 6개 PASS, **1개 FAIL** | 합성 ATE 1.82 %(≤ 5 %), 순수 회전 yaw 19.995° vs 20°, 컷 → 새 세그먼트, 방콕 컷 재현율 16/18 = 0.889, 몬트리올 삼각대 TRACKING 0 %, p50 2.6–4.8 ms/frame PASS. **스미다 vs SfM 궤적 23.3 %(≤ 15 %) FAIL**(초점거리 추정 0.9 × 폭); SfM 초점거리를 빌리면 2.56 %이나 독립 증거 아님(F-10) — `outputs/evidence/vo/` |
 | 희소 지도, 합성 방 | 생성기 8프레임 (SIMULATED) | PASS (파이프라인 점검용) | 8/8 등록, 3,845점, 0.084 px, ATE 0.5 mm. 실제 데이터 게이트에 집계하지 않음 |
+| 라이브 실행, 사람을 따라가는 드론 영상 1080p, 원래 시간 기준 30 s (위트레흐트) | CC BY YouTube 클립 (REAL_MODEL / PUBLIC_DATASET), 스크립트가 운영자 역할로 select | PASS (사전 기준 7/7); 대상 LOCKED는 프레임의 17 %뿐 | 처리 29.96 fps(기준 ≥ 8), 지연 p50 19.5 / p95 24.2 ms(기준 ≤ 250), 캡처 900 · 처리 899 · 버림 1(= 캡처 − 처리), 프레임 파일 899 = 프레임 행, 908행·SHA-256 검증 `SUCCEEDED`. 검출 9.8/11.4 ms, VO 5.0/8.7 ms. 대상 상태 LOCKED 155 / PREDICTING 576 / AMBIGUOUS 74 / LOST 82 / SEARCHING 12 (899 프레임 행), LOST 뒤 재선택 6회(select 7회 적용, 적용 지연 p50 60.5 / 최대 86.4 ms). MOCK yaw −40(한계)…+12, 149행, LOCKED 아닐 때 yaw ≠ 0 **0회**, 미송신. VO 세그먼트 2개(5.0 s에 기하 검증 실패로 분할), 포즈 없는 구간 2개 기록, 초점거리 추정(UNCALIBRATED)이라 경로는 상대·미검증. 재생 `OPEN_LOOP_REPLAY`, `nonzero_yaw_while_not_locked 0` — `outputs/evidence/live/t7_utrecht_realtime_30s.json` |
+| 라이브 실행, 같은 구간 최대 속도 | 동일, 선택 없음 | PASS (실행) | 47.78 fps, 902 캡처 / 901 처리 / 1 버림, 30.03 s 영상을 18.93 s에 처리, 전 구간 SEARCHING(yaw 0). 지연 p50 61.5 / p95 68.7 ms는 프레임을 즉시 넘기는 모드라 실시간 수치와 비교 불가 — `utrecht_max_30s.json` |
+| 라이브 실행, 실시간 페이싱·일시정지·시크·정지 (vtest.avi 10 fps) | 개발용 클립 | PASS | 10 s 영상 → 10.044 s 실행(±0.5 s 이내), `media_t` 단조 증가. 일시정지 2.07 s 동안 프레임 행 0 · PAUSED 하트비트 4행 · `media_now` 고정(2.0794), 재개 후 2.0 → 2.1 s 이어짐. 제어 적용 지연 pause 53.8 / resume 58.1 / 모르는 op 81.8(`CONTROL_IGNORED`) / seek 115.8 / stop 69.1 ms. seek 3.27 → 40 s: epoch 0 → 1, 트랙 비움, SEARCHING, VO 세그먼트 1 항등 포즈. stop → `SUCCEEDED (STOP_REQUESTED)` — `t2_vtest_realtime_pacing_10s.json`, `t2_t3_vtest_transport.json` |
+| 라이브 실행, 안전·지속성 | 스텁 파이프라인 / SIGKILL / SIGTERM / 파일 변조 (`tests/test_live_run.py` 11개, `tests/test_server.py` 1개) | PASS | AMBIGUOUS·PREDICTING·LOST·입력 정지 0.5 s·일시정지 구간 모두 yaw 0 + 사유, LOST는 select 전까지 유지. SIGKILL → `INCOMPLETE`(마지막 fsync까지 읽힘), SIGTERM → `CANCELLED`(부분 파일 보존), 완료 후 `timeline.jsonl`에 한 줄 추가 → API가 `INCOMPLETE`로 전환. 1칸 버퍼 `dropped == captured − processed` 정확 |
+| 라이브 실행, `webcam:0` (카메라 없는 Mac) | `system_profiler` 카메라 목록 비어 있음 | PASS (무장치 분기); 실제 웹캠 **NOT_RUN** | 0.285 s 만에 `FAILED` / `OPEN_SOURCE` / `NO_DEVICE`(기준 5 s 이내), 부분 SUCCEEDED 없음 — `t6_webcam0_no_device.json`. 물리 카메라가 없어 실제 웹캠 측정은 수행하지 못함 |
 | **본인 영상 지도·추적 (REAL_VIDEO)** | `assets/input/` | **NOT_RUN** | `.gitkeep`만 존재. 위 공개 클립은 타인 영상이라 이 게이트를 닫지 못함 |
 | 사람 추적, 주 증거 | TUM fr3/walking_xyz 859 → 287 프레임 (REAL_MODEL / PUBLIC_DATASET) | PASS | 검출 p50/p95 8.94/10.45 ms, 109.5 fps(검출+추적), 349 검출, 트랙 33개 중 24개 확정, MOTA/IDF1 미정의 |
 | 사람 추적, 스트레스 클립 | OpenCV `vtest.avi` 600 프레임 | PASS | 105.0 fps, 3,856 검출, 39개 중 23개 확정, 확정 지속 p50 13.0 s / 최대 52.1 s |
@@ -158,8 +172,8 @@ docs/                    # 설계·계획·검증 기록
 | 수정 후 추적기, 실제 클립 재추적 (같은 검출 재사용) | TUM walking / `vtest.avi` / 몬트리올 거리 (REAL_MODEL / PUBLIC_DATASET) | PASS (실행; 정확도 지표 아님) | id 33→34 / 39→56 / 438→680, 프레임당 LOCKED 1.01→0.84 / 6.32→4.74 / 7.33→4.41, AMBIGUOUS 트랙이 있는 프레임 50/287 · 369/600 · 987/1,390, vtest 확정 지속 p50 13.0→3.65 s. 혼잡할수록 STOP이 늘고 트랙이 짧아지는 의도된 대가 |
 | E4 옷 색으로 두 사람을 구분할 수 있는가 (얼굴·생체 식별은 처음부터 제외; 머리 영역 미사용, 메모리 전용 HSV 히스토그램, Hellinger 거리) | fix_v3 재추적 3개 클립의 LOCKED 트랙 의사 라벨 (REAL_MODEL / PUBLIC_DATASET, 정답 신원 없음) | 실행 PASS, **판정 NO_GO** (vtest FAIL, 거리 FAIL, TUM BLOCKED) | 사전 기준 TPR ≥ 0.60 @ FPR ≤ 1 % 를 2개 클립 이상. vtest AUC 0.870, TPR@1 % 0.154(871/2,484쌍); 몬트리올 거리 AUC 0.874, TPR@1 % 0.493(5,083/5,756쌍); TUM AUC 0.963이나 음성 쌍 55개(< 200)로 BLOCKED. 1 % 오매칭에서 진짜 매칭의 15–49 %만 회수 → 추적기에 통합하지 않음, AMBIGUOUS → STOP 유지 — `outputs/evidence/e4_appearance/` |
 | E3 가상 경계에서 이동을 멈추는가 | MockTello 운동학 토이, 10 × 10 m, 여유 1 m (SIMULATED_FRAME_ONLY) | PASS (추적기 수정 후 재실행도 PASS) | 사전 6개 체크 모두 참. 보호 시 최소 거리 경계 안쪽 1.175 m(여유 구간 미진입), 비보호 대조군은 0.485 m 침범, 포즈 끊김 3–4 s 동안 `NO_POSE_FOR_GEOFENCE` 정지 10회·이동 0, 비루프백 패킷 0. 재실행 `outputs/evidence/e3_geofence_after_tracker_fix/`: 6개 체크·거리 수치 동일, 10 Hz 루프 지터로 차단 프레임 수만 1프레임 차이(42→43) |
-| 자동 테스트 | `scripts/test_all.sh` | PASS | **112 passed in 41.37 s** (`outputs/evidence/tests/pytest-20261109-040916.log`; 035618 로그도 112 passed). 신규: `test_quality.py` 8, `test_export_geometry.py` 3, `test_vo.py` 3. 이전 단계: 94 passed(023923, 이름 변경 후), 97 passed(024540, `test_appearance.py` 포함). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
-| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | **62/62 checks**, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 04:08 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 Dia 창에 탭 하나를 열어 실행하고 그 탭만 닫음). 신규 11개: 세션 목록에 READY 없음, 품질 배지 표시, PARTIAL/POOR 지도 로드와 `PARTIAL RECONSTRUCTION` 라벨, 모델 선택기에 모든 모델, 두 번째 모델이 자기 좌표계로 로드, 커버리지 띠, 검증 밀집이 있을 때만 밀집 레이어 제공(자체 캡션), `raw / filtered / dense` 점 수, 희소점 캡션. 이전 51개(AMBIGUOUS 체크 4개 포함, F-06 수정 후)도 유지. 헤드리스 모드(`--browser`)도 유지 |
+| 자동 테스트 | `scripts/test_all.sh` | PASS | **124 passed in 84.81 s** (`outputs/evidence/tests/pytest-20261109-043008.log`). 신규: `test_live_run.py` 11(버퍼 2, 안전 1, 시계 2, seek 1, 완료 검증 1, SIGKILL/SIGTERM 1, 무장치 1, 실제 모델 end-to-end + 재생 1, 느린 파이프라인 드롭 1), `test_server.py` +1(라이브 실행 수명주기·제어·무결성). 이전 단계: 112 passed(040916), 97 passed(024540), 94 passed(023923). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
+| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | **73/73 checks**, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 04:29 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 Dia 창에 탭 하나를 열어 실행하고 그 탭만 닫음). 신규 11개(Live 탭): 라이브 작업공간 표시, 처리 프레임 `LIVE`, 상태 줄 `3.0 fps · 16 ms · 0 of 6`, 지도 위치 NOT_AVAILABLE 표시, pause → `PAUSED`, resume → `LIVE`, LOCKED 박스 클릭 → `SELECT #1`, stop → "19 frames processed, 0 dropped (STOP_REQUESTED). Files verified", 끝난 실행이 재생 목록에 등재, `OPEN_LOOP_REPLAY`로 재생, 연결 끊김 시 Live start 비활성. 이전 62개도 유지. 브라우저에서 아직 확인하지 않은 Live 상태: `STALE_DATA`, `STALLED`, `FAILED`, `INCOMPLETE`, `CANCELLED`(NOT_RUN; 라벨은 `live.js`에 존재) |
 | 실기체 비행 | — | BLOCKED | 정책상 금지, 기체 없음 |
 
 ## 알려진 한계 / 다음 단계
@@ -169,7 +183,8 @@ docs/                    # 설계·계획·검증 기록
 3. **E2 수정의 대가.** `TARGET_AMBIGUOUS` STOP과 만료 우선 규칙으로 대상 id가 다른 사람의 검출을 물려받거나 2 s를 넘겨 살아남는 일은 없어졌지만(E2 PASS), 교차·근접 후 **같은 id 재획득은 보장되지 않습니다**(모션 전용). 혼잡한 클립에서는 STOP 시간이 늘고 트랙이 짧아집니다(위 표). 외모 Re-ID는 설계상 도입하지 않습니다. 실험 E4에서 얼굴·생체 식별 없이 옷 색만으로 AMBIGUOUS를 풀 수 있는지 측정했으나 1 % 오매칭률에서 진짜 매칭 회수율이 15–49 %에 그쳐 NO_GO로 닫았고(위 표), 학습된 재식별 임베딩은 라이선스·정책 결정 전까지 NOT_RUN입니다. 수정 후 회귀(94 tests, UI 51/51, E3 재실행)는 모두 PASS입니다.
 4. **지오펜스는 포즈 소스가 필요합니다.** Tello EDU는 절대 위치를 주지 않습니다. E3의 가드는 시뮬레이터의 포즈를 읽었고, 0.4 s 지연 모델은 토이입니다. 실제 기체에서는 미션 패드 등 별도 포즈 소스와 측량된 지도 앵커 없이는 쓸 수 없습니다.
 5. **F-01 원인 미확인.** FULL_OPENCV 5계수(k3 = 1.1633) 보정으로 초기화가 실패하는 이유는 가설 단계입니다. 다음 테스트는 5계수로 사전 왜곡 보정한 프레임을 PINHOLE로 빌드하는 것입니다.
-6. **미구현 (NOT_RUN / NOT_IMPLEMENTED):** 실시간 웹캠 실행과 타임라인 재생(별도 브랜치에서 진행 중), 저장된 지도에 대한 재측위(VO 출력에 `relocalization=NOT_IMPLEMENTED`), 상대 깊이 추정 모델(계획 D5), 녹화 UI, AprilTag/체커보드 기반 미터 앵커링, 지도 뷰의 STALE_DATA 배너, `yolox_tiny` 비교 실행. 미터 앵커링 전까지 어떤 지도에도 미터 거리를 붙이지 않습니다.
+6. **미구현 (NOT_RUN / NOT_IMPLEMENTED):** 물리 웹캠으로의 라이브 실행(이 Mac에 카메라가 없어 NOT_RUN; `webcam:0`은 `FAILED NO_DEVICE`로 올바르게 끝남), 저장된 지도에 대한 재측위·지도 위치(라이브 실행 헤더와 VO 출력 모두 `relocalization=NOT_IMPLEMENTED`, `map_position=NOT_AVAILABLE`), 라이브 실행 안의 폐루프 제어(라이브는 항상 개루프, 폐루프 시뮬레이션은 MockTello 시나리오로 분리), 상대 깊이 추정 모델(계획 D5), 녹화 UI, AprilTag/체커보드 기반 미터 앵커링, 지도 뷰의 STALE_DATA 배너와 Live 탭의 STALE_DATA/STALLED/FAILED/INCOMPLETE/CANCELLED 브라우저 검증, `yolox_tiny` 비교 실행. 미터 앵커링 전까지 어떤 지도에도 미터 거리를 붙이지 않습니다.
+12. **라이브 실행은 측정이지 추격 성능 보장이 아닙니다.** 위트레흐트 30 s 실행에서 대상이 LOCKED인 프레임은 17 %(155/899)였고 LOST 뒤 재선택이 6회 필요했습니다. 이는 사람이 화면을 크게 차지하며 카메라가 따라가는 영상에서 모션 전용 추적기가 보이는 한계이며(지도 쪽 F-11과 같은 클립), LOCKED이 아닌 동안 yaw는 항상 0이었습니다. VO 경로는 세그먼트별 상대 스케일이고 초점거리를 추정했으므로 지도 위치로 쓰지 않습니다. select는 현재 프레임의 확정 트랙 id만 받아들이고(아니면 `SELECT_REJECTED`), `Stop`은 `SUCCEEDED (STOP_REQUESTED)`, SIGTERM/취소는 `CANCELLED`입니다.
 7. **단일 환경.** 모든 수치는 Apple M6 / 16 GiB / macOS 27.2 한 대에서 측정했습니다.
 8. **품질 판정은 지도가 "맞다"는 뜻이 아닙니다.** GOOD은 등록률·커버리지·재투영·모델 수·점프 수의 고정 임계값을 통과했다는 뜻이며, 정답 궤적과 비교한 지도는 TUM fr1/desk뿐입니다(증분 2.05 cm, 전역 1.66 cm ATE RMSE, 스케일 차용). 스미다·FSC·위트레흐트 지도에는 정답이 없어 절대 정확도를 주장하지 않습니다. FSC 증분 지도의 후반부 드리프트는 전역 매퍼로 사라졌지만 원인은 확인되지 않았고(F-08), 위트레흐트는 두 매퍼 모두 PARTIAL로 남아 있습니다(F-11).
 9. **편집된 영상은 지도가 되지 않습니다.** 방콕 60 s 구간(컷 18개)은 컷을 넘는 매칭을 막은 뒤 커버리지 0.068–0.085의 POOR로 남았습니다. 한 테이크 영상(스미다·FSC)만 GOOD입니다.
@@ -198,6 +213,7 @@ Tello EDU 연동 근거: Ryze Tello SDK 2.0 사용자 가이드(UDP 8889 명령,
 - `docs/ARCHITECTURE.md`, `docs/VISUAL_MAPPING.md`, `docs/CAMERA_ONLY_EXECUTION_PLAN.md` — 설계와 지도 정확도 계층
 - `docs/IMPLEMENTATION_PLAN.md`, `docs/PLAN_M4_DETECTOR_TRACKING_PANEL.md`, `docs/PLAN_E2_TRACKER_FIX.md` — 마일스톤 계획, 종료 테스트, E2 추적기 수정 계획과 구현 결과
 - `docs/PLAN_MAPPING_QUALITY.md`, `docs/PLAN_GEOMETRY_AND_DENSE.md` — 지도 품질 판정·샷 처리 계획, 기하 진단·매퍼 비교·CPU 밀집 경로 계획, 각각 끝에 "Result" 절(기준별 PASS/FAIL/BLOCKED/NOT_RUN)
+- `docs/PLAN_LIVE_RUN_TIMELINE.md` — 한 시간축 라이브 실행(파일 원속도/웹캠, 검출+추적+VO, control.json, 타임라인 재생) 계획과 끝의 "Result" 절(T1–T8 판정, 구현 편차)
 - `docs/VERIFICATION_CONTRACT.md`, `docs/RECOVERY_MATRIX.md`, `docs/PHASES_AND_ACCEPTANCE.md` — 검증 기준, 복구 매트릭스, 품질 게이트
 - `docs/TELLO_SDK.md`, `docs/ENV_AUDIT.md`, `docs/DESIGN_ASSETS.md`, `docs/SOURCES_AND_ASSUMPTIONS.md`
 
