@@ -4,6 +4,13 @@ import { initTracking } from "./tracking.js";
 const $ = (id) => document.getElementById(id);
 const STAGES = { SELECT_FRAMES: "Frames", EXTRACT_FEATURES: "Features", MATCH_FEATURES: "Matching", MAP: "Mapping", EXPORT: "Export" };
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
+const QUALITY_TONE = { GOOD: "ok", PARTIAL: "warn", POOR: "error", UNRATED: "offline" };
+const QUALITY_HINT = {
+  GOOD: "All map-quality checks pass for the declared input",
+  PARTIAL: "Only part of the input was reconstructed, or the path has jumps / several separate models",
+  POOR: "The reconstruction is not usable as a map of this input",
+  UNRATED: "Built before map-quality checks; run `python -m mapping.cli rate <session>`",
+};
 const HINTS = {
   SELECT_FRAMES: "Check the input path/format, or record a steadier clip with more sideways motion.",
   EXTRACT_FEATURES: "Frames may be too dark or textureless; add light or texture.",
@@ -97,10 +104,12 @@ async function refreshSessions() {
     const li = document.createElement("li"); const b = document.createElement("button");
     b.type = "button"; b.setAttribute("aria-current", String(state.loaded?.sid === s.id));
     const sid = document.createElement("span"); sid.className = "sid"; sid.textContent = s.id;
-    const tone = s.state === "SUCCEEDED" ? (s.labels?.map_source === "SIMULATED" ? "sim" : "ok") : s.state === "RUNNING" || s.state === "STARTING" ? "warn" : "error";
-    const st = badge(s.state === "SUCCEEDED" ? (s.labels?.map_source === "SIMULATED" ? "SIMULATED" : "READY") : s.state, tone);
+    // A finished build is labelled by its MAP QUALITY, never just "ready": PARTIAL / POOR / UNRATED are not normal completions.
+    const ok = s.state === "SUCCEEDED", sim = s.labels?.map_source === "SIMULATED";
+    const tone = ok ? QUALITY_TONE[s.quality] ?? "offline" : s.state === "RUNNING" || s.state === "STARTING" ? "warn" : "error";
+    const st = badge(ok ? `${sim ? "SIM · " : ""}${s.quality}` : s.state, tone, ok ? QUALITY_HINT[s.quality] ?? "" : "");
     const meta = document.createElement("span"); meta.className = "meta";
-    meta.textContent = s.state === "SUCCEEDED" ? `${s.registered} frames · ${s.points3D.toLocaleString()} pts · ${s.labels?.data_origin}` : (s.created_at || "").slice(0, 19).replace("T", " ");
+    meta.textContent = s.state === "SUCCEEDED" ? `${s.registered} frames · ${s.points3D.toLocaleString()} pts${s.num_models > 1 ? ` · ${s.num_models} separate models` : ""} · ${s.labels?.data_origin}` : (s.created_at || "").slice(0, 19).replace("T", " ");
     b.append(sid, st, meta);
     b.disabled = s.state !== "SUCCEEDED";
     b.title = b.disabled ? "Only finished builds can be opened" : "Open this stored map";
@@ -161,7 +170,12 @@ function renderJob() {
   const frac = s === "SUCCEEDED" ? 1 : Math.max(0, (st.stage_index ?? 0) + (st.progress ? st.progress[0] / Math.max(1, st.progress[1]) : 0)) / 5;
   $("job-bar").style.width = `${Math.round(frac * 100)}%`;
   if (s === "RUNNING" || s === "STARTING") showJobMsg(info.stale ? "warn" : "", info.stale ? `No update for ${info.status_age_s} s` : "Building (CURRENT_SESSION)", st.message || "starting…");
-  else if (s === "SUCCEEDED") showJobMsg("ok", "Map built", `${info.report.reconstruction.registered_images}/${info.report.reconstruction.selected_frames} frames registered. Loaded as ${info.report.labels.map_source}.`);
+  else if (s === "SUCCEEDED") {
+    const q = info.report.quality || {}, r = info.report.reconstruction;
+    const good = q.verdict === "GOOD";
+    showJobMsg(good ? "ok" : "warn", good ? "Map built · quality GOOD" : `Build finished · map quality ${q.verdict ?? "UNRATED"}`,
+      `${r.registered_images}/${r.selected_frames} frames in the largest of ${r.num_models} model(s).${good ? "" : ` Failed checks: ${(q.failed_checks || []).join(", ") || "not rated"}.`}`);
+  }
   else if (s === "CANCELLED") showJobMsg("warn", "Build cancelled", "Partial frames are kept in the session folder. Start a new build when ready.");
   else {
     const f = info.report?.failure; const msg = f?.message || st.message || "The build process ended without a result.";
@@ -181,20 +195,38 @@ async function cancelJob() {
 }
 
 // ---------------- loading a stored map ----------------
-async function loadSession(sid) {
+async function loadSession(sid, modelRank = 0) {
   const token = ++state.loadToken;
   stopPlay();
   setEmpty("Loading map…", `Reading ${sid} (PLY + trajectory).`, "");
   try {
     const base = `/api/sessions/${encodeURIComponent(sid)}`;
-    const [info, traj, plyRes] = await Promise.all([api(base), api(`${base}/files/trajectory.json`), api(`${base}/files/sparse.ply`, { raw: true, timeout: 30000 })]);
+    const info = await api(base);
+    const models = info.report?.reconstruction?.models || null;  // per-model exports (report schema @2)
+    const prefix = models && modelRank > 0 ? `models/${modelRank}/` : "";
+    const pf = report_point_filter(info.report, modelRank);
+    const dense = modelRank === 0 ? await api(`${base}/files/dense/dense_report.json`).catch(() => null) : null;
+    let layer = $("layer").value;
+    if ((layer === "filtered" && !pf) || (layer === "dense" && !(dense && dense.dense_verified_points > 0))) layer = "sparse";
+    const useFiltered = layer === "filtered";
+    const plyPath = layer === "dense" ? "dense/dense_verified.ply" : `${prefix}${useFiltered ? "sparse_filtered.ply" : "sparse.ply"}`;
+    const [traj, plyRes, coverage] = await Promise.all([api(`${base}/files/${prefix}trajectory.json`),
+      api(`${base}/files/${plyPath}`, { raw: true, timeout: 60000 }),
+      api(`${base}/files/coverage.json`).catch(() => null)]);
     const cloud = parsePly(await plyRes.arrayBuffer());
     if (token !== state.loadToken) return;  // a newer load started meanwhile
     const report = info.report;
-    if (cloud.count !== report.reconstruction.points3D) throw new Error(`PLY has ${cloud.count} points, report says ${report.reconstruction.points3D}`);
+    const expected = layer === "dense" ? dense.dense_verified_points : useFiltered ? pf.filtered : models ? models[modelRank].points3D : report.reconstruction.points3D;
+    if (cloud.count !== expected) throw new Error(`PLY has ${cloud.count} points, report says ${expected}`);
     const poses = traj.poses.map((p) => ({ ...p, R: p.T_world_camera.slice(0, 3).map((r) => r.slice(0, 3)), C: p.T_world_camera.slice(0, 3).map((r) => r[3]) }));
-    state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now() };
+    state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now(), modelRank, models, coverage,
+      pointFilter: pf, filtered: !!useFiltered, layer, dense };
+    $("layer").value = layer;
+    $("layer").options[1].disabled = !pf;
+    $("layer").options[2].disabled = !(dense && dense.dense_verified_points > 0);
+    renderModelSelect();
     viewer.setData(cloud, poses);
+    viewer.setBreaks(modelRank === 0 && coverage ? (coverage.jumps_in_largest_model || []).map((j) => j.t_to) : []);
     $("map-empty").hidden = true;
     renderLabels(); renderMetrics(); refreshSessions();
     setIndex(0, true);
@@ -217,7 +249,9 @@ function renderLabels() {
   const tl = $("map-overlay-tl"), bl = $("map-overlay-bl"); tl.replaceChildren(); bl.replaceChildren();
   if (!L) return;
   const sim = L.map_source === "SIMULATED";
+  const q = state.loaded.report.quality?.verdict ?? "UNRATED";
   el.append(
+    badge(`QUALITY ${q}`, QUALITY_TONE[q] ?? "offline", `${QUALITY_HINT[q] ?? ""}${state.loaded.report.quality?.failed_checks?.length ? ` · failed: ${state.loaded.report.quality.failed_checks.join(", ")}` : ""}`),
     badge(L.map_source, sim ? "sim" : "real", sim ? "Generated from a synthetic render with known ground truth" : "Loaded from a finished reconstruction on disk"),
     badge(`${L.data_origin}`, sim ? "sim" : "real"),
     badge(`SCALE ${L.scale}`, "warn", "Monocular reconstruction: distances have no metric unit"),
@@ -226,6 +260,16 @@ function renderLabels() {
   );
   const chip = (t, cls = "") => Object.assign(document.createElement("span"), { className: `chip ${cls}`, textContent: t });
   tl.append(chip(sim ? "SIMULATED data — not a measurement" : "Replay of stored reconstruction — not live mapping", sim ? "" : ""));
+  const layerChip = { sparse: "SPARSE POINTS (SfM) — feature points only, not walls or floors",
+    filtered: "SPARSE POINTS, FILTERED — triangulation angle ≥ 1.5°, ≥ 3 views, low reprojection; raw points kept",
+    dense: "DENSE · VERIFIED — plane-sweep depth checked against sparse points and a second view; unobserved areas stay empty" }[state.loaded.layer || "sparse"];
+  tl.append(chip(layerChip, ""));
+  const M = state.loaded.models;
+  if (q !== "GOOD" || (M && M.length > 1)) {
+    const m = M ? M[state.loaded.modelRank] : null, n = state.loaded.report.reconstruction.selected_frames;
+    tl.append(chip(M && M.length > 1 ? `PARTIAL RECONSTRUCTION — model ${state.loaded.modelRank + 1} of ${M.length} (${m.registered_images}/${n} frames); models have separate coordinate frames and are never merged`
+                                    : `PARTIAL RECONSTRUCTION — quality ${q}`, "warn"));
+  }
   bl.append(chip("Relative units · scale unknown", "warn"), chip(`${L.geometry} · ${state.loaded.poses.length} cameras`));
 }
 
@@ -235,6 +279,40 @@ function renderMetrics() {
   $("m-pts").textContent = r ? r.points3D.toLocaleString() : "—";
   $("m-err").textContent = r ? `${r.mean_reprojection_error_px.toFixed(2)} px` : "—";
   $("m-ate").textContent = ev ? `${(ev.ate_rmse_m * 100).toFixed(1)} cm RMSE (Sim3-aligned to ground truth, ${ev.matched_poses} poses)` : "not evaluated (no ground truth)";
+}
+
+function report_point_filter(report, rank) {
+  const pf = report?.point_filter;
+  return pf ? pf[String(rank)] ?? null : null;
+}
+
+// ---------------- separate models + coverage ----------------
+function renderModelSelect() {
+  const sel = $("model-select"), M = state.loaded?.models;
+  sel.hidden = !(M && M.length > 1);
+  if (sel.hidden) return;
+  const n = state.loaded.report.reconstruction.selected_frames;
+  sel.replaceChildren(...M.map((m, i) => new Option(`model ${i + 1} of ${M.length} · ${m.registered_images}/${n} frames${m.time_range_s ? ` · ${m.time_range_s[0].toFixed(1)}–${m.time_range_s[1].toFixed(1)} s` : ""}`, String(i))));
+  sel.value = String(state.loaded.modelRank);
+}
+function drawCoverage() {
+  const c = $("coverage"), g = c.getContext("2d"), dpr = window.devicePixelRatio || 1;
+  const r = c.getBoundingClientRect(); c.width = Math.max(1, Math.round(r.width * dpr)); c.height = Math.max(1, Math.round(r.height * dpr));
+  g.clearRect(0, 0, c.width, c.height);
+  const cov = state.loaded?.coverage; $("coverage-wrap").hidden = !cov; if (!cov) return;
+  const css = getComputedStyle(document.documentElement), v = (k) => css.getPropertyValue(k).trim();
+  const F = cov.frames, n = F.length, w = c.width / n, rank = state.loaded.modelRank;
+  F.forEach((f, i) => {
+    g.fillStyle = f.models.includes(rank) ? v("--accent") : f.models.length ? v("--muted") : v("--error");
+    g.globalAlpha = f.models.includes(rank) ? 1 : 0.55; g.fillRect(i * w, 0, Math.ceil(w), c.height * 0.7);
+    if (i > 0 && f.shot !== F[i - 1].shot) { g.globalAlpha = 1; g.fillStyle = v("--text"); g.fillRect(i * w - dpr / 2, 0, dpr, c.height); }
+  });
+  g.globalAlpha = 1; g.fillStyle = v("--warn");
+  if (rank === 0) for (const j of cov.jumps_in_largest_model || []) { const i = F.findIndex((f) => f.timestamp_s >= j.t_to); if (i >= 0) g.fillRect(i * w - 2 * dpr, c.height * 0.7, 4 * dpr, c.height * 0.3); }
+  const p = state.loaded.poses[state.idx], cur = p ? F.findIndex((f) => f.file === p.image_name) : -1;
+  if (cur >= 0) { g.fillStyle = v("--focus"); g.fillRect((cur + 0.5) * w - dpr, 0, 2 * dpr, c.height); }
+  const missing = F.filter((f) => !f.models.length).length;
+  $("coverage-meta").textContent = `${F.length - missing}/${F.length} selected frames in some model · ${F.filter((f) => f.models.includes(rank)).length} in this model · ${(cov.jumps_in_largest_model || []).length} path jumps · ${new Set(F.map((f) => f.shot)).size} shot(s)`;
 }
 
 // ---------------- replay ----------------
@@ -259,6 +337,7 @@ function setIndex(i, force = false) {
     probe.onerror = () => { if (tok === frameToken) { img.hidden = true; $("frame-empty").hidden = false; $("frame-empty").textContent = `Frame ${p.image_name} is missing from the session folder.`; } resolve(); };
     probe.src = url;
     renderFilmstrip();
+    drawCoverage();
   });
 }
 function renderFilmstrip() {
@@ -297,13 +376,18 @@ function renderControls() {
   $("build").title = trackRunning ? "A tracking run is in progress; one job at a time" : "";
   $("cancel").disabled = !online || !running;
   if (!running) $("cancel-confirm").hidden = true;
-  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view"]) $(id).disabled = !has;
+  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "framing"]) $(id).disabled = !has;
+  $("layer").disabled = !has;
   $("input-select").disabled = running; $("fps").disabled = running; $("max-frames").disabled = running; $("use-calib").disabled = running;
 }
 
 function statusTick() {
   const p50 = pct(state.renderMs, 0.5), p95 = pct(state.renderMs, 0.95);
-  $("m-render").textContent = p50 == null ? "—" : `${p50.toFixed(1)}/${p95.toFixed(1)} ms (${viewer.lastDrawn?.toLocaleString() ?? 0} pts)`;
+  const pf = state.loaded?.pointFilter, dn = state.loaded?.dense;
+  const counts = (pf ? ` · sparse raw ${pf.raw.toLocaleString()} / filtered ${pf.filtered.toLocaleString()}` : "")
+    + (dn && dn.dense_verified_points ? ` · dense verified ${dn.dense_verified_points.toLocaleString()}` : "")
+    + (state.loaded ? ` · showing ${state.loaded.layer}` : "");
+  $("m-render").textContent = p50 == null ? "—" : `${p50.toFixed(1)}/${p95.toFixed(1)} ms (${viewer.lastDrawn?.toLocaleString() ?? 0} of ${viewer.cloud?.count?.toLocaleString() ?? 0} pts drawn${counts})`;
   const a50 = pct(state.apiMs, 0.5), a95 = pct(state.apiMs, 0.95);
   $("m-api").textContent = a50 == null ? "—" : `${a50.toFixed(0)}/${a95.toFixed(0)} ms`;
   const age = $("m-age");
@@ -338,6 +422,13 @@ $("next").addEventListener("click", () => { stopPlay(); setIndex(state.idx + 1);
 $("play").addEventListener("click", togglePlay);
 $("scrub").addEventListener("input", (e) => { stopPlay(); setIndex(parseInt(e.target.value, 10)); });
 $("reset-view").addEventListener("click", () => viewer.resetView());
+$("layer").addEventListener("change", () => { if (state.loaded) loadSession(state.loaded.sid, state.loaded.modelRank); });
+$("framing").addEventListener("click", () => {
+  const full = $("framing").getAttribute("aria-pressed") !== "true";
+  $("framing").setAttribute("aria-pressed", String(full)); viewer.setFraming(full ? "full" : "main");
+});
+$("model-select").addEventListener("change", (e) => { if (state.loaded) loadSession(state.loaded.sid, parseInt(e.target.value, 10)); });
+window.addEventListener("resize", () => drawCoverage());
 $("growth").addEventListener("click", () => {
   state.growth = !state.growth; $("growth").setAttribute("aria-pressed", String(state.growth));
   viewer.setVisibleUpTo(state.growth ? state.idx : Infinity);

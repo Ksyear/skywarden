@@ -16,6 +16,7 @@ const argBrowser = process.argv.indexOf("--browser");
 const BROWSER = argBrowser > 0 ? process.argv[argBrowser + 1] : "/Applications/Dia.app/Contents/MacOS/Dia";
 const argAttach = process.argv.indexOf("--attach");
 const ATTACH = argAttach > 0 ? process.argv[argAttach + 1] : null;
+const MQ_PARTIAL = "mq_bangkok_60s_after_mf300";
 const REAL = "tum_fr1_desk_K4", SIM = "synthetic_room_seed7", TRACK = "tum_walking_xyz_nano", TRACK_AMB = "tum_walking_xyz_nano_fixv3";
 mkdirSync(OUT, { recursive: true });
 
@@ -26,7 +27,7 @@ const check = (name, ok, detail = "") => { results.push({ name, status: ok ? "PA
 
 // ---------- server ----------
 const mapsRoot = mkdtempSync(join(tmpdir(), "sda-ui-maps-"));
-for (const s of [REAL, SIM]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
+for (const s of [REAL, SIM, MQ_PARTIAL]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
 const tracksRoot = mkdtempSync(join(tmpdir(), "sda-ui-tracks-"));
 for (const t of [TRACK, TRACK_AMB]) if (existsSync(join(ROOT, "outputs/tracks", t))) symlinkSync(join(ROOT, "outputs/tracks", t), join(tracksRoot, t));
 const port = await freePort();
@@ -110,7 +111,7 @@ try {
   check("arrow keys step through poses", (await text("pose-count")).startsWith("13 /"), await text("pose-count"));
   await evaluate(`document.getElementById('growth').click()`);
   await sleep(1300);  // status bar refreshes once per second
-  const shownGrowth = await evaluate(`(() => { const m = document.getElementById('m-render').textContent.match(/\\(([\\d,]+) pts\\)/); return m ? Number(m[1].replace(/,/g,'')) : -1 })()`);
+  const shownGrowth = await evaluate(`(() => { const m = document.getElementById('m-render').textContent.match(/\\(([\\d,]+) of /); return m ? Number(m[1].replace(/,/g,'')) : -1 })()`);
   check("map growth hides points not yet observed", shownGrowth > 0 && shownGrowth < report.report.reconstruction.points3D, `${shownGrowth} drawn of ${report.report.reconstruction.points3D}`);
   await key(" ");
   await sleep(1300);
@@ -118,6 +119,26 @@ try {
   const afterPlay = await text("pose-count");
   check("Space plays and pauses replay", !afterPlay.startsWith("13 /"), afterPlay);
   await shot("03_replay_growth.png");
+
+  // 3b. map quality is shown instead of "ready"; a partial map says so and exposes its models and coverage
+  check("session list never says READY", await evaluate(`![...document.querySelectorAll('#sessions .badge')].some(b => b.textContent === 'READY')`));
+  check("real map shows its quality verdict", (await text("badges")).includes("QUALITY GOOD"), await text("badges"));
+  check("sparse-points caption shown", (await text("map-overlay-tl")).includes("SPARSE POINTS"));
+  if (existsSync(join(ROOT, "outputs/maps", MQ_PARTIAL))) {
+    await clickSession(MQ_PARTIAL);
+    check("partial map loads with QUALITY PARTIAL/POOR", await waitFor(`document.getElementById('map-empty').hidden && /QUALITY (PARTIAL|POOR)/.test(document.getElementById('badges').textContent)`, 20000), await text("badges"));
+    check("partial map is labelled PARTIAL RECONSTRUCTION", (await text("map-overlay-tl")).includes("PARTIAL RECONSTRUCTION"), await text("map-overlay-tl"));
+    const nModels = await evaluate(`document.getElementById('model-select').hidden ? 0 : document.getElementById('model-select').options.length`);
+    const rep = await (await fetch(`${BASE}/api/sessions/${MQ_PARTIAL}`)).json();
+    check("model selector lists every separate model", nModels === rep.report.reconstruction.num_models && nModels > 1, `${nModels} vs ${rep.report.reconstruction.num_models}`);
+    check("coverage strip shows registered/missing frames", await waitFor(`!document.getElementById('coverage-wrap').hidden && document.getElementById('coverage-meta').textContent.includes('selected frames')`), await text("coverage-meta"));
+    await shot("03b_partial_map_model1.png");
+    if (nModels > 1) {
+      await evaluate(`(() => { const s = document.getElementById('model-select'); s.value = '1'; s.dispatchEvent(new Event('change')); })()`);
+      check("second model loads in its own frame", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('model 2 of')`, 20000), await text("map-overlay-tl"));
+      await shot("03c_partial_map_model2.png");
+    }
+  }
 
   // 4. simulated map is labelled as such
   await clickSession(SIM);

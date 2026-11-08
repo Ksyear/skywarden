@@ -34,7 +34,10 @@ from vision.person_detector import MODELS  # noqa: E402
 HARDWARE_ARMED = False  # this app never talks to a drone; kept explicit for the UI contract
 DRY_RUN = True
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # no leading dot: blocks "." and ".."
-SESSION_FILES = {"sparse.ply", "trajectory.json", "frames.json", "map_report.json", "log.txt", "evaluation.json"}
+SESSION_FILES = {"sparse.ply", "trajectory.json", "frames.json", "map_report.json", "log.txt", "evaluation.json",
+                 "coverage.json", "shots.json", "sparse_filtered.ply", "diagnosis_segments.json",
+                 "dense/dense_verified.ply", "dense/dense_report.json"}
+MODEL_FILE = re.compile(r"^models/\d{1,3}/(sparse\.ply|sparse_filtered\.ply|trajectory\.json|model_report\.json)$")
 TRACK_FILES = {"tracks.json", "tracking_report.json"}
 FRAME_FILE = re.compile(r"^frames/f\d{6}\.jpg$")
 STALE_AFTER_S = 20.0  # a running build that has not updated status.json for this long is shown as stale
@@ -172,7 +175,10 @@ class Console:
                             "tracks_confirmed": (rep.get("tracks") or {}).get("tracks_confirmed"),
                             "created_at": rep.get("created_at") or (s.get("status") or {}).get("started_at")})
                 continue
+            q = rep.get("quality") or {}
             out.append({"id": d.name, "state": s["state"], "labels": rep.get("labels"),
+                        "quality": q.get("verdict") or ("UNRATED" if s["state"] == "SUCCEEDED" else None),
+                        "num_models": (rep.get("reconstruction") or {}).get("num_models"),
                         "registered": (rep.get("reconstruction") or {}).get("registered_images"),
                         "points3D": (rep.get("reconstruction") or {}).get("points3D"),
                         "created_at": rep.get("created_at") or (s.get("status") or {}).get("started_at")})
@@ -375,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/sessions/([^/]+)/files/(.+)$", path)
             if m:
                 sid, name = m.groups()
-                if name not in SESSION_FILES and not FRAME_FILE.match(name):
+                if name not in SESSION_FILES and not FRAME_FILE.match(name) and not MODEL_FILE.match(name):
                     return self._error(404, "file not served")
                 return self._file(c.session_dir(sid) / name, "private, max-age=3600" if name.startswith("frames/") else "no-store")
             return self._error(404, "not found")

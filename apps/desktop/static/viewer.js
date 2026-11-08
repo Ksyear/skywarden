@@ -74,12 +74,23 @@ export class PointViewer {
     for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 4000))) d.push(Math.hypot(...sub([cloud.xyz[3 * i], cloud.xyz[3 * i + 1], cloud.xyz[3 * i + 2]], this.center)));
     d.sort((a, b) => a - b);
     // Frame the bulk of the points and the whole camera path (cameras often sit outside the point cloud).
-    const camR = poses.reduce((m, p) => Math.max(m, Math.hypot(...sub(p.C, this.center))), 0);
-    this.radius = Math.max(d[Math.floor(d.length * 0.9)] || 0, camR * 1.1) || 1;
+    const camD = poses.map((p) => Math.hypot(...sub(p.C, this.center))).sort((a, b) => a - b);
+    const camR = camD[Math.min(camD.length - 1, Math.floor(camD.length * 0.95))] || 0;  // p95: one stray camera must not shrink the scene
+    const camMax = camD[camD.length - 1] || 0;
+    // Two framings: the main observed region (90th percentile of point distances + the camera path) and the full
+    // extent (every point). A few distant points must not decide the default view; they stay drawn either way.
+    this.radiusMain = Math.max(d[Math.floor(d.length * 0.9)] || 0, camR * 1.1) || 1;
+    this.radiusFull = Math.max(d[d.length - 1] || 0, camMax * 1.1) || 1;
+    this.radius = this.framing === "full" ? this.radiusFull : this.radiusMain;
     this.resetView();
   }
 
   clear() { this.cloud = null; this.poses = []; this.request(); }
+  setBreaks(times) { this.breaks = new Set(times); this.request(); }
+  setFraming(mode) {
+    this.framing = mode;
+    if (this.cloud) { this.radius = mode === "full" ? this.radiusFull : this.radiusMain; this.resetView(); }
+  }
   resetView() { Object.assign(this.view, { yaw: 0, pitch: 0.35, dist: this.radius ? this.radius * 2.6 : 3, panX: 0, panY: 0 }); this.request(); }
   setVisibleUpTo(k) { this.visibleUpTo = k; this.request(); }
   setCurrent(k) { this.current = k; this.request(); }
@@ -144,6 +155,8 @@ export class PointViewer {
     let started = false;
     for (let k = 0; k <= last; k++) {
       const q = project(this.poses[k].C); if (!q) { started = false; continue; }
+      // never draw a line across a detected path jump: there is no geometric evidence linking the two sides
+      if (started && this.breaks?.has(this.poses[k].timestamp_s)) started = false;
       if (started) ctx.lineTo(q[0], q[1]); else { ctx.moveTo(q[0], q[1]); started = true; }
     }
     ctx.stroke();

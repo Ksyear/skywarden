@@ -291,3 +291,15 @@ select, input[type=number] {
 .tracklist .tid { font: 600 var(--fs-sm)/1 var(--mono); }
 .tracklist .meta { font: var(--fs-xs)/1.3 var(--mono); color: var(--muted); text-align: right; }
 .tracklist li.muted { font-size: var(--fs-xs); }
+
+/* ---- Map coverage strip + model selector ---- */
+.coverage-wrap { padding: 0 var(--s3) var(--s2); display: flex; flex-direction: column; gap: var(--s1); }
+#coverage { width: 100%; height: 22px; display: block; border-radius: var(--radius); background: var(--panel-2); }
+.cov-legend { flex-wrap: wrap; }
+.cov-legend i { height: 8px; width: 10px; }
+.cov-legend i.c-this { background: var(--accent); }
+.cov-legend i.c-other { background: var(--muted); opacity: .55; }
+.cov-legend i.c-none { background: var(--error); opacity: .55; }
+.cov-legend i.c-jump { background: var(--warn); }
+.cov-legend i.c-cut { background: var(--text); width: 2px; }
+#model-select { width: auto; max-width: 100%; }
