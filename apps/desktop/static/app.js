@@ -210,24 +210,28 @@ async function loadSession(sid, modelRank = 0) {
     const prefix = models && modelRank > 0 ? `models/${modelRank}/` : "";
     const pf = report_point_filter(info.report, modelRank);
     const dense = modelRank === 0 ? await api(`${base}/files/dense/dense_report.json`).catch(() => null) : null;
+    const denseExp = modelRank === 0 ? await api(`${base}/files/dense_experimental/dense_report.json`).catch(() => null) : null;
     let layer = $("layer").value;
-    if ((layer === "filtered" && !pf) || (layer === "dense" && !(dense && dense.dense_verified_points > 0))) layer = "sparse";
+    if ((layer === "filtered" && !pf) || (layer === "dense" && !(dense && dense.dense_verified_points > 0))
+        || (layer === "dense_exp" && !(denseExp && denseExp.dense_verified_points > 0))) layer = "sparse";
     const useFiltered = layer === "filtered";
-    const plyPath = layer === "dense" ? "dense/dense_verified.ply" : `${prefix}${useFiltered ? "sparse_filtered.ply" : "sparse.ply"}`;
+    const plyPath = layer === "dense" ? "dense/dense_verified.ply" : layer === "dense_exp" ? "dense_experimental/dense_verified.ply"
+      : `${prefix}${useFiltered ? "sparse_filtered.ply" : "sparse.ply"}`;
     const [traj, plyRes, coverage] = await Promise.all([api(`${base}/files/${prefix}trajectory.json`),
       api(`${base}/files/${plyPath}`, { raw: true, timeout: 60000 }),
       api(`${base}/files/coverage.json`).catch(() => null)]);
     const cloud = parsePly(await plyRes.arrayBuffer());
     if (token !== state.loadToken) return;  // a newer load started meanwhile
     const report = info.report;
-    const expected = layer === "dense" ? dense.dense_verified_points : useFiltered ? pf.filtered : models ? models[modelRank].points3D : report.reconstruction.points3D;
+    const expected = layer === "dense" ? dense.dense_verified_points : layer === "dense_exp" ? denseExp.dense_verified_points : useFiltered ? pf.filtered : models ? models[modelRank].points3D : report.reconstruction.points3D;
     if (cloud.count !== expected) throw new Error(`PLY has ${cloud.count} points, report says ${expected}`);
     const poses = traj.poses.map((p) => ({ ...p, R: p.T_world_camera.slice(0, 3).map((r) => r.slice(0, 3)), C: p.T_world_camera.slice(0, 3).map((r) => r[3]) }));
     state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now(), modelRank, models, coverage,
-      pointFilter: pf, filtered: !!useFiltered, layer, dense };
+      pointFilter: pf, filtered: !!useFiltered, layer, dense, denseExp };
     $("layer").value = layer;
     $("layer").options[1].disabled = !pf;
     $("layer").options[2].disabled = !(dense && dense.dense_verified_points > 0);
+    $("layer").options[3].disabled = !(denseExp && denseExp.dense_verified_points > 0);
     renderModelSelect();
     viewer.setData(cloud, poses);
     viewer.setBreaks(modelRank === 0 && coverage ? (coverage.jumps_in_largest_model || []).map((j) => j.t_to) : []);
@@ -264,17 +268,22 @@ function renderLabels() {
   );
   const chip = (t, cls = "") => Object.assign(document.createElement("span"), { className: `chip ${cls}`, textContent: t });
   tl.append(chip(sim ? "SIMULATED data — not a measurement" : "Replay of stored reconstruction — not live mapping", sim ? "" : ""));
+  const layer = state.loaded.layer || "sparse";
   const layerChip = { sparse: "SPARSE POINTS (SfM) — feature points only, not walls or floors",
     filtered: "SPARSE POINTS, FILTERED — triangulation angle ≥ 1.5°, ≥ 3 views, low reprojection; raw points kept",
-    dense: "DENSE · VERIFIED — plane-sweep depth checked against sparse points and a second view; unobserved areas stay empty" }[state.loaded.layer || "sparse"];
-  tl.append(chip(layerChip, ""));
+    dense: `DENSE · VERIFIED — ${denseMethod(state.loaded.dense)}; unobserved areas stay empty`,
+    dense_exp: `DENSE · EXPERIMENTAL, NOT ADOPTED — ${denseMethod(state.loaded.denseExp)}; ${state.loaded.denseExp?.experimental?.reason ?? "failed the frozen acceptance"}` }[layer];
+  const shown = viewer.cloud?.count;
+  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, layer === "dense_exp" ? "layer warn" : "layer"), chip(layerChip, layer === "dense_exp" ? "warn" : ""));
   const M = state.loaded.models;
   if (q !== "GOOD" || (M && M.length > 1)) {
     const m = M ? M[state.loaded.modelRank] : null, n = state.loaded.report.reconstruction.selected_frames;
     tl.append(chip(M && M.length > 1 ? `PARTIAL RECONSTRUCTION — model ${state.loaded.modelRank + 1} of ${M.length} (${m.registered_images}/${n} frames); models have separate coordinate frames and are never merged`
                                     : `PARTIAL RECONSTRUCTION — quality ${q}`, "warn"));
   }
-  bl.append(chip("Relative units · scale unknown", "warn"), chip(`${L.geometry} · ${state.loaded.poses.length} cameras`));
+  const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS" }[layer] ?? L.geometry;
+  bl.append(chip("Relative units · scale unknown", "warn"), chip(`${geom} · ${state.loaded.poses.length} cameras`));
+  $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental" }[layer] ?? "3D map";
 }
 
 function renderMetrics() {
@@ -283,6 +292,15 @@ function renderMetrics() {
   $("m-pts").textContent = r ? r.points3D.toLocaleString() : "—";
   $("m-err").textContent = r ? `${r.mean_reprojection_error_px.toFixed(2)} px` : "—";
   $("m-ate").textContent = ev ? `${(ev.ate_rmse_m * 100).toFixed(1)} cm RMSE (Sim3-aligned to ground truth, ${ev.matched_poses} poses)` : "not evaluated (no ground truth)";
+}
+
+function denseMethod(d) {
+  // Which dense method produced the file on screen (older reports carry no config: fronto sweep + next-view check)
+  const c = d?.config || {};
+  const sweep = c.sweep === "fronto+ground" ? "fronto + ground-plane sweep" : "fronto-parallel sweep";
+  const ver = c.verify === "multi" ? `checked against sparse points and every view within ±${c.verify_window ?? 8} (any contradiction drops a point)` : "checked against sparse points and the next view";
+  const vox = c.voxel_near_scale && c.voxel_near_scale !== 1 ? ` · near voxel ×${c.voxel_near_scale}` : "";
+  return `${sweep}, ${ver}${vox}`;
 }
 
 function report_point_filter(report, rank) {
@@ -390,6 +408,7 @@ function statusTick() {
   const pf = state.loaded?.pointFilter, dn = state.loaded?.dense;
   const counts = (pf ? ` · sparse raw ${pf.raw.toLocaleString()} / filtered ${pf.filtered.toLocaleString()}` : "")
     + (dn && dn.dense_verified_points ? ` · dense verified ${dn.dense_verified_points.toLocaleString()}` : "")
+    + (state.loaded?.denseExp?.dense_verified_points ? ` · dense experimental ${state.loaded.denseExp.dense_verified_points.toLocaleString()}` : "")
     + (state.loaded ? ` · showing ${state.loaded.layer}` : "");
   $("m-render").textContent = p50 == null ? "—" : `${p50.toFixed(1)}/${p95.toFixed(1)} ms (${viewer.lastDrawn?.toLocaleString() ?? 0} of ${viewer.cloud?.count?.toLocaleString() ?? 0} pts drawn${counts})`;
   const a50 = pct(state.apiMs, 0.5), a95 = pct(state.apiMs, 0.95);

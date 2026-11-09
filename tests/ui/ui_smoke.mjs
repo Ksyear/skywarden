@@ -159,7 +159,17 @@ try {
     check("dense layer loads with its own caption", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('DENSE · VERIFIED')`, 60000), await text("map-overlay-tl"));
     await sleep(1500);
     check("status bar reports raw / filtered / dense counts", /sparse raw [\d,]+ \/ filtered [\d,]+ · dense verified [\d,]+/.test(await text("m-render")), await text("m-render"));
+    check("viewport names the layer on screen with its point count", /LAYER ▸ DENSE · VERIFIED · [\d,]+ pts in file/.test(await text("map-overlay-tl")), await text("map-overlay-tl"));
     await shot("03d_dense_layer.png");
+    if (existsSync(join(ROOT, "outputs/maps", MQ_DENSE, "dense_experimental", "dense_verified.ply"))) {
+      check("experimental dense layer offered separately", await evaluate(`!document.getElementById('layer').options[3].disabled`));
+      await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'dense_exp'; s.dispatchEvent(new Event('change')); })()`);
+      check("experimental dense layer is labelled NOT ADOPTED", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('DENSE · EXPERIMENTAL, NOT ADOPTED') && document.getElementById('map-overlay-tl').textContent.includes('LAYER ▸ DENSE · EXPERIMENTAL')`, 60000), await text("map-overlay-tl"));
+      await sleep(1500);
+      check("status bar reports the experimental count separately", /dense experimental [\d,]+ · showing dense_exp/.test(await text("m-render")), await text("m-render"));
+      check("panel title follows the layer", (await text("map-title")) === "Dense 3D map · experimental", await text("map-title"));
+      await shot("03e_dense_experimental_layer.png");
+    }
     await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'sparse'; s.dispatchEvent(new Event('change')); })()`);
     await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('SPARSE POINTS (SfM)')`, 20000);
   }

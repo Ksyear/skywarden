@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import cv2
@@ -136,53 +137,194 @@ def _undistorted_gray(v: View) -> np.ndarray:
     return v._gray
 
 
-def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes: int = PLANES, win: int = 7):
-    """Fronto-parallel plane sweep (works for forward motion, unlike rectified two-view stereo).
-    Cost = 1 - ZNCC over a win x win window, averaged over the best two neighbours per pixel (occlusion-robust)."""
+@dataclass(frozen=True)
+class DenseConfig:
+    """Defaults reproduce the M0 baseline. Each experiment of docs/PLAN_DENSE_COVERAGE.md changes one field."""
+    work_width: int = WORK_WIDTH
+    planes: int = PLANES
+    near_rule: str = "p2"        # "p2": dmin = p2 x 0.8 | "p2_or_nearest": min(p2 x 0.8, 0.5 x nearest-1 % depth), 96 planes (E-R)
+    sweep: str = "fronto"        # "fronto" | "fronto+ground" (E-S)
+    verify: str = "next"         # "next": next accepted view only | "multi": every view within +-window (E-V)
+    verify_window: int = 8
+    min_agree: int = 1           # multi: views agreeing within REL_TOL needed (E-V2 = 2)
+    voxel_near_scale: float = 1.0  # E-F: voxel x scale for points nearer than their view's median depth
+    neighbour_rule: str = "median"  # "median_or_near" (E-N): p10-depth baseline also qualifies; "median_then_near" (E-N2): only for free slots
+
+
+def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes: int = PLANES, win: int = 7,
+                ground: tuple | None = None):
+    """Plane sweep (works for forward motion, unlike rectified two-view stereo). Cost = 1 - ZNCC over a win x win
+    window, averaged over the best two neighbours per pixel (occlusion-robust).
+
+    Family "fronto": planes z = d (fronto-parallel), n_planes samples uniform in inverse depth.
+    Family "ground" (optional, `ground=(n, offsets)`): planes n . X = d with the ground normal n in reference camera
+    coordinates; for pixels whose ray never meets the plane (above the horizon) the hypothesis is invalid.
+    Per family a pixel is confident when its minimum is interior (not the first/last plane), cheap, distinct from the
+    second best and textured. With two families, the cheaper confident family wins per pixel.
+    Returns depth, conf, best cost and a diagnostics dict (per-family maps, texture variance)."""
     g0 = _undistorted_gray(ref)
     h, w = g0.shape
     box = lambda x: cv2.boxFilter(x, -1, (win, win), normalize=True, borderType=cv2.BORDER_REFLECT)  # noqa: E731
     m0 = box(g0)
     v0 = np.maximum(box(g0 * g0) - m0 * m0, 1e-3)
     Kinv = np.linalg.inv(ref.K)
-    inv_d = np.linspace(1.0 / dmax, 1.0 / dmin, n_planes)
-    best = np.full((h, w), np.inf, np.float32)
-    second = np.full((h, w), np.inf, np.float32)
-    depth = np.zeros((h, w), np.float32)
-    best_i = np.zeros((h, w), np.int16)
     rel = []
     for nb in nbrs:
         R = nb.R @ ref.R.T
         t = nb.t - R @ ref.t
         rel.append((R, t, _undistorted_gray(nb)))
-    for pi, idd in enumerate(inv_d):
-        d = 1.0 / idd
-        costs = []
-        for R, t, g1 in rel:
-            H = nb_K = None
-            H = ref.K @ (R + np.outer(t, [0, 0, 1.0]) / d) @ Kinv  # ref pixel -> neighbour pixel for points at depth d
-            warped = cv2.warpPerspective(g1, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderValue=-1)
-            valid = warped >= 0
-            m1 = box(warped)
-            v1 = np.maximum(box(warped * warped) - m1 * m1, 1e-3)
-            zncc = (box(g0 * warped) - m0 * m1) / np.sqrt(v0 * v1)
-            c = np.where(valid, 1.0 - zncc, 2.0).astype(np.float32)
-            costs.append(c)
-        cs = np.sort(np.stack(costs), axis=0)
-        c = cs[: min(2, len(cs))].mean(0)
-        better = c < best
-        second = np.where(better, best, np.minimum(second, c))
-        depth = np.where(better, d, depth)
-        best_i = np.where(better, pi, best_i)
-        best = np.where(better, c, best)
-    # A minimum on the first or last plane means the true depth lies outside the swept range (e.g. clouds, sky):
-    # such pixels carry no depth estimate and are dropped instead of being pinned to the range limit.
-    interior = (best_i > 0) & (best_i < n_planes - 1)
-    conf = (best < MAX_COST) & (second - best > MIN_MARGIN) & (v0 > TEXTURE_VAR) & interior
-    return depth, conf, best
+    families = [("fronto", np.array([0, 0, 1.0]), [1.0 / idd for idd in np.linspace(1.0 / dmax, 1.0 / dmin, n_planes)])]
+    if ground is not None:
+        families.append(("ground", np.asarray(ground[0], float), list(ground[1])))
+    fam = {}
+    for name, n, ds in families:
+        if name == "fronto":
+            denom = None
+        else:
+            uu, vv = np.meshgrid(np.arange(w), np.arange(h))
+            rays = np.stack([uu, vv, np.ones_like(uu)], -1).astype(np.float64) @ Kinv.T
+            denom = (rays @ n).astype(np.float32)
+            front = denom > 1e-6
+        best = np.full((h, w), np.inf, np.float32)
+        second = np.full((h, w), np.inf, np.float32)
+        depth = np.zeros((h, w), np.float32)
+        best_i = np.zeros((h, w), np.int16)
+        for pi, d in enumerate(ds):
+            costs = []
+            for R, t, g1 in rel:
+                H = ref.K @ (R + np.outer(t, n) / d) @ Kinv  # ref pixel -> neighbour pixel for points on the plane
+                warped = cv2.warpPerspective(g1, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderValue=-1)
+                valid = warped >= 0
+                m1 = box(warped)
+                v1 = np.maximum(box(warped * warped) - m1 * m1, 1e-3)
+                zncc = (box(g0 * warped) - m0 * m1) / np.sqrt(v0 * v1)
+                costs.append(np.where(valid, 1.0 - zncc, 2.0).astype(np.float32))
+            cs = np.sort(np.stack(costs), axis=0)
+            c = cs[: min(2, len(cs))].mean(0)
+            if denom is not None:
+                c = np.where(front, c, np.float32(2.0))
+            better = c < best
+            second = np.where(better, best, np.minimum(second, c))
+            z = d if denom is None else np.where(front, d / np.maximum(denom, 1e-6), 0).astype(np.float32)
+            depth = np.where(better, z, depth)
+            best_i = np.where(better, pi, best_i)
+            best = np.where(better, c, best)
+        # A minimum on the first or last plane means the true surface lies outside the swept range (e.g. clouds, sky):
+        # such pixels carry no depth estimate and are dropped instead of being pinned to the range limit.
+        interior = (best_i > 0) & (best_i < len(ds) - 1)
+        conf = (best < MAX_COST) & (second - best > MIN_MARGIN) & (v0 > TEXTURE_VAR) & interior
+        fam[name] = {"best": best, "second": second, "idx": best_i, "depth": depth, "conf": conf, "n_planes": len(ds)}
+    f = fam["fronto"]
+    depth, conf, best = f["depth"], f["conf"], f["best"]
+    chosen = np.zeros(depth.shape, np.int8)
+    if "ground" in fam:
+        g = fam["ground"]
+        use_g = g["conf"] & (~conf | (g["best"] < best))
+        depth = np.where(use_g, g["depth"], depth)
+        best = np.where(use_g, g["best"], best)
+        conf = conf | g["conf"]
+        chosen[use_g] = 1
+    return depth, conf, best, {"v0": v0, "families": fam, "chosen": chosen}
 
 
-def run(sd: Path, rank: int = 0, max_pairs: int = 60) -> dict:
+def ground_plane(v: View, rec, max_tilt_deg: float = 30.0, min_inliers: int = 30):
+    """Ground plane n . X = d (reference camera coordinates, n pointing down, d > 0 = camera height) fitted by RANSAC to
+    the sparse points the view observes in the lower half of its image. The normal must lie within max_tilt_deg of the
+    camera's image-down axis. Returns (n, d, inlier_share, n_candidates) or None."""
+    X = np.array([rec.points3D[p].xyz for p in v.obs])
+    Xc = (v.R @ X.T).T + v.t
+    Xc = Xc[Xc[:, 2] > 0]
+    uv = (v.K @ (Xc / Xc[:, 2:3]).T).T
+    P = Xc[uv[:, 1] > v.K[1, 2]]
+    if len(P) < min_inliers:
+        return None
+    thr = 0.02 * float(np.median(np.linalg.norm(P, axis=1)))
+    cos_tilt = np.cos(np.radians(max_tilt_deg))
+    rng = np.random.default_rng(0)
+    best = None
+    for _ in range(400):
+        s = P[rng.choice(len(P), 3, replace=False)]
+        n = np.cross(s[1] - s[0], s[2] - s[0])
+        nn = np.linalg.norm(n)
+        if nn < 1e-12:
+            continue
+        n = n / nn
+        if n[1] < 0:
+            n = -n
+        d = float(n @ s[0])
+        if n[1] < cos_tilt or d <= 0:
+            continue
+        inl = np.abs(P @ n - d) < thr
+        if best is None or inl.sum() > best.sum():
+            best = inl
+    if best is None or best.sum() < min_inliers:
+        return None
+    Q = P[best]
+    c = Q.mean(0)
+    n = np.linalg.svd(Q - c)[2][-1]
+    if n[1] < 0:
+        n = -n
+    d = float(n @ c)
+    if n[1] < cos_tilt or d <= 0:
+        return None
+    return n, d, round(float(best.mean()), 3), int(len(P))
+
+
+def _project(v: View, Xw: np.ndarray):
+    """Depth of world points in view v, the view's stored confident depth at their pixel (nan where none), whether the
+    point projects inside the image in front of the camera, and the pixel."""
+    Xc = (v.R @ Xw.T).T + v.t
+    z = Xc[:, 2]
+    uv = (v.K @ (Xc / np.maximum(z[:, None], 1e-9)).T).T[:, :2]
+    u, vv = np.round(uv[:, 0]).astype(np.int64), np.round(uv[:, 1]).astype(np.int64)
+    ref = np.full(len(Xw), np.nan)
+    h, w = (v.depth.shape if v.depth is not None else v.img.shape[:2])
+    inside = (z > 0) & (u >= 0) & (u < w) & (vv >= 0) & (vv < h)
+    if v.depth is not None:
+        ref[inside] = v.depth[vv[inside], u[inside]]
+    return z, ref, inside
+
+
+# verification codes per confident pixel (stage diagnostics)
+V_KEPT, V_OUTSIDE, V_NO_DEPTH, V_DISAGREE, V_VIEW_REJECTED = 0, 1, 2, 3, 4
+
+
+def _verify_next(st, partner_view):
+    z, ref, inside = _project(partner_view, st["Xw"])
+    has = ~np.isnan(ref)
+    good = has & (np.abs(ref - z) / np.maximum(z, 1e-9) <= REL_TOL)
+    code = np.full(len(z), V_DISAGREE, np.int8)
+    code[~inside] = V_OUTSIDE
+    code[inside & ~has] = V_NO_DEPTH
+    code[good] = V_KEPT
+    return good, code, int(has.sum())
+
+
+def _verify_multi(st, verifiers, min_agree):
+    """Keep a point iff >= min_agree verifier views hold a confident depth within REL_TOL of it and none looks past it
+    (its depth > (1 + REL_TOL) x the point's depth = free space where the point claims a surface). A depth in front of
+    the point is occlusion and neutral. Points no verifier can check are dropped (unobserved stays empty)."""
+    n = len(st["Xw"])
+    agree = np.zeros(n, np.int16); contra = np.zeros(n, np.int16)
+    seen = np.zeros(n, bool); has_any = np.zeros(n, bool)
+    for vw in verifiers:
+        z, ref, inside = _project(vw, st["Xw"])
+        has = ~np.isnan(ref)
+        seen |= inside
+        has_any |= has
+        rel = np.abs(ref - z) / np.maximum(z, 1e-9)
+        agree += (has & (rel <= REL_TOL)).astype(np.int16)
+        contra += (has & (ref > (1 + REL_TOL) * z)).astype(np.int16)
+    good = (agree >= min_agree) & (contra == 0)
+    code = np.full(n, V_DISAGREE, np.int8)
+    code[~seen] = V_OUTSIDE
+    code[seen & ~has_any] = V_NO_DEPTH
+    code[good] = V_KEPT
+    return good, code, int(has_any.sum())
+
+
+def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseConfig(), out: Path | None = None,
+        t_range: tuple[float, float] | None = None, diag_frames: tuple[str, ...] = ()) -> dict:
     t0 = time.monotonic()
     report = json.loads((sd / "map_report.json").read_text())
     models = (report.get("reconstruction") or {}).get("models")
@@ -191,9 +333,9 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60) -> dict:
     order = {f["file"]: i for i, f in enumerate(frames)}
     ims = sorted((im for im in rec.images.values() if im.has_pose), key=lambda im: order[im.name])
     cam = rec.cameras[ims[0].camera_id]
-    scale = min(1.0, WORK_WIDTH / cam.width)
-    out = sd / "dense"
-    out.mkdir(exist_ok=True)
+    scale = min(1.0, cfg.work_width / cam.width)
+    out = out or sd / "dense"
+    out.mkdir(parents=True, exist_ok=True)
     flags_path = sd / "diagnosis_segments.json"
     low = json.loads(flags_path.read_text()).get("low_confidence_windows", []) if flags_path.exists() else []
     t_of = {f["file"]: f.get("timestamp_s") for f in frames}
@@ -204,41 +346,100 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60) -> dict:
             views[i] = View(rec, ims[i], sd / "frames", scale)
         return views[i]
 
-    def ratio(i, j):
+    ratio_cache: dict[tuple[int, int], tuple | None] = {}
+
+    def ratios(i, j):
+        """(baseline / median co-visible depth, baseline / p10 co-visible depth) or None."""
+        if (i, j) in ratio_cache:
+            return ratio_cache[(i, j)]
         Ri, ti = _pose(ims[i]); Rj, tj = _pose(ims[j])
         shared = view(i).obs & view(j).obs
-        if len(shared) < MIN_SHARED:
-            return None
-        d = float(np.median([(Ri @ rec.points3D[p].xyz + ti)[2] for p in shared]))
-        return float(np.linalg.norm((-Rj.T @ tj) - (-Ri.T @ ti))) / d
+        r = None
+        if len(shared) >= MIN_SHARED:
+            z = np.array([(Ri @ rec.points3D[p].xyz + ti)[2] for p in shared])
+            b = float(np.linalg.norm((-Rj.T @ tj) - (-Ri.T @ ti)))
+            r = (b / float(np.median(z)), b / float(np.percentile(z[z > 0], 10)) if (z > 0).any() else None)
+        ratio_cache[(i, j)] = r
+        return r
 
-    # D1: reference views with 2-4 neighbours whose baseline / depth is in range (both directions in time)
-    refs = []
-    for k in range(len(ims)):
-        if any(a <= (t_of[ims[k].name] or 0) <= b for a, b in low):
-            continue
+    def ratio(i, j):
+        r = ratios(i, j)
+        return None if r is None else r[0]
+
+    def in_range(x):
+        return x is not None and BASE_DEPTH[0] <= x <= BASE_DEPTH[1]
+
+    def neighbours(k):
         nb = []
         for s in (1, -1, 2, -2, 3, -3, 4, -4, 6, -6):
             j = k + s
             if 0 <= j < len(ims):
-                r = ratio(k, j)
-                if r is not None and BASE_DEPTH[0] <= r <= BASE_DEPTH[1]:
-                    nb.append((j, r))
+                rr = ratios(k, j)
+                if rr is not None and (in_range(rr[0]) or (cfg.neighbour_rule == "median_or_near" and in_range(rr[1]))):
+                    nb.append((j, rr[0]))
             if len(nb) >= 4:
                 break
+        if cfg.neighbour_rule == "median_then_near" and len(nb) < 4:
+            # E-N2: free slots only are filled with frames whose baseline suits the near surfaces (p10 depth)
+            for s in (1, -1, 2, -2, 3, -3, 4, -4, 6, -6):
+                j = k + s
+                if 0 <= j < len(ims) and j not in {x for x, _ in nb}:
+                    rr = ratios(k, j)
+                    if rr is not None and in_range(rr[1]):
+                        nb.append((j, rr[0]))
+                if len(nb) >= 4:
+                    break
+        return nb
+
+    # D1: reference views with 2-4 neighbours whose baseline / depth is in range (both directions in time)
+    refs = []
+    for k in range(len(ims)):
+        tk = t_of[ims[k].name] or 0
+        if any(a <= tk <= b for a, b in low) or (t_range and not t_range[0] <= tk <= t_range[1]):
+            continue
+        nb = neighbours(k)
         if len(nb) >= 2:
             refs.append((k, nb))
     refs = refs[:: max(1, len(refs) // max_pairs)][:max_pairs]
+    ref_ids = {k for k, _ in refs}
+    # Stage-diagnostic frames that are not production reference views get their own sweep (never fused).
+    name_to_idx = {im.name: i for i, im in enumerate(ims)}
+    forced = []
+    for fn in diag_frames:
+        k = name_to_idx.get(fn)
+        if k is not None and k not in ref_ids:
+            forced.append((k, neighbours(k)))
 
-    results = []
-    for k, nb in refs:
-        v = view(k)
-        R, tt = v.R, v.t
+    ground_info = {}
+
+    def depth_range(v):
         sp = np.array([rec.points3D[p].xyz for p in v.obs])
-        zs = (R @ sp.T).T[:, 2] + tt[2]
+        zs = (v.R @ sp.T).T[:, 2] + v.t[2]
         zs = zs[zs > 0]
         dmin, dmax = float(np.percentile(zs, 2)) * 0.8, float(np.percentile(zs, 98)) * 1.25
-        depth, conf, cost = plane_sweep(v, [view(j) for j, _ in nb], dmin, dmax)
+        n_planes = cfg.planes
+        if cfg.near_rule == "p2_or_nearest":
+            dmin = min(dmin, 0.5 * float(np.percentile(zs, 1)))
+            n_planes = 96
+        return sp, dmin, dmax, n_planes
+
+    def sweep(k, nb):
+        v = view(k)
+        sp, dmin, dmax, n_planes = depth_range(v)
+        ground = None
+        if cfg.sweep == "fronto+ground":
+            gp = ground_plane(v, rec)
+            ground_info[k] = None if gp is None else {"normal": [round(float(x), 4) for x in gp[0]], "height": round(gp[1], 5),
+                                                      "inlier_share": gp[2], "candidates": gp[3]}
+            if gp is not None:
+                ground = (gp[0], [1.0 / x for x in np.linspace(1.0 / (2.0 * gp[1]), 1.0 / (0.5 * gp[1]), n_planes)])
+        depth, conf, cost, dg = plane_sweep(v, [view(j) for j, _ in nb], dmin, dmax, n_planes=n_planes, ground=ground)
+        return v, sp, depth, conf, dg
+
+    results = []
+    stage = {}
+    for k, nb in refs:
+        v, sp, depth, conf, dg = sweep(k, nb)
         dm = np.where(conf, depth, np.nan).astype(np.float32)
         v.depth = dm
         z_s, z_d = _depth_lookup(v, sp)
@@ -247,6 +448,11 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60) -> dict:
         row = {"ref": k, "frame": ims[k].name, "neighbours": [j for j, _ in nb],
                "baseline_over_depth": [round(r, 3) for _, r in nb], "confident_px": int(conf.sum()),
                "confident_share": round(float(conf.mean()), 3), "sparse_checked": int(m.sum()), "sparse_agreement": round(agree, 3)}
+        if k in ground_info:
+            row["ground_plane"] = ground_info[k]
+            row["ground_chosen_px"] = int((dg["chosen"] == 1).sum())
+        if ims[k].name in diag_frames:
+            stage[k] = dg
         if agree < SPARSE_AGREE_MIN:
             row.update(status="REJECTED", reason=f"sparse agreement {agree:.2f} < {SPARSE_AGREE_MIN}")
             results.append((row, None))
@@ -254,47 +460,76 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60) -> dict:
         vv, uu = np.nonzero(conf)
         z = depth[vv, uu]
         Xc = (np.linalg.inv(v.K) @ np.stack([uu, vv, np.ones_like(uu)]).astype(float)) * z
-        Xw = (R.T @ (Xc - tt[:, None])).T
+        Xw = (v.R.T @ (Xc - v.t[:, None])).T
         rgb = v._und[vv, uu][:, ::-1]
         row["status"] = "DEPTH_OK"
-        results.append((row, {"Xw": Xw, "rgb": rgb}))
+        results.append((row, {"Xw": Xw, "rgb": rgb, "u": uu.astype(np.int16), "v": vv.astype(np.int16), "z": z}))
 
-    # D3(ii): geometric consistency with the next accepted reference view's own depth map
-    kept_pts, kept_rgb = [], []
     ok_idx = [n for n, (r, st) in enumerate(results) if st is not None]
-    for a, b in zip(ok_idx, ok_idx[1:] + [None]):
-        row, st = results[a]
-        partner = results[b][0]["ref"] if b is not None else (results[ok_idx[-2]][0]["ref"] if len(ok_idx) > 1 else None)
-        if partner is None:
+    ok_refs = [results[n][0]["ref"] for n in ok_idx]
+
+    def verifier_set(k):
+        """Views allowed to verify depth of reference k (also excluded from its held-out check)."""
+        if cfg.verify == "next":
+            later = [j for j in ok_refs if j > k]
+            earlier = [j for j in ok_refs if j < k]
+            return [later[0]] if later else ([earlier[-1]] if earlier else [])
+        return [j for j in ok_refs if j != k and abs(j - k) <= cfg.verify_window
+                and (lambda r: r is not None and BASE_DEPTH[0] <= r <= BASE_DEPTH[1])(ratio(k, j))]
+
+    # D3(ii): geometric consistency with other accepted reference views' own depth maps
+    kept = []  # (Xw, rgb, ref, u, v, z, near)
+    vcodes = {}
+    for n in ok_idx:
+        row, st = results[n]
+        k = row["ref"]
+        vs = verifier_set(k)
+        if not vs:
             row.update(status="REJECTED", reason="no other accepted view for the consistency check")
+            vcodes[k] = np.full(len(st["Xw"]), V_VIEW_REJECTED, np.int8)
             continue
-        z, ref = _depth_lookup(views[partner], st["Xw"])
-        m = ~np.isnan(ref)
-        good = m & (np.abs(ref - z) / np.maximum(z, 1e-9) <= REL_TOL)
-        kept_share = float(good.sum()) / max(1, len(z))
-        row.update(consistency_partner=partner, consistency_checked=int(m.sum()), consistency_kept=int(good.sum()),
-                   consistency_kept_share=round(kept_share, 3))
+        if cfg.verify == "next":
+            good, code, checked = _verify_next(st, views[vs[0]])
+            row["consistency_partner"] = vs[0]
+        else:
+            good, code, checked = _verify_multi(st, [views[j] for j in vs], cfg.min_agree)
+            row["verifiers"] = vs
+        kept_share = float(good.sum()) / max(1, len(good))
+        row.update(consistency_checked=checked, consistency_kept=int(good.sum()), consistency_kept_share=round(kept_share, 3),
+                   drop_reasons={"outside": int((code == V_OUTSIDE).sum()), "no_depth": int((code == V_NO_DEPTH).sum()),
+                                 "disagree": int((code == V_DISAGREE).sum())})
         if kept_share < THIRD_KEEP_MIN:
             row.update(status="REJECTED", reason=f"multi-view consistency kept {kept_share:.2f} < {THIRD_KEEP_MIN}")
+            code = np.where(code == V_KEPT, V_VIEW_REJECTED, code).astype(np.int8)
+            vcodes[k] = code
             continue
+        vcodes[k] = code
         row["status"] = "VERIFIED"
-        kept_pts.append(st["Xw"][good])
-        kept_rgb.append(st["rgb"][good])
+        near = st["z"][good] < float(np.median(st["z"]))
+        kept.append((st["Xw"][good], st["rgb"][good], np.full(int(good.sum()), k, np.int16), st["u"][good], st["v"][good],
+                     st["z"][good], near))
 
     sparse = np.array([p.xyz for p in rec.points3D.values()])
     nn, _ = cKDTree(sparse).query(sparse, k=2)
     voxel = float(np.median(nn[:, 1]))
     summary = {"session": sd.name, "model_rank": rank, "method": "plane-sweep MVS (ZNCC, best-2-of-4 neighbours), CPU",
                "deviation_from_plan": "rectified two-view SGBM degenerates for forward camera motion (baseline along the optical axis, epipole inside the image); replaced by plane sweep, verification criteria unchanged",
+               "config": asdict(cfg), "t_range": list(t_range) if t_range else None,
                "work_width": int(round(cam.width * scale)), "reference_views": len(refs),
                "views": [r for r, _ in results], "voxel": voxel, "low_confidence_windows_excluded": low}
     summary["views_verified"] = sum(1 for r, _ in results if r.get("status") == "VERIFIED")
     covered = {r["ref"] for r, _ in results if r.get("status") == "VERIFIED"}
     sparse_covered = len({p for k in covered for p in views[k].obs})
-    if kept_pts:
-        P = np.concatenate(kept_pts)
-        C = np.concatenate(kept_rgb).astype(float)
-        key = np.floor(P / voxel).astype(np.int64)
+    inv = None
+    if kept:
+        P = np.concatenate([x[0] for x in kept])
+        C = np.concatenate([x[1] for x in kept]).astype(float)
+        near = np.concatenate([x[6] for x in kept])
+        # E-F: finer voxel for near points only (separate grids, so near and far voxels never merge)
+        vox = np.where(near, voxel * cfg.voxel_near_scale, voxel) if cfg.voxel_near_scale != 1.0 else np.full(len(P), voxel)
+        key = np.floor(P / vox[:, None]).astype(np.int64)
+        if cfg.voxel_near_scale != 1.0:
+            key = np.concatenate([key, near[:, None].astype(np.int64)], 1)
         _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
         inv = inv.ravel()
         fused = np.zeros((len(cnt), 3)); fcol = np.zeros((len(cnt), 3))
@@ -315,6 +550,55 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60) -> dict:
            "verified_share_ge_0.5": summary["views_verified"] >= 0.5 * max(1, len(refs)),
            "dense_ge_10x_sparse_of_covered_views": summary["dense_verified_points"] >= 10 * max(1, sparse_covered)}
     summary["acceptance"] = {**acc, "result": "PASS" if all(acc.values()) else "FAIL"}
+
+    if diag_frames:  # harness outputs (docs/PLAN_DENSE_COVERAGE.md); not used by the viewer
+        dd = out / "diag"
+        dd.mkdir(exist_ok=True)
+        t_diag = time.monotonic()
+        np.savez_compressed(dd / "depth_maps.npz", refs=np.array(ok_refs, np.int32),
+                            names=np.array([ims[k].name for k in ok_refs]),
+                            **{f"d{k}": views[k].depth.astype(np.float16) for k in ok_refs})
+        if kept:
+            np.savez_compressed(dd / "raw_kept.npz", P=P.astype(np.float32), ref=np.concatenate([x[2] for x in kept]),
+                                u=np.concatenate([x[3] for x in kept]), v=np.concatenate([x[4] for x in kept]),
+                                z=np.concatenate([x[5] for x in kept]).astype(np.float32), inv=inv.astype(np.int32))
+        verif_sets = {int(k): [int(j) for j in verifier_set(k)] for k in ok_refs}
+        forced_rows = []
+        for k, nb in forced:
+            if not nb:
+                forced_rows.append({"ref": k, "frame": ims[k].name, "status": "BLOCKED", "reason": "no neighbour in the baseline/depth range"})
+                continue
+            v, sp, depth, conf, dg = sweep(k, nb)
+            stage[k] = dg
+            vv, uu = np.nonzero(conf)
+            z = depth[vv, uu]
+            Xc = (np.linalg.inv(v.K) @ np.stack([uu, vv, np.ones_like(uu)]).astype(float)) * z
+            st = {"Xw": (v.R.T @ (Xc - v.t[:, None])).T}
+            vs = verifier_set(k)
+            if not vs:
+                code = np.full(len(z), V_VIEW_REJECTED, np.int8)
+            elif cfg.verify == "next":
+                code = _verify_next(st, views[vs[0]])[1]
+            else:
+                code = _verify_multi(st, [views[j] for j in vs], cfg.min_agree)[1]
+            vcodes[k] = code
+            forced_rows.append({"ref": k, "frame": ims[k].name, "status": "DIAGNOSTIC_ONLY (not fused)",
+                                "neighbours": [j for j, _ in nb], "baseline_over_depth": [round(r, 3) for _, r in nb],
+                                "note": "fewer than 2 neighbours: sweep uses the available one" if len(nb) < 2 else ""})
+        for k, dg in stage.items():
+            conf_map = np.zeros(dg["v0"].shape, bool)
+            fr = dg["families"]["fronto"]
+            conf_map = fr["conf"] | (dg["families"]["ground"]["conf"] if "ground" in dg["families"] else False)
+            code_map = np.full(conf_map.shape, -1, np.int8)
+            if k in vcodes:
+                vv, uu = np.nonzero(conf_map)
+                code_map[vv, uu] = vcodes[k]
+            fam = {f"{nm}_{key}": a for nm, d in dg["families"].items() for key, a in d.items() if key != "n_planes"}
+            np.savez_compressed(dd / f"stage_{ims[k].name}.npz", v0=dg["v0"], chosen=dg["chosen"], conf=conf_map,
+                                verify_code=code_map, n_planes=np.array([d["n_planes"] for d in dg["families"].values()]),
+                                families=np.array(list(dg["families"])), **fam)
+        summary["diagnostics"] = {"frames": list(diag_frames), "forced": forced_rows, "verifier_sets": verif_sets,
+                                  "image_names": [im.name for im in ims], "seconds": round(time.monotonic() - t_diag, 1)}
     (out / "dense_report.json").write_text(json.dumps(summary, indent=1))
     return summary
 
@@ -432,12 +716,26 @@ def main(argv=None) -> int:
     ap.add_argument("--model", type=int, default=0)
     ap.add_argument("--max-pairs", type=int, default=60)
     ap.add_argument("--mesh-only", action="store_true", help="build the mesh from an existing dense_verified.ply")
+    ap.add_argument("--out", help="output directory (default <session>/dense)")
+    ap.add_argument("--t-range", type=float, nargs=2, metavar=("T0", "T1"), help="reference views in this time window only")
+    ap.add_argument("--diag-frames", nargs="*", default=[], help="frames to write stage diagnostics for")
+    ap.add_argument("--verify", choices=["next", "multi"], default="next")
+    ap.add_argument("--min-agree", type=int, default=1)
+    ap.add_argument("--sweep", choices=["fronto", "fronto+ground"], default="fronto")
+    ap.add_argument("--near-rule", choices=["p2", "p2_or_nearest"], default="p2")
+    ap.add_argument("--work-width", type=int, default=WORK_WIDTH)
+    ap.add_argument("--voxel-near-scale", type=float, default=1.0)
+    ap.add_argument("--neighbour-rule", choices=["median", "median_or_near", "median_then_near"], default="median")
     a = ap.parse_args(argv)
     if a.mesh_only:
         print(json.dumps(mesh(Path(a.session_dir), a.model), indent=1))
         return 0
-    s = run(Path(a.session_dir), a.model, a.max_pairs)
-    print(json.dumps({k: v for k, v in s.items() if k != "views"} | {"view_status": [(p["ref"], p["status"], p.get("reason", ""), p.get("confident_share"), p.get("sparse_agreement"), p.get("consistency_kept_share")) for p in s["views"]]}, indent=1))
+    cfg = DenseConfig(work_width=a.work_width, near_rule=a.near_rule, sweep=a.sweep, verify=a.verify,
+                      min_agree=a.min_agree, voxel_near_scale=a.voxel_near_scale,
+                      neighbour_rule=a.neighbour_rule)
+    s = run(Path(a.session_dir), a.model, a.max_pairs, cfg, Path(a.out) if a.out else None,
+            tuple(a.t_range) if a.t_range else None, tuple(a.diag_frames))
+    print(json.dumps({k: v for k, v in s.items() if k not in ("views", "diagnostics")} | {"view_status": [(p["ref"], p["status"], p.get("reason", ""), p.get("confident_share"), p.get("sparse_agreement"), p.get("consistency_kept_share")) for p in s["views"]]}, indent=1))
     return 0
 
 
