@@ -28,6 +28,9 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--max-frames", type=int, default=150)
     b.add_argument("--source-note", default="")
     b.add_argument("--mapper", choices=["global", "incremental"], default="global")
+    b.add_argument("--selection", choices=["fixed", "adaptive"], default="fixed", help="frame selection (adaptive = F1, docs/PLAN_FRAMES_AND_DEPTH.md)")
+    b.add_argument("--force-frames", type=int, nargs="*", default=[], help="source frame indices that must be kept (evaluation frames)")
+    b.add_argument("--selection-masks", help="sky/person segmentation ONNX used to ignore features on sky and people during adaptive selection")
     r = sub.add_parser("replay", help="load a stored map and print its summary")
     r.add_argument("session_dir")
     q = sub.add_parser("rate", help="evaluate map quality of an existing session (built before quality checks)")
@@ -57,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     camera = json.loads(Path(a.camera_json).read_text()) if a.camera_json else None
     session = a.session or datetime.now().strftime("%Y%m%d-%H%M%S")
     req = BuildRequest(Path(a.input), Path(a.maps_root) / session, DataOrigin(a.origin), camera,
-                       SelectionConfig(target_fps=a.fps, max_frames=a.max_frames), a.source_note,
+                       SelectionConfig(target_fps=a.fps, max_frames=a.max_frames, mode=a.selection, force_indices=tuple(a.force_frames), mask_weights=a.selection_masks), a.source_note,
                        mapper=a.mapper)
     # Run the build in a worker so this (main) thread stays in Python and can receive SIGTERM/SIGINT while
     # COLMAP is busy in C++; the signal only sets the event, the pipeline forwards it to COLMAP.

@@ -22,7 +22,7 @@ from .dense_cpu import REL_TOL, View, ground_plane
 from .dense_eval import Cam, floating, heldout_inconsistency, load_cloud, region_masks, render, stage_metrics
 from .static_masks import MEAN, MODEL_SHA256, STD
 
-CLASSES = ("floor", "floor_far", "structure", "wall")
+CLASSES = ("floor", "floor_far", "structure", "wall", "far")
 WEIGHTS = Path("data/models/static/skywater_fp32.onnx")
 BAND_PX_1600 = 20          # boundary band width in 1600-px units
 PERSON_CONF = 0.5
@@ -94,7 +94,7 @@ def frame_metrics(sd, rec, im, rf, cam: Cam, X, lab, clean_flags=None, ims=None)
         out["classes"][cls] = {"px": int(md2.sum()), "cov1px": round(float((hit & md2).sum()) / max(1, int(md2.sum())), 4),
                                "cov1px_region": round(float((hit & md).sum()) / max(1, int(md.sum())), 4),  # incl. sky/person px (dense_eval definition)
                                "fused_n_proj": int(md2[v[ins], u[ins]].sum())}
-        if cls in ("structure", "wall"):
+        if cls in ("structure", "wall", "far"):
             solid |= md2
     band = solid & near_sky
     out["boundary_band"] = {"px": int(band.sum()), "cov1px": round(float((hit & band).sum()) / max(1, int(band.sum())), 4)}
@@ -232,7 +232,7 @@ def evaluate(sd: Path, run_dir: Path, name: str, regions: dict, out: Path, judge
             panels.append(img)
             caps.append(f"{tag}: {n_in:,} pts in view")
         sx, sy = 800 / rf["width"], 450 / rf["height"]
-        colr = {"floor": (0, 200, 255), "floor_far": (255, 200, 0), "structure": (0, 255, 0), "wall": (255, 0, 255)}
+        colr = {"floor": (0, 200, 255), "floor_far": (255, 200, 0), "structure": (0, 255, 0), "wall": (255, 0, 255), "far": (255, 0, 0)}
         for p, cap in zip(panels, caps):
             for r in rf["regions"]:
                 cv2.polylines(p, [np.round(np.array(r["polygon"], float) * [sx, sy]).astype(np.int32)], True, colr[r["class"]], 1)

@@ -174,11 +174,12 @@ class DenseConfig:
                                     # "valid_pixels" (S2) scores ZNCC over unmasked, in-image window pixels only
     min_valid_frac: float = 0.6     # S2: minimum share of usable window pixels (reference and each neighbour)
     neighbours_all_sparse: bool = False  # S2n: baseline/depth ratios from all sparse points, not only unmasked ones
+    coarse_ground: bool = False  # D2: ground-plane sweep at half resolution fills pixels the full-resolution sweep missed
 
 
 def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes: int = PLANES, win: int = 7,
                 ground: tuple | None = None, border_exclusion: bool = False, mask_cost: str = "erode",
-                min_valid_frac: float = 0.6):
+                min_valid_frac: float = 0.6, crop_ground: bool = True, ground_only: bool = False):
     """Plane sweep (works for forward motion, unlike rectified two-view stereo). Cost = 1 - ZNCC over a win x win
     window, averaged over the best two neighbours per pixel (occlusion-robust).
 
@@ -219,9 +220,14 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
         R = nb.R @ ref.R.T
         t = nb.t - R @ ref.t
         rel.append((R, t, _undistorted_gray(nb), getattr(nb, "static_keep", None)))
+    g0_full, m0_full, v0_full = g0, m0, v0
+    if masked:
+        kr_full, g0sq_full = kr, g0sq
     families = [("fronto", np.array([0, 0, 1.0]), [1.0 / idd for idd in np.linspace(1.0 / dmax, 1.0 / dmin, n_planes)])]
     if ground is not None:
         families.append(("ground", np.asarray(ground[0], float), list(ground[1])))
+    if ground_only and ground is not None:
+        families = families[1:]
     fam = {}
     for name, n, ds in families:
         if name == "fronto":
@@ -235,16 +241,27 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
         second = np.full((h, w), np.inf, np.float32)
         depth = np.zeros((h, w), np.float32)
         best_i = np.zeros((h, w), np.int16)
+        # Ground hypotheses only exist below the horizon: compute them on the rows from (first valid row - window)
+        # down; rows above keep cost 2 (identical result, about half the work for this family).
+        r0 = 0
+        if denom is not None and crop_ground:
+            rows = np.nonzero(front.any(1))[0]
+            r0 = h if not len(rows) else max(0, int(rows[0]) - win)
+        hh = h - r0
+        T = np.array([[1, 0, 0], [0, 1, r0], [0, 0, 1.0]])
+        g0, m0, v0_c = g0_full[r0:], m0_full[r0:], v0_full[r0:]
+        if masked:
+            kr, g0sq = kr_full[r0:], g0sq_full[r0:]
         for pi, d in enumerate(ds):
             costs = []
-            for R, t, g1, nbr_keep in rel:
-                H = ref.K @ (R + np.outer(t, n) / d) @ Kinv  # ref pixel -> neighbour pixel for points on the plane
-                warped = cv2.warpPerspective(g1, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderValue=-1)
+            for R, t, g1, nbr_keep in (rel if hh > 0 else []):
+                H = ref.K @ (R + np.outer(t, n) / d) @ Kinv @ T  # ref pixel (row offset r0) -> neighbour pixel on the plane
+                warped = cv2.warpPerspective(g1, H, (w, hh), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderValue=-1)
                 valid = warped >= 0
                 if masked:
                     wv = valid
                     if nbr_keep is not None:
-                        wv = wv & (cv2.warpPerspective(nbr_keep, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP) >= 0.999)
+                        wv = wv & (cv2.warpPerspective(nbr_keep, H, (w, hh), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP) >= 0.999)
                     wv = wv.astype(np.float32) * kr
                     N = box(wv)
                     Nn = np.maximum(N, 1e-6)
@@ -256,16 +273,18 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
                     costs.append(np.where((N >= min_valid_frac) & (wv > 0), 1.0 - zncc, 2.0).astype(np.float32))
                     continue
                 if nbr_keep is not None:
-                    warped_keep = cv2.warpPerspective(nbr_keep, H, (w, h),
+                    warped_keep = cv2.warpPerspective(nbr_keep, H, (w, hh),
                                                      flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
                     valid = cv2.erode((valid & (warped_keep >= 0.999)).astype(np.uint8), window,
                                       borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0
                 m1 = box(warped)
                 v1 = np.maximum(box(warped * warped) - m1 * m1, 1e-3)
-                zncc = (box(g0 * warped) - m0 * m1) / np.sqrt(v0 * v1)
+                zncc = (box(g0 * warped) - m0 * m1) / np.sqrt(v0_c * v1)
                 costs.append(np.where(valid, 1.0 - zncc, 2.0).astype(np.float32))
-            cs = np.sort(np.stack(costs), axis=0)
-            c = cs[: min(2, len(cs))].mean(0)
+            c = np.full((h, w), 2.0, np.float32)
+            if costs:
+                cs = np.sort(np.stack(costs), axis=0)
+                c[r0:] = cs[: min(2, len(cs))].mean(0)
             if denom is not None:
                 c = np.where(front, c, np.float32(2.0))
             better = c < best
@@ -277,8 +296,11 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
         # A minimum on the first or last plane means the true surface lies outside the swept range (e.g. clouds, sky):
         # such pixels carry no depth estimate and are dropped instead of being pinned to the range limit.
         interior = (best_i > 0) & (best_i < len(ds) - 1)
-        conf = (best < MAX_COST) & (second - best > MIN_MARGIN) & (v0 > TEXTURE_VAR) & interior & ref_support
+        conf = (best < MAX_COST) & (second - best > MIN_MARGIN) & (v0_full > TEXTURE_VAR) & interior & ref_support
         fam[name] = {"best": best, "second": second, "idx": best_i, "depth": depth, "conf": conf, "n_planes": len(ds)}
+    if "fronto" not in fam:
+        g = fam["ground"]
+        return g["depth"], g["conf"], g["best"], {"v0": v0_full, "families": fam, "chosen": np.ones(g["depth"].shape, np.int8)}
     f = fam["fronto"]
     depth, conf, best = f["depth"], f["conf"], f["best"]
     chosen = np.zeros(depth.shape, np.int8)
@@ -289,7 +311,7 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
         best = np.where(use_g, g["best"], best)
         conf = conf | g["conf"]
         chosen[use_g] = 1
-    return depth, conf, best, {"v0": v0, "families": fam, "chosen": chosen}
+    return depth, conf, best, {"v0": v0_full, "families": fam, "chosen": chosen}
 
 
 def ground_plane(v: View, rec, max_tilt_deg: float = 30.0, min_inliers: int = 30):
@@ -412,6 +434,13 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
             views[i] = View(rec, ims[i], sd / "frames", scale, mask_dir)
         return views[i]
 
+    views_half: dict[int, View] = {}
+
+    def view_half(i):
+        if i not in views_half:
+            views_half[i] = View(rec, ims[i], sd / "frames", scale * 0.5, mask_dir)
+        return views_half[i]
+
     ratio_cache: dict[tuple[int, int], tuple | None] = {}
 
     def ratios(i, j):
@@ -424,7 +453,9 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
         if len(shared) >= MIN_SHARED:
             z = np.array([(Ri @ rec.points3D[p].xyz + ti)[2] for p in shared])
             b = float(np.linalg.norm((-Rj.T @ tj) - (-Ri.T @ ti)))
-            r = (b / float(np.median(z)), b / float(np.percentile(z[z > 0], 10)) if (z > 0).any() else None)
+            zp = z[z > 0]
+            r = (b / float(np.median(z)), b / float(np.percentile(zp, 10)) if len(zp) else None,
+                 b / float(np.percentile(zp, 90)) if len(zp) else None)
         ratio_cache[(i, j)] = r
         return r
 
@@ -445,7 +476,7 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
                     nb.append((j, rr[0]))
             if len(nb) >= 4:
                 break
-        if cfg.neighbour_rule == "median_then_near" and len(nb) < 4:
+        if cfg.neighbour_rule in ("median_then_near", "median_then_near_far") and len(nb) < 4:
             # E-N2: free slots only are filled with frames whose baseline suits the near surfaces (p10 depth)
             for s in (1, -1, 2, -2, 3, -3, 4, -4, 6, -6):
                 j = k + s
@@ -455,6 +486,18 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
                         nb.append((j, rr[0]))
                 if len(nb) >= 4:
                     break
+        if cfg.neighbour_rule == "median_then_near_far":
+            # D1 (docs/PLAN_FRAMES_AND_DEPTH.md): far surfaces need a longer baseline than the median depth asks for;
+            # up to 2 extra neighbours within +-12 frames whose baseline suits the p90 co-visible depth
+            have = {x for x, _ in nb}
+            for s in [v for k in range(1, 13) for v in (k, -k)]:
+                if len(nb) >= 6:
+                    break
+                j = k + s
+                if 0 <= j < len(ims) and j not in have:
+                    rr = ratios(k, j)
+                    if rr is not None and in_range(rr[2]):
+                        nb.append((j, rr[0])); have.add(j)
         return nb
 
     # D1: reference views with 2-4 neighbours whose baseline / depth is in range (both directions in time)
@@ -502,6 +545,30 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
         depth, conf, cost, dg = plane_sweep(v, [view(j) for j, _ in nb], dmin, dmax, n_planes=n_planes, ground=ground,
                                             border_exclusion=cfg.border_exclusion, mask_cost=cfg.mask_cost,
                                             min_valid_frac=cfg.min_valid_frac)
+        if cfg.coarse_ground and ground is not None:
+            # D2: the same 7x7 window covers twice the floor area at half resolution (low-texture, oblique floor);
+            # its winning ground plane is re-evaluated exactly on the full-resolution rays, only where full resolution
+            # had no confident depth; multi-view verification later decides as for every other point
+            vh = view_half(k)
+            _, _, _, gh = plane_sweep(vh, [view_half(j) for j, _ in nb], dmin, dmax, n_planes=n_planes, ground=ground,
+                                      border_exclusion=cfg.border_exclusion, mask_cost=cfg.mask_cost,
+                                      min_valid_frac=cfg.min_valid_frac, ground_only=True)
+            G = gh["families"]["ground"]
+            h, w = depth.shape
+            conf_up = cv2.resize(G["conf"].astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
+            idx_up = cv2.resize(G["idx"].astype(np.int16), (w, h), interpolation=cv2.INTER_NEAREST)
+            uu, vv = np.meshgrid(np.arange(w), np.arange(h))
+            denom = (np.stack([uu, vv, np.ones_like(uu)], -1).astype(np.float64) @ np.linalg.inv(v.K).T) @ ground[0]
+            offs = np.asarray(ground[1])
+            fill = conf_up & ~conf & (denom > 1e-6)
+            keep = getattr(v, "static_keep", None)
+            if keep is not None:
+                fill &= keep > 0
+            if cfg.border_exclusion:
+                fill[:3] = fill[-3:] = False; fill[:, :3] = fill[:, -3:] = False
+            depth = np.where(fill, offs[idx_up] / np.maximum(denom, 1e-6), depth).astype(np.float32)
+            conf = conf | fill
+            dg["coarse_fill"] = fill
         return v, sp, depth, conf, dg
 
     results = []
@@ -665,6 +732,8 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
             conf_map = np.zeros(dg["v0"].shape, bool)
             fr = dg["families"]["fronto"]
             conf_map = fr["conf"] | (dg["families"]["ground"]["conf"] if "ground" in dg["families"] else False)
+            if "coarse_fill" in dg:
+                conf_map = conf_map | dg["coarse_fill"]
             code_map = np.full(conf_map.shape, -1, np.int8)
             if k in vcodes:
                 vv, uu = np.nonzero(conf_map)
@@ -802,11 +871,12 @@ def main(argv=None) -> int:
     ap.add_argument("--near-rule", choices=["p2", "p2_or_nearest"], default="p2")
     ap.add_argument("--work-width", type=int, default=WORK_WIDTH)
     ap.add_argument("--voxel-near-scale", type=float, default=1.0)
-    ap.add_argument("--neighbour-rule", choices=["median", "median_or_near", "median_then_near"], default="median")
+    ap.add_argument("--neighbour-rule", choices=["median", "median_or_near", "median_then_near", "median_then_near_far"], default="median")
     ap.add_argument("--border-exclusion", action="store_true")
     ap.add_argument("--mask-cost", choices=["erode", "valid_pixels"], default="erode")
     ap.add_argument("--min-valid-frac", type=float, default=0.6)
     ap.add_argument("--neighbours-all-sparse", action="store_true")
+    ap.add_argument("--coarse-ground", action="store_true")
     a = ap.parse_args(argv)
     if a.mesh_only:
         if a.static_masks is not None:
@@ -816,7 +886,8 @@ def main(argv=None) -> int:
     cfg = DenseConfig(work_width=a.work_width, near_rule=a.near_rule, sweep=a.sweep, verify=a.verify,
                       min_agree=a.min_agree, voxel_near_scale=a.voxel_near_scale,
                       neighbour_rule=a.neighbour_rule, border_exclusion=a.border_exclusion, mask_cost=a.mask_cost,
-                      min_valid_frac=a.min_valid_frac, neighbours_all_sparse=a.neighbours_all_sparse)
+                      min_valid_frac=a.min_valid_frac, neighbours_all_sparse=a.neighbours_all_sparse,
+                      coarse_ground=a.coarse_ground)
     s = run(Path(a.session_dir), a.model, a.max_pairs, cfg, Path(a.out) if a.out else None,
             tuple(a.t_range) if a.t_range else None, tuple(a.diag_frames), a.static_masks)
     print(json.dumps({k: v for k, v in s.items() if k not in ("views", "diagnostics")} | {"view_status": [(p["ref"], p["status"], p.get("reason", ""), p.get("confident_share"), p.get("sparse_agreement"), p.get("consistency_kept_share")) for p in s["views"]]}, indent=1))

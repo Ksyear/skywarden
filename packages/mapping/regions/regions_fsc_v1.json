@@ -1,0 +1,251 @@
+{
+ "session": "mqg_fsc_campus_aerial",
+ "source": "yt_drone_fsc_campus l5IB1ucby_w (CC BY)",
+ "coords": "pixels of the stored 1600x900 frames, drawn before any change; class 'far' = distant terrain/tree line near the horizon",
+ "frames": [
+  {
+   "frame": "f000320.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "tuning",
+   "regions": [
+    {
+     "name": "parking_lawn",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       208
+      ],
+      [
+       800,
+       192
+      ],
+      [
+       800,
+       368
+      ],
+      [
+       0,
+       384
+      ]
+     ]
+    },
+    {
+     "name": "rooftops_near",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       384
+      ],
+      [
+       1600,
+       288
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "horizon_band",
+     "class": "far",
+     "polygon": [
+      [
+       0,
+       16
+      ],
+      [
+       1600,
+       16
+      ],
+      [
+       1600,
+       112
+      ],
+      [
+       0,
+       112
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f001000.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "tuning",
+   "regions": [
+    {
+     "name": "lawns_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       528
+      ],
+      [
+       1600,
+       528
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "long_building",
+     "class": "structure",
+     "polygon": [
+      [
+       300,
+       272
+      ],
+      [
+       1600,
+       272
+      ],
+      [
+       1600,
+       528
+      ],
+      [
+       300,
+       528
+      ]
+     ]
+    },
+    {
+     "name": "horizon_band",
+     "class": "far",
+     "polygon": [
+      [
+       0,
+       16
+      ],
+      [
+       1600,
+       16
+      ],
+      [
+       1600,
+       144
+      ],
+      [
+       0,
+       144
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f001720.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "held_out",
+   "regions": [
+    {
+     "name": "ballfield",
+     "class": "floor",
+     "polygon": [
+      [
+       330,
+       215
+      ],
+      [
+       1030,
+       215
+      ],
+      [
+       1030,
+       300
+      ],
+      [
+       330,
+       300
+      ]
+     ]
+    },
+    {
+     "name": "lawn_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       580
+      ],
+      [
+       980,
+       580
+      ],
+      [
+       980,
+       720
+      ],
+      [
+       0,
+       720
+      ]
+     ]
+    },
+    {
+     "name": "hall",
+     "class": "structure",
+     "polygon": [
+      [
+       1040,
+       220
+      ],
+      [
+       1400,
+       220
+      ],
+      [
+       1400,
+       360
+      ],
+      [
+       1040,
+       360
+      ]
+     ]
+    },
+    {
+     "name": "horizon_band",
+     "class": "far",
+     "polygon": [
+      [
+       0,
+       32
+      ],
+      [
+       1600,
+       32
+      ],
+      [
+       1600,
+       170
+      ],
+      [
+       0,
+       170
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}

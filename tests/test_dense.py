@@ -150,3 +150,17 @@ def test_valid_pixel_cost_keeps_surface_next_to_a_mask_and_never_inside_it():
     m = c_val & ring
     err = np.abs(d_val[m] - ref.true_depth[m]) / ref.true_depth[m]
     assert np.mean(err < 0.10) > 0.9
+
+
+def test_ground_rows_crop_gives_identical_result():
+    ref = fake_view([0, 0, 0])
+    nbrs = [fake_view([0.05, 0, z]) for z in (0.25, -0.25, 0.5, -0.5)]
+    G = (np.array([0, 1.0, 0]), [1.0 / x for x in np.linspace(0.5, 2.0, 64)])
+    for mode in ("erode", "valid_pixels"):
+        a = plane_sweep(ref, nbrs, 1.5, 20.0, ground=G, mask_cost=mode, crop_ground=False)
+        b = plane_sweep(ref, nbrs, 1.5, 20.0, ground=G, mask_cost=mode, crop_ground=True)
+        # warping with the row-shifted homography differs by float rounding only (cost |diff| ~1e-4); confident pixels
+        # and their depths must be the same
+        # a near-tie between the fronto and ground family can flip on that rounding; allow it on < 0.5 % of pixels
+        same = np.isclose(a[0][a[1]], b[0][b[1]], rtol=1e-3)
+        assert np.array_equal(a[1], b[1]) and same.mean() > 0.995, same.mean()

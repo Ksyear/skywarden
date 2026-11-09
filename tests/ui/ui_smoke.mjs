@@ -182,6 +182,12 @@ try {
       check("static map v2: status bar reports the file's point count and the drawn count", /[\d,]+ of 1,530,092 pts drawn · .*showing dense_static_v2/.test(await text("m-render")), await text("m-render"));
       await shot("03f_static_map_v2.png");
     }
+    if (existsSync(join(ROOT, "outputs/maps", MQ_DENSE, "dense_static_v3", "dense_verified.ply"))) {
+      await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'dense_static_v3'; s.dispatchEvent(new Event('change')); })()`);
+      check("static map v3 layer is labelled NOT ADOPTED with its method", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('DENSE · STATIC SCENE v3, NOT ADOPTED') && document.getElementById('map-overlay-tl').textContent.includes('far-surface neighbours')`, 60000), await text("map-overlay-tl"));
+      await sleep(1500);
+      await shot("03g_static_map_v3.png");
+    }
     await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'sparse'; s.dispatchEvent(new Event('change')); })()`);
     await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('SPARSE POINTS (SfM)')`, 20000);
   }
