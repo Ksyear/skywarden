@@ -25,7 +25,7 @@ from .dense_cpu import REL_TOL, V_DISAGREE, V_KEPT, V_NO_DEPTH, V_OUTSIDE, V_VIE
     TEXTURE_VAR, _pose, camera_distortion
 from .export import read_ply
 
-CLASSES = ("floor", "floor_far", "structure")
+CLASSES = ("floor", "floor_far", "structure", "wall")
 HELDOUT_OFFSET = 5
 HELDOUT_MAX_CANDIDATES = 30
 KNN_K, KNN_R_VOX = 4, 2.0
@@ -269,7 +269,7 @@ def evaluate(sd: Path, run_dir: Path, name: str, regions: dict, out: Path, befor
         panels.append(rn)
         caps.append(f"{name}: DENSE_VERIFIED, {nn_:,} pts in view")
         sx, sy = 800 / rf["width"], 450 / rf["height"]
-        colr = {"floor": (0, 200, 255), "floor_far": (255, 200, 0), "structure": (0, 255, 0)}
+        colr = {"floor": (0, 200, 255), "floor_far": (255, 200, 0), "structure": (0, 255, 0), "wall": (255, 0, 255)}
         for p, cap in zip(panels, caps):
             for r in rf["regions"]:
                 cv2.polylines(p, [np.round(np.array(r["polygon"], float) * [sx, sy]).astype(np.int32)], True, colr[r["class"]], 1)

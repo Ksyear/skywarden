@@ -65,6 +65,22 @@ def _view_with_depth(C, depth_value):
     return v
 
 
+def test_static_masks_exclude_reference_pixels_and_require_neighbour_support():
+    ref = fake_view([0, 0, 0])
+    neighbours = [fake_view([0.05, 0, z]) for z in (0.25, -0.25, 0.5, -0.5)]
+    ref.static_keep = np.ones((H, W), dtype=np.float32)
+    ref.static_keep[120:150, 125:195] = 0
+    for neighbour in neighbours:
+        neighbour.static_keep = np.ones((H, W), dtype=np.float32)
+    _, confident, _, _ = plane_sweep(ref, neighbours, 1.5, 20.0)
+    assert confident.any()
+    assert not confident[117:153, 122:198].any()
+    for neighbour in neighbours[1:]:
+        neighbour.static_keep[:] = 0
+    _, confident, _, _ = plane_sweep(ref, neighbours, 1.5, 20.0)
+    assert not confident.any()
+
+
 def test_multi_verification_keeps_agreeing_drops_contradicted_and_unobserved():
     # world points seen by a verifier whose depth map reads 5 everywhere: depth 5 agrees; depth 3 lies in space the
     # verifier saw through (it sees 5 behind it) -> contradiction; depth 8 is behind what it sees (occlusion: neutral,
@@ -100,3 +116,37 @@ def test_ground_plane_fit_from_sparse_points():
     v.obs = set(pts)
     n, d, share, _ = ground_plane(v, rec)
     assert abs(d - HEIGHT) < 0.02 and n[1] > 0.999 and share > 0.7
+
+
+def test_border_exclusion_drops_windows_that_leave_the_image():
+    ref = fake_view([0, 0, 0])
+    nbrs = [fake_view([0.05, 0, z]) for z in (0.25, -0.25, 0.5, -0.5)]
+    _, conf, _, _ = plane_sweep(ref, nbrs, 1.5, 20.0, border_exclusion=True)
+    assert conf.any()
+    assert not conf[:, :3].any() and not conf[:, -3:].any() and not conf[:3].any() and not conf[-3:].any()
+
+
+def test_valid_pixel_cost_keeps_surface_next_to_a_mask_and_never_inside_it():
+    ref = fake_view([0, 0, 0])
+    nbrs = [fake_view([0.05, 0, z]) for z in (0.25, -0.25, 0.5, -0.5)]
+    keep = np.ones((H, W), np.float32)
+    keep[130:160, 120:200] = 0  # a masked object standing on the floor
+    ref.static_keep = keep
+    for nb in nbrs:
+        nb.static_keep = np.ones((H, W), np.float32)
+    ring = np.zeros((H, W), bool)
+    ring[127:163, 117:203] = True
+    ring[130:160, 120:200] = False  # pixels 1-3 px from the mask: their 7x7 window touches it
+    G = (np.array([0, 1.0, 0]), [1.0 / x for x in np.linspace(0.5, 2.0, 64)])
+    plain = fake_view([0, 0, 0])
+    _, c_plain, _, _ = plane_sweep(plain, [fake_view([0.05, 0, z]) for z in (0.25, -0.25, 0.5, -0.5)], 1.5, 20.0, ground=G)
+    _, c_erode, _, _ = plane_sweep(ref, nbrs, 1.5, 20.0, ground=G)
+    d_val, c_val, _, _ = plane_sweep(ref, nbrs, 1.5, 20.0, ground=(np.array([0, 1.0, 0]), [1.0 / x for x in np.linspace(0.5, 2.0, 64)]),
+                                     mask_cost="valid_pixels")
+    assert not c_val[130:160, 120:200].any() and not c_erode[130:160, 120:200].any()
+    # erosion removes the whole ring; valid-pixel scoring keeps at least half of what an unmasked scene gives there
+    assert c_erode[ring].mean() < 0.05 and c_val[ring].mean() >= 0.5 * c_plain[ring].mean(), \
+        (c_erode[ring].mean(), c_val[ring].mean(), c_plain[ring].mean())
+    m = c_val & ring
+    err = np.abs(d_val[m] - ref.true_depth[m]) / ref.true_depth[m]
+    assert np.mean(err < 0.10) > 0.9

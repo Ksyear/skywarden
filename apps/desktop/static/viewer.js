@@ -57,8 +57,9 @@ export class PointViewer {
     this._bindInput();
   }
 
-  setData(cloud, poses) {
+  setData(cloud, poses, opts = {}) {
     this.cloud = cloud; this.poses = poses;
+    this.frameOnCloud = !!opts.frameOnCloud;
     // Scene frame: centre = median point, up = mean camera "up" (-y in COLMAP camera axes), forward = mean view dir.
     const n = cloud.count;
     const med = (k) => { const a = []; for (let i = k; i < 3 * n; i += 3 * Math.max(1, Math.floor(n / 4000))) a.push(cloud.xyz[i]); a.sort((x, y) => x - y); return a[a.length >> 1] ?? 0; };
@@ -79,7 +80,8 @@ export class PointViewer {
     const camMax = camD[camD.length - 1] || 0;
     // Two framings: the main observed region (90th percentile of point distances + the camera path) and the full
     // extent (every point). A few distant points must not decide the default view; they stay drawn either way.
-    this.radiusMain = Math.max(d[Math.floor(d.length * 0.9)] || 0, camR * 1.1) || 1;
+    // Static-map layers frame the observed surfaces only (the camera path is an optional overlay there).
+    this.radiusMain = (this.frameOnCloud ? d[Math.floor(d.length * 0.75)] : Math.max(d[Math.floor(d.length * 0.9)] || 0, camR * 1.1)) || 1;
     this.radiusFull = Math.max(d[d.length - 1] || 0, camMax * 1.1) || 1;
     this.radius = this.framing === "full" ? this.radiusFull : this.radiusMain;
     this.resetView();
@@ -94,6 +96,11 @@ export class PointViewer {
   resetView() { Object.assign(this.view, { yaw: 0, pitch: 0.35, dist: this.radius ? this.radius * 2.6 : 3, panX: 0, panY: 0 }); this.request(); }
   setVisibleUpTo(k) { this.visibleUpTo = k; this.request(); }
   setCurrent(k) { this.current = k; this.request(); }
+  setOverlays({ path, cameras }) {
+    if (path !== undefined) this.showPath = path;
+    if (cameras !== undefined) this.showCameras = cameras;
+    this.request();
+  }
 
   request() {
     if (this._pending) return;
@@ -152,18 +159,22 @@ export class PointViewer {
     // Trajectory and camera frustums (drawn on top: they are annotations, not geometry).
     const last = Math.min(this.poses.length - 1, this.visibleUpTo);
     ctx.lineWidth = 1.5 * dpr; ctx.strokeStyle = "#4cc3ff"; ctx.beginPath();
-    let started = false;
-    for (let k = 0; k <= last; k++) {
-      const q = project(this.poses[k].C); if (!q) { started = false; continue; }
-      // never draw a line across a detected path jump: there is no geometric evidence linking the two sides
-      if (started && this.breaks?.has(this.poses[k].timestamp_s)) started = false;
-      if (started) ctx.lineTo(q[0], q[1]); else { ctx.moveTo(q[0], q[1]); started = true; }
+    if (this.showPath !== false) {
+      let started = false;
+      for (let k = 0; k <= last; k++) {
+        const q = project(this.poses[k].C); if (!q) { started = false; continue; }
+        // never draw a line across a detected path jump: there is no geometric evidence linking the two sides
+        if (started && this.breaks?.has(this.poses[k].timestamp_s)) started = false;
+        if (started) ctx.lineTo(q[0], q[1]); else { ctx.moveTo(q[0], q[1]); started = true; }
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
-    const step = Math.max(1, Math.round(this.poses.length / 12));
-    for (let k = 0; k <= last; k++) {
-      if (k % step && k !== this.current) continue;
-      this._frustum(project, this.poses[k], k === this.current ? "#ffb020" : "rgba(76,195,255,.75)", k === this.current ? 2.2 : 1);
+    if (this.showCameras !== false) {
+      const step = Math.max(1, Math.round(this.poses.length / 12));
+      for (let k = 0; k <= last; k++) {
+        if (k % step && k !== this.current) continue;
+        this._frustum(project, this.poses[k], k === this.current ? "#ffb020" : "rgba(76,195,255,.75)", k === this.current ? 2.2 : 1);
+      }
     }
     this.lastDrawn = drawn;
     this.onRender?.(performance.now() - t0, drawn);

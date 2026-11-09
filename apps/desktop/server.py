@@ -38,7 +38,9 @@ SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # no leading dot:
 SESSION_FILES = {"sparse.ply", "trajectory.json", "frames.json", "map_report.json", "log.txt", "evaluation.json",
                  "coverage.json", "shots.json", "sparse_filtered.ply", "diagnosis_segments.json",
                  "dense/dense_verified.ply", "dense/dense_report.json",
-                 "dense_experimental/dense_verified.ply", "dense_experimental/dense_report.json"}
+                 "dense_experimental/dense_verified.ply", "dense_experimental/dense_report.json",
+                 "dense_static/dense_verified.ply", "dense_static/dense_report.json",
+                 "dense_static_v2/dense_verified.ply", "dense_static_v2/dense_report.json"}
 MODEL_FILE = re.compile(r"^models/\d{1,3}/(sparse\.ply|sparse_filtered\.ply|trajectory\.json|model_report\.json)$")
 TRACK_FILES = {"tracks.json", "tracking_report.json"}
 RUN_FILES = {"tracks.json", "run_report.json", "timeline.jsonl", "frames/latest.jpg"}

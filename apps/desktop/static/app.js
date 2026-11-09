@@ -209,13 +209,13 @@ async function loadSession(sid, modelRank = 0) {
     const models = info.report?.reconstruction?.models || null;  // per-model exports (report schema @2)
     const prefix = models && modelRank > 0 ? `models/${modelRank}/` : "";
     const pf = report_point_filter(info.report, modelRank);
-    const dense = modelRank === 0 ? await api(`${base}/files/dense/dense_report.json`).catch(() => null) : null;
-    const denseExp = modelRank === 0 ? await api(`${base}/files/dense_experimental/dense_report.json`).catch(() => null) : null;
+    const densePaths = { dense: "dense", dense_exp: "dense_experimental", dense_static: "dense_static", dense_static_v2: "dense_static_v2" };
+    const denseReports = Object.fromEntries(await Promise.all(Object.entries(densePaths).map(async ([key, dir]) =>
+      [key, modelRank === 0 ? await api(`${base}/files/${dir}/dense_report.json`).catch(() => null) : null])));
     let layer = $("layer").value;
-    if ((layer === "filtered" && !pf) || (layer === "dense" && !(dense && dense.dense_verified_points > 0))
-        || (layer === "dense_exp" && !(denseExp && denseExp.dense_verified_points > 0))) layer = "sparse";
+    if ((layer === "filtered" && !pf) || (layer in densePaths && !denseReports[layer]?.dense_verified_points)) layer = "sparse";
     const useFiltered = layer === "filtered";
-    const plyPath = layer === "dense" ? "dense/dense_verified.ply" : layer === "dense_exp" ? "dense_experimental/dense_verified.ply"
+    const plyPath = layer in densePaths ? `${densePaths[layer]}/dense_verified.ply`
       : `${prefix}${useFiltered ? "sparse_filtered.ply" : "sparse.ply"}`;
     const [traj, plyRes, coverage] = await Promise.all([api(`${base}/files/${prefix}trajectory.json`),
       api(`${base}/files/${plyPath}`, { raw: true, timeout: 60000 }),
@@ -223,17 +223,23 @@ async function loadSession(sid, modelRank = 0) {
     const cloud = parsePly(await plyRes.arrayBuffer());
     if (token !== state.loadToken) return;  // a newer load started meanwhile
     const report = info.report;
-    const expected = layer === "dense" ? dense.dense_verified_points : layer === "dense_exp" ? denseExp.dense_verified_points : useFiltered ? pf.filtered : models ? models[modelRank].points3D : report.reconstruction.points3D;
+    const expected = denseReports[layer]?.dense_verified_points
+      ?? (useFiltered ? pf.filtered : models ? models[modelRank].points3D : report.reconstruction.points3D);
     if (cloud.count !== expected) throw new Error(`PLY has ${cloud.count} points, report says ${expected}`);
     const poses = traj.poses.map((p) => ({ ...p, R: p.T_world_camera.slice(0, 3).map((r) => r.slice(0, 3)), C: p.T_world_camera.slice(0, 3).map((r) => r[3]) }));
     state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now(), modelRank, models, coverage,
-      pointFilter: pf, filtered: !!useFiltered, layer, dense, denseExp };
+      pointFilter: pf, filtered: !!useFiltered, layer, dense: denseReports.dense,
+      denseExp: denseReports.dense_exp, denseStatic: denseReports.dense_static, denseStaticV2: denseReports.dense_static_v2 };
     $("layer").value = layer;
     $("layer").options[1].disabled = !pf;
-    $("layer").options[2].disabled = !(dense && dense.dense_verified_points > 0);
-    $("layer").options[3].disabled = !(denseExp && denseExp.dense_verified_points > 0);
+    for (const option of $("layer").options) {
+      if (option.value in densePaths) option.disabled = !denseReports[option.value]?.dense_verified_points;
+    }
     renderModelSelect();
-    viewer.setData(cloud, poses);
+    // Dense layers are static maps: frame the observed surfaces and hide path/cameras until asked for
+    const staticView = layer.startsWith("dense");
+    viewer.setData(cloud, poses, { frameOnCloud: staticView });
+    setOverlays(!staticView, !staticView);
     viewer.setBreaks(modelRank === 0 && coverage ? (coverage.jumps_in_largest_model || []).map((j) => j.t_to) : []);
     $("map-empty").hidden = true;
     renderLabels(); renderMetrics(); refreshSessions();
@@ -272,18 +278,21 @@ function renderLabels() {
   const layerChip = { sparse: "SPARSE POINTS (SfM) — feature points only, not walls or floors",
     filtered: "SPARSE POINTS, FILTERED — triangulation angle ≥ 1.5°, ≥ 3 views, low reprojection; raw points kept",
     dense: `DENSE · VERIFIED — ${denseMethod(state.loaded.dense)}; unobserved areas stay empty`,
-    dense_exp: `DENSE · EXPERIMENTAL, NOT ADOPTED — ${denseMethod(state.loaded.denseExp)}; ${state.loaded.denseExp?.experimental?.reason ?? "failed the frozen acceptance"}` }[layer];
+    dense_exp: `DENSE · EXPERIMENTAL, NOT ADOPTED — ${denseMethod(state.loaded.denseExp)}; ${state.loaded.denseExp?.experimental?.reason ?? "failed the frozen acceptance"}`,
+    dense_static: "DENSE · STATIC SCENE TRIAL — sky and person masks applied during matching and depth verification",
+    dense_static_v2: `DENSE · STATIC SCENE v2, NOT ADOPTED — ${denseMethod(state.loaded.denseStaticV2)}; ${state.loaded.denseStaticV2?.experimental?.reason ?? ""}` }[layer];
   const shown = viewer.cloud?.count;
-  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, layer === "dense_exp" ? "layer warn" : "layer"), chip(layerChip, layer === "dense_exp" ? "warn" : ""));
+  const trial = layer === "dense_exp" || layer.startsWith("dense_static");
+  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL", dense_static: "DENSE · STATIC SCENE", dense_static_v2: "DENSE · STATIC SCENE v2" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, trial ? "layer warn" : "layer"), chip(layerChip, trial ? "warn" : ""));
   const M = state.loaded.models;
   if (q !== "GOOD" || (M && M.length > 1)) {
     const m = M ? M[state.loaded.modelRank] : null, n = state.loaded.report.reconstruction.selected_frames;
     tl.append(chip(M && M.length > 1 ? `PARTIAL RECONSTRUCTION — model ${state.loaded.modelRank + 1} of ${M.length} (${m.registered_images}/${n} frames); models have separate coordinate frames and are never merged`
                                     : `PARTIAL RECONSTRUCTION — quality ${q}`, "warn"));
   }
-  const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS" }[layer] ?? L.geometry;
+  const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS", dense_static: "DENSE_STATIC_MVS_TRIAL", dense_static_v2: "DENSE_STATIC_MVS_TRIAL_V2" }[layer] ?? L.geometry;
   bl.append(chip("Relative units · scale unknown", "warn"), chip(`${geom} · ${state.loaded.poses.length} cameras`));
-  $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental" }[layer] ?? "3D map";
+  $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental", dense_static: "Dense 3D map · static scene trial", dense_static_v2: "Dense 3D map · static scene v2 trial" }[layer] ?? "3D map";
 }
 
 function renderMetrics() {
@@ -300,7 +309,8 @@ function denseMethod(d) {
   const sweep = c.sweep === "fronto+ground" ? "fronto + ground-plane sweep" : "fronto-parallel sweep";
   const ver = c.verify === "multi" ? `checked against sparse points and every view within ±${c.verify_window ?? 8} (any contradiction drops a point)` : "checked against sparse points and the next view";
   const vox = c.voxel_near_scale && c.voxel_near_scale !== 1 ? ` · near voxel ×${c.voxel_near_scale}` : "";
-  return `${sweep}, ${ver}${vox}`;
+  const masks = d?.static_masks ? (c.mask_cost === "valid_pixels" ? " · sky/person masks: cost over unmasked window pixels only" : " · sky/person masks: window erosion") : "";
+  return `${sweep}, ${ver}${vox}${masks}`;
 }
 
 function report_point_filter(report, rank) {
@@ -398,7 +408,7 @@ function renderControls() {
   $("build").title = trackRunning ? "A tracking run is in progress; one job at a time" : "";
   $("cancel").disabled = !online || !running;
   if (!running) $("cancel-confirm").hidden = true;
-  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "framing"]) $(id).disabled = !has;
+  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "framing", "show-path", "show-cams"]) $(id).disabled = !has;
   $("layer").disabled = !has;
   $("input-select").disabled = running; $("fps").disabled = running; $("max-frames").disabled = running; $("use-calib").disabled = running;
 }
@@ -452,6 +462,12 @@ $("play").addEventListener("click", togglePlay);
 $("scrub").addEventListener("input", (e) => { stopPlay(); setIndex(parseInt(e.target.value, 10)); });
 $("reset-view").addEventListener("click", () => viewer.resetView());
 $("layer").addEventListener("change", () => { if (state.loaded) loadSession(state.loaded.sid, state.loaded.modelRank); });
+function setOverlays(path, cams) {
+  $("show-path").setAttribute("aria-pressed", String(path)); $("show-cams").setAttribute("aria-pressed", String(cams));
+  viewer.setOverlays({ path, cameras: cams });
+}
+$("show-path").addEventListener("click", () => setOverlays($("show-path").getAttribute("aria-pressed") !== "true", $("show-cams").getAttribute("aria-pressed") === "true"));
+$("show-cams").addEventListener("click", () => setOverlays($("show-path").getAttribute("aria-pressed") === "true", $("show-cams").getAttribute("aria-pressed") !== "true"));
 $("framing").addEventListener("click", () => {
   const full = $("framing").getAttribute("aria-pressed") !== "true";
   $("framing").setAttribute("aria-pressed", String(full)); viewer.setFraming(full ? "full" : "main");
@@ -479,6 +495,8 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowRight") { stopPlay(); setIndex(state.idx + 1); }
   else if (e.key === "r" || e.key === "R") viewer.resetView();
   else if (e.key === "g" || e.key === "G") $("growth").click();
+  else if (e.key === "p" || e.key === "P") $("show-path").click();
+  else if (e.key === "c" || e.key === "C") $("show-cams").click();
 });
 
 tracking = initTracking({ api, badge, announce, pct, isOnline: () => state.conn === "ONLINE", apiMs: () => state.apiMs,

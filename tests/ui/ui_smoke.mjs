@@ -159,6 +159,10 @@ try {
     check("dense layer loads with its own caption", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('DENSE · VERIFIED')`, 60000), await text("map-overlay-tl"));
     await sleep(1500);
     check("status bar reports raw / filtered / dense counts", /sparse raw [\d,]+ \/ filtered [\d,]+ · dense verified [\d,]+/.test(await text("m-render")), await text("m-render"));
+    check("dense layer hides path and cameras by default", await evaluate(`document.getElementById('show-path').getAttribute('aria-pressed') === 'false' && document.getElementById('show-cams').getAttribute('aria-pressed') === 'false'`));
+    await evaluate(`document.getElementById('show-path').click()`);
+    check("path toggle turns the trajectory back on", await evaluate(`document.getElementById('show-path').getAttribute('aria-pressed') === 'true'`));
+    await evaluate(`document.getElementById('show-path').click()`);
     check("viewport names the layer on screen with its point count", /LAYER ▸ DENSE · VERIFIED · [\d,]+ pts in file/.test(await text("map-overlay-tl")), await text("map-overlay-tl"));
     await shot("03d_dense_layer.png");
     if (existsSync(join(ROOT, "outputs/maps", MQ_DENSE, "dense_experimental", "dense_verified.ply"))) {
@@ -169,6 +173,14 @@ try {
       check("status bar reports the experimental count separately", /dense experimental [\d,]+ · showing dense_exp/.test(await text("m-render")), await text("m-render"));
       check("panel title follows the layer", (await text("map-title")) === "Dense 3D map · experimental", await text("map-title"));
       await shot("03e_dense_experimental_layer.png");
+    }
+    if (existsSync(join(ROOT, "outputs/maps", MQ_DENSE, "dense_static_v2", "dense_verified.ply"))) {
+      await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'dense_static_v2'; s.dispatchEvent(new Event('change')); })()`);
+      check("static map v2 layer is labelled as a trial, not adopted", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('DENSE · STATIC SCENE v2, NOT ADOPTED')`, 60000), await text("map-overlay-tl"));
+      await sleep(1500);
+      check("static map v2: path and cameras off, title follows", await evaluate(`document.getElementById('show-path').getAttribute('aria-pressed') === 'false' && document.getElementById('show-cams').getAttribute('aria-pressed') === 'false' && document.getElementById('map-title').textContent === 'Dense 3D map · static scene v2 trial'`));
+      check("static map v2: status bar reports the file's point count and the drawn count", /[\d,]+ of 1,530,092 pts drawn · .*showing dense_static_v2/.test(await text("m-render")), await text("m-render"));
+      await shot("03f_static_map_v2.png");
     }
     await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'sparse'; s.dispatchEvent(new Event('change')); })()`);
     await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('SPARSE POINTS (SfM)')`, 20000);

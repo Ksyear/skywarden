@@ -63,7 +63,7 @@ def _pose(im):
 
 
 class View:
-    def __init__(self, rec, im, frames_dir: Path, scale: float):
+    def __init__(self, rec, im, frames_dir: Path, scale: float, mask_dir: Path | None = None):
         cam = rec.cameras[im.camera_id]
         K = np.asarray(cam.calibration_matrix(), float).copy()  # model-aware (SIMPLE_*, PINHOLE, OPENCV, ...)
         K[:2] *= scale
@@ -75,7 +75,27 @@ class View:
         self.C = -self.R.T @ self.t
         self.im = im
         self.obs = {p2.point3D_id for p2 in im.points2D if p2.has_point3D()}
+        self.obs_all = self.obs  # before any keep-mask filtering (S2n uses it for neighbour selection)
         self.depth = None  # filled by its own pair: (u, v) -> depth in this undistorted view
+        if mask_dir is not None:
+            path = mask_dir / (im.name + ".png")
+            keep = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if (keep is None or keep.shape != img.shape[:2] or keep.dtype != np.uint8
+                    or np.any((keep != 0) & (keep != 255))):
+                raise ValueError(f"Expected a full-resolution binary keep mask: {path}")
+            kept_observations = set()
+            h, w = keep.shape
+            for p2 in im.points2D:
+                if p2.has_point3D():
+                    x, y = np.floor(p2.xy).astype(int)
+                    if 0 <= x < w and 0 <= y < h and keep[y, x]:
+                        kept_observations.add(p2.point3D_id)
+            self.obs = kept_observations
+            keep = cv2.resize(keep, self.img.shape[1::-1], interpolation=cv2.INTER_NEAREST)
+            keep = keep.astype(np.float32) / 255
+            if self.dist.any():
+                keep = cv2.undistort(keep, self.K, self.dist)
+            self.static_keep = (keep >= 0.999).astype(np.float32)
 
 
 def _sgbm(a, b, ndisp):
@@ -149,10 +169,16 @@ class DenseConfig:
     min_agree: int = 1           # multi: views agreeing within REL_TOL needed (E-V2 = 2)
     voxel_near_scale: float = 1.0  # E-F: voxel x scale for points nearer than their view's median depth
     neighbour_rule: str = "median"  # "median_or_near" (E-N): p10-depth baseline also qualifies; "median_then_near" (E-N2): only for free slots
+    border_exclusion: bool = False  # S1 (docs/PLAN_STATIC_MAP.md): no depth where the matching window leaves the image
+    mask_cost: str = "erode"        # with keep-masks: "erode" drops a pixel if any window pixel is masked;
+                                    # "valid_pixels" (S2) scores ZNCC over unmasked, in-image window pixels only
+    min_valid_frac: float = 0.6     # S2: minimum share of usable window pixels (reference and each neighbour)
+    neighbours_all_sparse: bool = False  # S2n: baseline/depth ratios from all sparse points, not only unmasked ones
 
 
 def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes: int = PLANES, win: int = 7,
-                ground: tuple | None = None):
+                ground: tuple | None = None, border_exclusion: bool = False, mask_cost: str = "erode",
+                min_valid_frac: float = 0.6):
     """Plane sweep (works for forward motion, unlike rectified two-view stereo). Cost = 1 - ZNCC over a win x win
     window, averaged over the best two neighbours per pixel (occlusion-robust).
 
@@ -168,11 +194,31 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
     m0 = box(g0)
     v0 = np.maximum(box(g0 * g0) - m0 * m0, 1e-3)
     Kinv = np.linalg.inv(ref.K)
+    keep = getattr(ref, "static_keep", None)
+    window = np.ones((win, win), np.uint8)
+    masked = mask_cost == "valid_pixels"
+    if masked:
+        # S2: the reference centre pixel must be static and enough of its window must be usable; texture is measured on
+        # the usable pixels only, so a branch next to the sky keeps its own texture instead of the sky's
+        kr = np.ones((h, w), np.float32) if keep is None else (keep >= 0.999).astype(np.float32)
+        ref_frac = box(kr)
+        ref_support = (kr > 0) & (ref_frac >= min_valid_frac)
+        n0 = np.maximum(ref_frac, 1e-6)
+        m0r = box(kr * g0) / n0
+        v0 = np.maximum(box(kr * g0 * g0) / n0 - m0r * m0r, 1e-3)
+        g0sq = g0 * g0
+    else:
+        ref_support = cv2.erode(keep, window, borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0 if keep is not None else True
+    if border_exclusion:  # S1: a window that leaves the image is filled by reflection and gives column-constant depth
+        half = win // 2
+        inside = np.zeros((h, w), bool)
+        inside[half:h - half, half:w - half] = True
+        ref_support = inside & ref_support
     rel = []
     for nb in nbrs:
         R = nb.R @ ref.R.T
         t = nb.t - R @ ref.t
-        rel.append((R, t, _undistorted_gray(nb)))
+        rel.append((R, t, _undistorted_gray(nb), getattr(nb, "static_keep", None)))
     families = [("fronto", np.array([0, 0, 1.0]), [1.0 / idd for idd in np.linspace(1.0 / dmax, 1.0 / dmin, n_planes)])]
     if ground is not None:
         families.append(("ground", np.asarray(ground[0], float), list(ground[1])))
@@ -191,10 +237,29 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
         best_i = np.zeros((h, w), np.int16)
         for pi, d in enumerate(ds):
             costs = []
-            for R, t, g1 in rel:
+            for R, t, g1, nbr_keep in rel:
                 H = ref.K @ (R + np.outer(t, n) / d) @ Kinv  # ref pixel -> neighbour pixel for points on the plane
                 warped = cv2.warpPerspective(g1, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderValue=-1)
                 valid = warped >= 0
+                if masked:
+                    wv = valid
+                    if nbr_keep is not None:
+                        wv = wv & (cv2.warpPerspective(nbr_keep, H, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP) >= 0.999)
+                    wv = wv.astype(np.float32) * kr
+                    N = box(wv)
+                    Nn = np.maximum(N, 1e-6)
+                    gw = np.where(wv > 0, warped, 0).astype(np.float32)
+                    m0w, m1w = box(wv * g0) / Nn, box(gw) / Nn
+                    v0w = np.maximum(box(wv * g0sq) / Nn - m0w * m0w, 1e-3)
+                    v1w = np.maximum(box(gw * gw) / Nn - m1w * m1w, 1e-3)
+                    zncc = (box(gw * g0) / Nn - m0w * m1w) / np.sqrt(v0w * v1w)
+                    costs.append(np.where((N >= min_valid_frac) & (wv > 0), 1.0 - zncc, 2.0).astype(np.float32))
+                    continue
+                if nbr_keep is not None:
+                    warped_keep = cv2.warpPerspective(nbr_keep, H, (w, h),
+                                                     flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
+                    valid = cv2.erode((valid & (warped_keep >= 0.999)).astype(np.uint8), window,
+                                      borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0
                 m1 = box(warped)
                 v1 = np.maximum(box(warped * warped) - m1 * m1, 1e-3)
                 zncc = (box(g0 * warped) - m0 * m1) / np.sqrt(v0 * v1)
@@ -212,7 +277,7 @@ def plane_sweep(ref: View, nbrs: list[View], dmin: float, dmax: float, n_planes:
         # A minimum on the first or last plane means the true surface lies outside the swept range (e.g. clouds, sky):
         # such pixels carry no depth estimate and are dropped instead of being pinned to the range limit.
         interior = (best_i > 0) & (best_i < len(ds) - 1)
-        conf = (best < MAX_COST) & (second - best > MIN_MARGIN) & (v0 > TEXTURE_VAR) & interior
+        conf = (best < MAX_COST) & (second - best > MIN_MARGIN) & (v0 > TEXTURE_VAR) & interior & ref_support
         fam[name] = {"best": best, "second": second, "idx": best_i, "depth": depth, "conf": conf, "n_planes": len(ds)}
     f = fam["fronto"]
     depth, conf, best = f["depth"], f["conf"], f["best"]
@@ -324,7 +389,8 @@ def _verify_multi(st, verifiers, min_agree):
 
 
 def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseConfig(), out: Path | None = None,
-        t_range: tuple[float, float] | None = None, diag_frames: tuple[str, ...] = ()) -> dict:
+        t_range: tuple[float, float] | None = None, diag_frames: tuple[str, ...] = (),
+        mask_dir: Path | None = None) -> dict:
     t0 = time.monotonic()
     report = json.loads((sd / "map_report.json").read_text())
     models = (report.get("reconstruction") or {}).get("models")
@@ -334,7 +400,7 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
     ims = sorted((im for im in rec.images.values() if im.has_pose), key=lambda im: order[im.name])
     cam = rec.cameras[ims[0].camera_id]
     scale = min(1.0, cfg.work_width / cam.width)
-    out = out or sd / "dense"
+    out = out or sd / ("dense_static" if mask_dir is not None else "dense")
     out.mkdir(parents=True, exist_ok=True)
     flags_path = sd / "diagnosis_segments.json"
     low = json.loads(flags_path.read_text()).get("low_confidence_windows", []) if flags_path.exists() else []
@@ -343,7 +409,7 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
 
     def view(i):
         if i not in views:
-            views[i] = View(rec, ims[i], sd / "frames", scale)
+            views[i] = View(rec, ims[i], sd / "frames", scale, mask_dir)
         return views[i]
 
     ratio_cache: dict[tuple[int, int], tuple | None] = {}
@@ -353,7 +419,7 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
         if (i, j) in ratio_cache:
             return ratio_cache[(i, j)]
         Ri, ti = _pose(ims[i]); Rj, tj = _pose(ims[j])
-        shared = view(i).obs & view(j).obs
+        shared = (view(i).obs_all & view(j).obs_all) if cfg.neighbours_all_sparse else (view(i).obs & view(j).obs)
         r = None
         if len(shared) >= MIN_SHARED:
             z = np.array([(Ri @ rec.points3D[p].xyz + ti)[2] for p in shared])
@@ -433,7 +499,9 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
                                                       "inlier_share": gp[2], "candidates": gp[3]}
             if gp is not None:
                 ground = (gp[0], [1.0 / x for x in np.linspace(1.0 / (2.0 * gp[1]), 1.0 / (0.5 * gp[1]), n_planes)])
-        depth, conf, cost, dg = plane_sweep(v, [view(j) for j, _ in nb], dmin, dmax, n_planes=n_planes, ground=ground)
+        depth, conf, cost, dg = plane_sweep(v, [view(j) for j, _ in nb], dmin, dmax, n_planes=n_planes, ground=ground,
+                                            border_exclusion=cfg.border_exclusion, mask_cost=cfg.mask_cost,
+                                            min_valid_frac=cfg.min_valid_frac)
         return v, sp, depth, conf, dg
 
     results = []
@@ -544,7 +612,15 @@ def run(sd: Path, rank: int = 0, max_pairs: int = 60, cfg: DenseConfig = DenseCo
     else:
         summary["dense_verified_points"] = 0
     summary["sparse_points_of_covered_views"] = sparse_covered
-    summary["label"] = "DENSE_VERIFIED (relative scale)"
+    summary["label"] = ("DENSE_STATIC_TRIAL (relative scale)" if mask_dir is not None
+                        else "DENSE_VERIFIED (relative scale)")
+    if mask_dir is not None:
+        summary["static_masks"] = {"directory": str(mask_dir),
+                                   "use": "reference and matching windows, and sparse depth support"}
+        manifest = mask_dir / "mask_report.json"
+        if manifest.is_file():
+            meta = json.loads(manifest.read_text())
+            summary["static_masks"].update({k: meta[k] for k in ("model", "revision", "sha256", "classes_excluded") if k in meta})
     summary["seconds"] = round(time.monotonic() - t0, 1)
     acc = {"reference_views_ge_20": len(refs) >= 20,
            "verified_share_ge_0.5": summary["views_verified"] >= 0.5 * max(1, len(refs)),
@@ -716,7 +792,8 @@ def main(argv=None) -> int:
     ap.add_argument("--model", type=int, default=0)
     ap.add_argument("--max-pairs", type=int, default=60)
     ap.add_argument("--mesh-only", action="store_true", help="build the mesh from an existing dense_verified.ply")
-    ap.add_argument("--out", help="output directory (default <session>/dense)")
+    ap.add_argument("--out", help="output directory (defaults to dense_static with masks, otherwise dense)")
+    ap.add_argument("--static-masks", type=Path, help="full-resolution binary keep masks, <frame filename>.png")
     ap.add_argument("--t-range", type=float, nargs=2, metavar=("T0", "T1"), help="reference views in this time window only")
     ap.add_argument("--diag-frames", nargs="*", default=[], help="frames to write stage diagnostics for")
     ap.add_argument("--verify", choices=["next", "multi"], default="next")
@@ -726,15 +803,22 @@ def main(argv=None) -> int:
     ap.add_argument("--work-width", type=int, default=WORK_WIDTH)
     ap.add_argument("--voxel-near-scale", type=float, default=1.0)
     ap.add_argument("--neighbour-rule", choices=["median", "median_or_near", "median_then_near"], default="median")
+    ap.add_argument("--border-exclusion", action="store_true")
+    ap.add_argument("--mask-cost", choices=["erode", "valid_pixels"], default="erode")
+    ap.add_argument("--min-valid-frac", type=float, default=0.6)
+    ap.add_argument("--neighbours-all-sparse", action="store_true")
     a = ap.parse_args(argv)
     if a.mesh_only:
+        if a.static_masks is not None:
+            ap.error("--static-masks applies during depth reconstruction, not --mesh-only")
         print(json.dumps(mesh(Path(a.session_dir), a.model), indent=1))
         return 0
     cfg = DenseConfig(work_width=a.work_width, near_rule=a.near_rule, sweep=a.sweep, verify=a.verify,
                       min_agree=a.min_agree, voxel_near_scale=a.voxel_near_scale,
-                      neighbour_rule=a.neighbour_rule)
+                      neighbour_rule=a.neighbour_rule, border_exclusion=a.border_exclusion, mask_cost=a.mask_cost,
+                      min_valid_frac=a.min_valid_frac, neighbours_all_sparse=a.neighbours_all_sparse)
     s = run(Path(a.session_dir), a.model, a.max_pairs, cfg, Path(a.out) if a.out else None,
-            tuple(a.t_range) if a.t_range else None, tuple(a.diag_frames))
+            tuple(a.t_range) if a.t_range else None, tuple(a.diag_frames), a.static_masks)
     print(json.dumps({k: v for k, v in s.items() if k not in ("views", "diagnostics")} | {"view_status": [(p["ref"], p["status"], p.get("reason", ""), p.get("confident_share"), p.get("sparse_agreement"), p.get("consistency_kept_share")) for p in s["views"]]}, indent=1))
     return 0
 
