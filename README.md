@@ -475,7 +475,8 @@ Tello EDU 연동 근거: Ryze Tello SDK 2.0 사용자 가이드(UDP 8889 명령,
 
 ## 문서
 
-- `docs/SYSTEM_STATUS.md` — 시스템 전체 현황(2026-11-09): 구성 요소별 상태, 앱 레이어 의미, 장단점, 소요 시간, 비용, 실시간 가능 여부, 다음 할 일
+- `docs/SYSTEM_STATUS.md` — 시스템 전체 현황(2026-11-09): 구성 요소별 상태, 앱 레이어 의미, 장단점, 라이다 vs 카메라 비교, 소요 시간, 비용, 실시간 가능 여부, 라즈베리파이 추정, 다음 할 일
+- `docs/DRONE_PURCHASE_AND_KOREA_RULES.md` — 기체 선택 3단계(Tello EDU / DJI Mini 4 Pro / PX4 X500 + RPi5)와 한국 비행 규정(조종자 증명, 기체신고, 비행승인, 항공촬영 허가, 야간·비가시권, 개인정보보호법, 해외직구 KC), 순서 체크리스트 — 2026-11-09 웹 확인 기준, 구매·비행 전 공식 사이트 재확인
 - `docs/PROGRESS.md` — 마일스톤별 상태표(PASS/FAIL/BLOCKED/NOT_RUN)와 다음 명령
 - `docs/VALIDATION_LOG.md` — 실행 날짜, 환경, 명령, 입력 해시, 산출물 경로, 한계
 - `docs/FAILURES.md` — 관찰된 실패, 시도한 대안, 다음 테스트
