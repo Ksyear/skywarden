@@ -207,6 +207,66 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 
 **Reading:** `cov1px` measures what the viewer shows at 1 px, which is what the plan set out to improve, but a future plan that wants to score reconstruction alone should use S3 `verif` or a voxel-normalised coverage as the acceptance measure, with a new baseline.
 
+## F-16 Static map: sky/person masks erode whole matching windows and remove structure at the sky edge (2026-11-09)
+
+**Status:** cause measured; matching rule replaced (S2, `--mask-cost valid_pixels`); residual loss attributed to the segmentation labels, not fixed. Plan `docs/PLAN_STATIC_MAP.md` (finding 2, A1 items 4 and 7).
+
+**Observed** (`outputs/evidence/static_map/summary.json`, run B2 = `dense_static/`, byte-identically reproduced as `B2_full`): the first static trial applied the sky ∪ person keep-mask (3x3 dilation at 384 px) by eroding the 7x7 ZNCC window in the reference and in every warped neighbour, so one masked pixel in the window dropped the pixel. Against B1 (same config without masks) the structure band within 20 px of the sky fell from 0.9476 / 0.9061 / 0.7859 / 0.9069 / 0.738 to 0.4622 / 0.6599 / 0.2828 / 0.3816 / 0.376 on f000240 / f000900 / f001560 / f000600 / f001260; static-pixel structure −8.7 / −5.3 / −11.3 / −7.2 / −11.9 pp; wall −18.9 / −14.6 pp. Mask edge loss about 4 px (dilation) + 3 px (window radius) at 640 px. The reported `f000900` structure drop 0.877 → 0.742 is in the whole-region (`cov1px_region`) definition.
+
+**Fix tried (S2):** ZNCC over valid (unmasked, in-image) window pixels only, per neighbour ≥ 60 % usable window, reference centre pixel must be unmasked. Segment band 0.2921 → 0.5029 and 0.3489 → 0.5543; with undilated masks (S2u) 0.5983 / 0.6343; still below B1 − 3 pp (0.745 / 0.762). Cost: 41.4 s vs B1 25.4 s on the 4–14 s segment (`X_valid_seg`, the same rule without masks, 39.7 s: the time is the rule, not the masks).
+
+**Residual cause:** the segmentation labels bare branches against the sky as sky (f000900 left tree, f001560, f000600), and S2 requires a static centre pixel, so those branches never get depth. S3r restores sky-labelled pixels darker than the local sky mean (61x61 window, 30 grey levels) as candidates: band 0.6004 / 0.6919 → 0.6337 / 0.7189 (S2n → S3r); with the valid-window share lowered to 0.40 (S3r40) 0.669 / 0.7453. Full clip S3r40: band 0.8394 / 0.8811 / 0.6282 / 0.6702 / 0.6486 — most of the loss recovered, B1 not reached (−10.8 / −2.5 / −15.8 / −23.7 / −8.9 pp). Under the frozen labels the restored branch points count as `sky_false` (1.4–6.8 % vs B2 0.1–3.3 %), although the colour check `sky_fringe.json` shows they are not sky-coloured (0.05–0.55 % vs B1 0.16–2.92 %).
+
+**Next test:** a better sky/vegetation label at the edge (a different segmentation model or a per-frame refinement of the branch class with its own evaluation on the mask audit frames) measured on the same five frames; the matching rule does not need to change for that test.
+
+## F-17 Static map: mask-filtered sparse points changed neighbour selection and verifier sets (2026-11-09)
+
+**Status:** cause found and fixed (`--neighbours-all-sparse`, S2n); recorded in A1 item 5.
+
+**Observed:** B2 filtered the sparse SfM points by the keep-mask before computing the baseline / median-depth ratio that selects neighbour views and verifier sets. In the 4–14 s segment this changed the neighbour lists of 15 of 26 reference views and dropped ground-plane candidates in some views (f000190: 23,887 → 8,495 candidates). Sparse points on sky-labelled pixels are triangulated 3D points (mostly branches) and remain valid geometry for choosing views.
+
+**Fix:** neighbour lists and verifier sets from all sparse points; the keep-mask applies to matching only. Segment (S2u → S2n): floor 0.2107 → 0.2295, structure 0.6759 → 0.665, band 0.5983 → 0.6004, views verified 25 → 26, streak columns behind the floor 0.3686 (control 0.2335) → 0.1774 (control 0.1298). On the t 26–34 s segment floor fell 0.1328 → 0.1043 while structure rose 0.5728 → 0.6306 and band 0.6343 → 0.6919; the plan's clause 2 counts the floor drop, the band gain made S2n the base for S3r.
+
+## F-18 Static map: floor streak from the last 4 image columns of reference views f000720–f000800 (2026-11-09)
+
+**Status:** cause measured; fixed by border exclusion + all-sparse neighbour choice (S3r40 full clip streak at control level). Plan finding 1, section 5 S1, A1 item 3.
+
+**Observed** (B1 = `dense_experimental/`): in f000240 the points in columns 576–590 (640 px) lie 88.45 % behind the fitted floor against 29.54 % in the control columns (`streak_cols` 1,680 points). They come from reference views f000720–f000800 at source columns u = 636–639, one constant depth per column: a border-window artefact of the depth-candidate stage (box filter with `BORDER_REFLECT`, warped neighbour border) that passes the multi-view checks. 55,331 of 4,843,796 B1 raw points (1.14 %) lie within 3 px of the image border. The same streak is the "thin vertical streak" observed without a metric in F-14.
+
+**Fix:** a pixel whose 7x7 window leaves the image in the reference or any warped neighbour is invalid at the candidate stage (`--border-exclusion`). On B2's erode mode this is a no-op (raw border share already 0.0), so it has no row of its own and is paired with S2. Full clip S3r40: raw border share 0.0, streak columns 0.1708 behind the floor vs control 0.1911 (B2 0.373 vs 0.245; B1 0.8845 vs 0.2954). Segment runs cannot show the fix because the source views f000720–f000800 lie outside t 4–14 s.
+
+## F-19 Static map: the frozen common judge is biased toward B1 (2026-11-09)
+
+**Status:** found before any adoption; neutral judge added (A1 item 6); clause 5 evaluated on it. The B1-judge column stays reported.
+
+**Observed:** section 3 froze B1's own depth maps (`outputs/experiments/dense_cov/ESVFN2x25_full/diag/depth_maps.npz`) as the common judge for `float_fs` and `inconsist`. B1's points were verified against exactly those maps, so B1's free-space violation is low by construction. Measured `float_fs` B1-judge vs neutral (B0 maps, `M0_sumida_full/diag/depth_maps.npz`, used by no candidate's verification): B1 0.3689 vs 0.3384; B2 0.3879 vs 0.3554; S3r40 0.3904 vs 0.3551; B0 0.519 vs 0.4846 (B0's neutral value is against its own maps and is biased the other way). The ordering B1 < S3r40 ≈ B2 holds on both judges, so the verdict on clause 5 does not change; the gap narrows from 2.2 to 1.7 pp.
+
+**Rule kept:** metrics obtained with other maps keep their original verdict and are marked `judge=historical`; the S2 / S2u segment runs have no neutral value because the neutral judge was added after them (`float_fs_neutral: null` in `summary.json`).
+
+## F-20 Static map: S3r40 improves on the static trial but fails the frozen comparison with B1; installed as a trial, NOT_ADOPTED (2026-11-09)
+
+**Status:** FAIL under `docs/PLAN_STATIC_MAP.md` section 4 (one clause missed = FAIL). Default dense layer unchanged (M0). S3r40 installed as `dense_static_v2/` on Sumida and FSC with label `DENSE_STATIC_TRIAL_V2 (relative scale) - not adopted`, `experimental.status NOT_ADOPTED`. Adoption is a user decision.
+
+**Configuration:** B1 + refined undilated masks (`--dilate 1 --refine-sky 30`), `--mask-cost valid_pixels --min-valid-frac 0.4 --border-exclusion --neighbours-all-sparse`. The 0.4 valid-window share has no dated plan section of its own (deviation recorded in the plan's Result).
+
+**Full clip vs B1 (`summary.json`, `static_metrics_S3r40_full.json`):** structure 0.8964 / 0.866 / 0.6514 / 0.8235 / 0.5513 vs 0.927 / 0.8694 / 0.6913 / 0.8373 / 0.6183 (−3.1 / −0.3 / −4.0 / −1.4 / −6.7 pp; clause 1 allows −2); wall 0.808 / 0.1305 vs 0.9244 / 0.2238 (−11.6 / −9.3); band −10.8 / −2.5 / −15.8 / −23.7 / −8.9 pp (allows −3); floor 0.2369 vs 0.2789 on f000240 (−4.2, allows −1) and 0.1205 on f000900 below B2's 0.140; `sky_false` 1.44 / 4.41 / 3.94 / 1.48 / 6.77 % (limit 0.5 %; all below B1's 13–24 %); person front 3 on f001260 (B1 0); `float_fs` neutral 0.3551 vs 0.3384; `inconsist` 0.1099, `float_knn` 0.1024, sparse min 0.725 within tolerance; border share 0.0 and streak 0.1708 vs control 0.1911 PASS; 221.3 s vs 203 s budget; FSC 149 / 149 views, `float_fs` own 0.1777 vs 0.1817, `inconsist` 0.0435 vs 0.0444, 244.7 s vs 232.7 s budget.
+
+**Full clip vs B2 (what it does deliver):** band +37.7 / +22.1 / +34.5 / +28.9 / +27.3 pp, structure +5.6 / +4.9 / +7.3 / +5.8 / +5.2 pp, wall +7.3 / +5.2 pp, floor +2.7 / −2.0 / +2.3 / +0.1 / +1.0 pp, streak removed, `float_fs` neutral 0.3554 → 0.3551, `inconsist` 0.108 → 0.1099, `float_knn` 0.1066 → 0.1024, 141 → 143 views, 1,324,919 → 1,530,092 points, 150.3 → 221.3 s.
+
+**Order deviation:** S3r40 failed both segments on the band clause and was still run on the full clip and FSC so that the comparison exists on disk; the segment verdicts stand and the full-clip rows are FAIL, not a passing change.
+
+**Next test:** nothing in the matching rule is left to tune against the frozen clauses without a time increase; the open items are the segmentation edge (F-16), the 3 `person_front` points on f001260, and the time budget (a 1.5x B1 budget is not met by any valid-pixel variant). Any change to the clauses needs a new dated section with a new baseline table.
+
+## F-21 OpenMVS comparison: `DensifyPointCloud` segfaults at the default resolution on this Mac (2026-11-09)
+
+**Status:** BLOCKED at the default resolution level (800 px); the 640 px runs completed. OpenMVS (AGPL-3.0) is run only as a separate command-line process from its official v2.4.0 macOS arm64 release build; nothing is linked, redistributed or committed.
+
+**Observed** (`outputs/experiments/static_map/openmvs_default_res_segfault.log`): "OpenMVS x64 v2.4.0, Build date: Jan 19 2026", Apple M6 12 cores, 16 GB; command `DensifyPointCloud -i scene.mvs -o OMVSd_seg.mvs --max-threads 0`; 26 images (26 calibrated, 35.31 MPixels, 1.36 MPixels/image), 8,985 points, ROI estimated, neighbour views selected; the log ends at "Geometric-consistent estimated depth-maps 1 (3.85%, 193ms, ETA 4s)...". `summary.json` records the exit as signal −11. No further attempt at that resolution is recorded.
+
+**What ran instead:** 640 px working resolution on the same 26-view workspace, unmasked (`OMVS_seg`: 98,941 points, 8.0 s) and masked (`OMVSm_seg`: 99,599 points, 7.0 s), and the full clip at 640 px masked (`OMVSm_full`: 141,563 points, 81.6 s). Segment floor 0.3848 / 0.3873 vs B1 0.252 with no floor point behind the fitted plane and `float_fs` neutral 0.2347 vs 0.3744, structure 0.1184 / 0.1275 vs 0.6885; full-clip near floor 0.0177 / 0.0042 / 0.0064 on f000240 / f000900 / f000600 (cause not investigated).
+
+**Next test:** the same `scene.mvs` at the default resolution with `--max-threads 1` or a memory-bounded `--sub-scene-area`, to separate a memory fault from a threading fault; and `--resolution-level 1` with `--max-resolution 800` explicitly, to confirm which setting triggers the crash.
+
 ## Not failures, but open gates
 
 - REAL_VIDEO route NOT_RUN: `assets/input/` is empty. Command in `docs/PROGRESS.md`.

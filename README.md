@@ -11,10 +11,10 @@ Skywarden은 스마트폰·웹캠·Tello EDU급 소형 드론의 단안 영상�
 | 영역 | 구현 내용 | 결과물 |
 |---|---|---|
 | 희소 3D 지도 | 영상 파일 또는 이미지 폴더 → 샷(컷) 검출·정지 카메라 판정 → 프레임 선별(블러·저질감·중복 제거, 컷을 넘는 매칭 없음) → pycolmap SIFT/매칭 → **전역(global) 매퍼 기본**, `--mapper incremental` 선택 → 모델별 PLY + 카메라 궤적 + 보고서(`skywarden/map_report@2`). 보정 파일이 없으면 COLMAP이 SIMPLE_RADIAL 내부 파라미터를 추정. 작업 상태(`status`)와 별개로 **품질 판정** `quality.verdict` GOOD / PARTIAL / POOR을 고정 임계값(등록률 ≥ 0.6, 시간 커버리지 ≥ 0.7, 내부 공백 ≤ 2 s, 재투영 ≤ 1.5 px, 10 % 이상 모델 정확히 1개, 시간 정규화 궤적 점프 0, 점 ≥ 2,000)과 함께 기록. 여러 모델은 각자 좌표계로 따로 내보내며 절대 합치지 않음. 표시용 점 필터(`sparse_filtered.ply`: 삼각측량각 < 1.5°, 트랙 < 3, 재투영 > 2 × 중앙값 제거)는 원본 PLY를 바꾸지 않음 | `outputs/maps/<session>/{sparse.ply,sparse_filtered.ply,trajectory.json,map_report.json,coverage.json,shots.json,models/<i>/,log.txt}` |
-| 검증된 밀집 점군 (CPU) | GOOD 지도의 포즈로 CPU 평면 스윕 MVS(ZNCC, 이웃 4개 중 상위 2개, 640 px) → 뷰마다 희소점 일치율 ≥ 0.70 **그리고** 다중 뷰 일관성 ≥ 0.30을 통과한 깊이만 융합 → `DENSE_VERIFIED (relative scale)`. PatchMatch(CUDA/HIP 전용)는 이 Mac에서 BLOCKED. Poisson 메시는 시각 검사 FAIL로 **실험 단계**, 콘솔 레이어 아님. 바닥 커버리지 실험(`docs/PLAN_DENSE_COVERAGE.md`)의 최종 변형 ESVFN2x25는 사전 등록된 선별 구간을 통과하지 못해 **미채택**이며, `dense_experimental/`에 `DENSE_EXPERIMENTAL (relative scale) - not adopted` 라벨로만 설치됨(아래 "밀집 점군 바닥 커버리지 실험" 절) | `outputs/maps/<session>/dense/{dense_report.json,dense_verified.ply}`, 실험 레이어 `outputs/maps/<session>/dense_experimental/{dense_report.json,dense_verified.ply}` |
+| 검증된 밀집 점군 (CPU) | GOOD 지도의 포즈로 CPU 평면 스윕 MVS(ZNCC, 이웃 4개 중 상위 2개, 640 px) → 뷰마다 희소점 일치율 ≥ 0.70 **그리고** 다중 뷰 일관성 ≥ 0.30을 통과한 깊이만 융합 → `DENSE_VERIFIED (relative scale)`. PatchMatch(CUDA/HIP 전용)는 이 Mac에서 BLOCKED. Poisson 메시는 시각 검사 FAIL로 **실험 단계**, 콘솔 레이어 아님. 바닥 커버리지 실험(`docs/PLAN_DENSE_COVERAGE.md`)의 최종 변형 ESVFN2x25는 사전 등록된 선별 구간을 통과하지 못해 **미채택**이며, `dense_experimental/`에 `DENSE_EXPERIMENTAL (relative scale) - not adopted` 라벨로만 설치됨(아래 "밀집 점군 바닥 커버리지 실험" 절). 하늘과 사람을 제외한 **정적 장면 지도** 시도 두 가지 — `dense_static/`(마스크로 매칭 창 전체를 침식하는 첫 시도)와 `dense_static_v2/`(유효 픽셀 비용·경계 제외·전체 희소점 이웃 선택·정제된 비팽창 마스크) — 도 고정 비교 기준을 통과하지 못해 **미채택 trial 레이어**로만 설치됨(아래 "정적 장면 3D 지도" 절) | `outputs/maps/<session>/dense/{dense_report.json,dense_verified.ply}`, 실험 레이어 `outputs/maps/<session>/dense_experimental/{dense_report.json,dense_verified.ply}`, 정적 trial `outputs/maps/<session>/dense_static{,_v2}/{dense_report.json,dense_verified.ply}` |
 | 단안 시각 주행거리계 (VO, 오프라인) | 저장된 영상에서 프레임 간 상대 포즈 추적. 모든 출력에 `kind=VO, scale=RELATIVE, loop_closure=false, relocalization=NOT_IMPLEMENTED, NOT_NAVIGATION_SAFE` 라벨. 컷·추적 실패 시 새 세그먼트(독립 좌표계, 연결하지 않음) | `packages/vision/vo.py`, `outputs/evidence/vo/` |
 | 라이브 실행 (한 시간축) | 영상 파일을 **원래 시간 기준**(`--rate realtime`) 또는 최대 속도(`--rate max`)로, 혹은 `webcam:N`을 입력으로 받아 검출 → Kalman 추적 → 대상 선택 → MOCK yaw → VO를 한 워커에서 처리. 처리가 밀리면 오래된 프레임을 버리고 **세어서 기록**(1칸 버퍼). 두 시계를 분리 기록: `media_t`(영상 시간)와 `run_t`(벽시계). `control.json`(순번 `seq`)로 pause / resume / seek / stop / select / clear; seek마다 `epoch`이 늘고 추적기·선택기·제어기·VO 세그먼트가 초기화. 완료 판정은 파일 기반: `timeline.jsonl` 줄 수·SHA-256·프레임 매니페스트가 맞을 때만 `SUCCEEDED`, 워커가 죽으면 `INCOMPLETE`, SIGTERM은 `CANCELLED`. 끝난 실행은 Tracking 탭에서 `OPEN_LOOP_REPLAY`로 재생. `map_position=NOT_AVAILABLE`, `relocalization=NOT_IMPLEMENTED`, 명령 `MOCK`·미송신 | `outputs/runs/<session>/{timeline.jsonl,run_report.json,tracks.json,status.json,frames/}` |
-| 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등), **품질 배지 GOOD / PARTIAL / POOR / UNRATED(READY 제거)**, 모델 선택기("partial: model i of N"), 샷 변화·궤적 점프를 표시하는 커버리지 띠(점프를 가로질러 경로를 그리지 않음), 기하 레이어 선택(희소 원본 / 필터 / 검증 밀집 / **실험 밀집 — `Dense · experimental (not adopted)`, 해당 폴더가 있을 때만 활성, 경고색 `LAYER ▸ DENSE · EXPERIMENTAL · n pts in file` 칩과 미채택 사유 표시, 패널 제목 `Dense 3D map · experimental`**), 주 관측 영역 vs 전체 범위 프레이밍, `raw / filtered / dense verified / dense experimental / drawn` 점 수 | `apps/desktop/` |
+| 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등), **품질 배지 GOOD / PARTIAL / POOR / UNRATED(READY 제거)**, 모델 선택기("partial: model i of N"), 샷 변화·궤적 점프를 표시하는 커버리지 띠(점프를 가로질러 경로를 그리지 않음), 기하 레이어 선택(희소 원본 / 필터 / 검증 밀집 / **실험 밀집 — `Dense · experimental (not adopted)`, 해당 폴더가 있을 때만 활성, 경고색 `LAYER ▸ DENSE · EXPERIMENTAL · n pts in file` 칩과 미채택 사유 표시, 패널 제목 `Dense 3D map · experimental`** / 정적 trial `Dense · static scene (trial)`, `Dense · static scene v2 (trial)` — 모두 해당 폴더가 있을 때만 활성, `NOT ADOPTED` 사유 칩 표시), 밀집 레이어는 경로·카메라를 기본 숨김(`P` / `C` 키 또는 Path / Cameras 토글로 복귀), 주 관측 영역 vs 전체 범위 프레이밍(`Full extent`, `Reset view`), `raw / filtered / dense verified / dense experimental / drawn` 점 수 | `apps/desktop/` |
 | 사람 검출·추적 | YOLOX-nano ONNX(Apache-2.0)를 OpenCV DNN CPU로 실행(`source=REAL_MODEL`), 등속 Kalman 기반 `MultiTracker`: 마지막 **신뢰** 검출 후 2.0 s가 지난 트랙을 연관 **이전에** 만료, 게이트 = Mahalanobis χ² 9.21 **그리고** 픽셀 거리 ≤ 0.5 × 박스 높이, 확정 트랙은 게이트 그래프의 연결 성분으로 연관(트랙 1 : 검출 1만 신뢰, 그 외는 `AMBIGUOUS` — 보정·갱신 없음, 해당 검출은 보류), 잠정(TENTATIVE) 트랙만 남은 검출에 게이트된 Hungarian 적용. 한 명을 고르는 `TargetSelector`는 LOST 후 다시 선택하기 전까지 LOST 유지(자동 재선택 없음) | `outputs/tracks/<session>/{tracks.json,tracking_report.json,status.json,frames/}` |
 | Tracking 탭 | 프레임 위 박스 오버레이, 트랙 목록에서 대상 선택, 대상 상태(LOCKED / PREDICTING / AMBIGUOUS / LOST) 타임라인, 기록된 트랙 위에서 계산한 **가상** yaw 명령(`MOCK`, 송신 안 함). AMBIGUOUS 프레임은 배지와 `STOP · TARGET_AMBIGUOUS`로 표시되며 yaw는 0 | 콘솔 `Tracking` 탭 |
 | 제어 · Mock 기체 | yaw 전용 `YawController`(PID, 클램프, anti-windup, STOP 사유), Tello SDK 2.0 텍스트 프로토콜 파서, 루프백 UDP `MockTello`, 가상 경계 `GeofenceGuard` | `packages/control/`, `adapters/tello/` |
@@ -112,14 +112,14 @@ node tests/ui/ui_smoke.mjs
 ```
 apps/desktop/            # server.py (stdlib HTTP, 127.0.0.1:8780) + static/{index.html,app.js,tracking.js,live.js,viewer.js,app.css}
 packages/
-  mapping/               # frame_source, frame_selection, shots(컷·정지 카메라 검출), sparse_pipeline(pycolmap, 전역/증분 매퍼), quality(판정·임계값), export(모델별 PLY/trajectory, 점 필터), diagnose(구간 진단), dense(CPU 평면 스윕 MVS + 검증, 기본 레이어), dense_cpu(커버리지 실험용 변형: `--sweep fronto+ground --verify multi --voxel-near-scale --neighbour-rule`), dense_eval(구간별 커버리지·오류 측정 하네스), regions/regions_sumida.json(고정 평가 폴리곤), evaluate(ATE), replay, labels, cli(build / rate)
+  mapping/               # frame_source, frame_selection, shots(컷·정지 카메라 검출), sparse_pipeline(pycolmap, 전역/증분 매퍼), quality(판정·임계값), export(모델별 PLY/trajectory, 점 필터), diagnose(구간 진단), dense(CPU 평면 스윕 MVS + 검증, 기본 레이어), dense_cpu(커버리지 실험용 변형: `--sweep fronto+ground --verify multi --voxel-near-scale --neighbour-rule`), dense_eval(구간별 커버리지·오류 측정 하네스), static_masks(하늘·사람 keep 마스크 생성: `--dilate`, `--refine-sky`), static_eval(정적 지도 판정 하네스: 공통·중립 깊이맵 판정, 하늘·사람·경계 띠·줄무늬 지표, 정적 픽셀·지면 위 커버리지), openmvs_compare(별도 프로세스로 실행하는 OpenMVS 비교 래퍼), regions/regions_sumida.json·regions_sumida_v2.json(고정 평가 폴리곤; v2는 보류 프레임 2개와 wall 클래스 추가), evaluate(ATE), replay, labels, cli(build / rate)
   vision/                # person_detector(YoloxDetector), track_video(offline job), bbox_distance_eval(E1), vo(단안 VO), live_source(FileSource realtime|max, WebcamSource, 1칸 LatestFrameBuffer), live_run(한 시간축 워커: timeline.jsonl / status.json / run_report.json / tracks.json, control.json, --verify)
   tracking/              # tracker: Detection, MultiTracker(Kalman, 만료 우선, 게이트 그래프 성분 연관 + AMBIGUOUS, 잠정 트랙만 Hungarian), TargetSelector(sticky LOST)
   control/               # yaw_controller(PID, SafetyLimits, DroneCommand), virtual_replay, geofence(Geofence, GeofenceGuard)
   sim/                   # synthetic_scene, tracking_scenario(SIMULATED 폐루프), two_person_crossing(E2), geofence_scenario(E3)
 adapters/tello/          # protocol(SDK 2.0 텍스트), client(TelloClient + HardwareDisarmed 게이트), mock_tello(MockTello, 루프백 UDP)
 scripts/                 # run_demo.sh, build_sparse_map.sh, replay_map.sh, run_tracking.sh, run_tracking_sim.sh, fetch_models.sh, test_all.sh
-tests/                   # pytest 18개 모듈(127 tests; test_live_run 11, test_quality 8, test_dense 3, test_export_geometry 3, test_vo 3 포함) + ui/ui_smoke.mjs(78 checks)
+tests/                   # pytest 18개 모듈(130 tests; test_live_run 11, test_quality 8, test_dense 6, test_export_geometry 3, test_vo 3 포함) + ui/ui_smoke.mjs(83 checks)
 data/public/<set>/SOURCE.md   # 데이터셋 출처·라이선스·SHA-256 (데이터 자체는 git 제외)
 data/models/yolox/SOURCE.md   # 가중치 출처·SHA-256 (가중치는 git 제외)
 assets/input/            # 사용자 본인 영상을 두는 곳 (git 제외)
@@ -173,8 +173,9 @@ docs/                    # 설계·계획·검증 기록
 | E4 옷 색으로 두 사람을 구분할 수 있는가 (얼굴·생체 식별은 처음부터 제외; 머리 영역 미사용, 메모리 전용 HSV 히스토그램, Hellinger 거리) | fix_v3 재추적 3개 클립의 LOCKED 트랙 의사 라벨 (REAL_MODEL / PUBLIC_DATASET, 정답 신원 없음) | 실행 PASS, **판정 NO_GO** (vtest FAIL, 거리 FAIL, TUM BLOCKED) | 사전 기준 TPR ≥ 0.60 @ FPR ≤ 1 % 를 2개 클립 이상. vtest AUC 0.870, TPR@1 % 0.154(871/2,484쌍); 몬트리올 거리 AUC 0.874, TPR@1 % 0.493(5,083/5,756쌍); TUM AUC 0.963이나 음성 쌍 55개(< 200)로 BLOCKED. 1 % 오매칭에서 진짜 매칭의 15–49 %만 회수 → 추적기에 통합하지 않음, AMBIGUOUS → STOP 유지 — `outputs/evidence/e4_appearance/` |
 | E3 가상 경계에서 이동을 멈추는가 | MockTello 운동학 토이, 10 × 10 m, 여유 1 m (SIMULATED_FRAME_ONLY) | PASS (추적기 수정 후 재실행도 PASS) | 사전 6개 체크 모두 참. 보호 시 최소 거리 경계 안쪽 1.175 m(여유 구간 미진입), 비보호 대조군은 0.485 m 침범, 포즈 끊김 3–4 s 동안 `NO_POSE_FOR_GEOFENCE` 정지 10회·이동 0, 비루프백 패킷 0. 재실행 `outputs/evidence/e3_geofence_after_tracker_fix/`: 6개 체크·거리 수치 동일, 10 Hz 루프 지터로 차단 프레임 수만 1프레임 차이(42→43) |
 | 밀집 점군 바닥 커버리지 실험, 스미다 (3 프레임 고정 폴리곤) | GOOD 전역 지도의 포즈, 카메라 포즈 불변 | **기본 레이어 M0 유지; 최종 변형 ESVFN2x25 NOT_ADOPTED** (실험 레이어로만 설치) | 바닥 `cov1px`(640 px, 1 px 점) M0 0.0244 / 0.0024 / 0.2764 → ESVFN2x25 0.2789 / 0.119 / 0.6714(+25.4 / +11.7 / +39.5 pp), 구조물 모두 상승, `inconsist` 0.151 → 0.1165, `float_knn` 0.138 → 0.096, `float_fs` 0.485 → 0.369, 135.1 s(예산 176 s) — 전체 클립과 FSC(149/149 뷰, 6,520,886점, `inconsist` 0.0638 → 0.0444, 155 s)에서 2절 기준 전부 충족. 그러나 사전 등록된 선별 구간 t 26–34 s에서 `float_fs` 0.151 → 0.263(허용 +2 pp)으로 FAIL → 규칙대로 미채택. 상세는 아래 절과 `docs/PLAN_DENSE_COVERAGE.md` 10절 |
-| 자동 테스트 | `scripts/test_all.sh` | PASS | **127 passed in 84.96 s** (`outputs/evidence/tests/pytest-20261109-113035.log`). 신규: `test_dense.py` 3(지면 평면 스윕이 정면 스윕이 놓친 비스듬한 바닥을 복원, 다중 뷰 검증이 일치점은 유지·모순점과 미관측점은 제거, 희소점으로 지면 평면 적합). 이전 단계: 124 passed(043008; `test_live_run.py` 11, `test_server.py` +1), 112 passed(040916), 97 passed(024540), 94 passed(023923). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
-| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | **78/78 checks**, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 11:33 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 브라우저 창에 탭 하나를 열어 실행하고 그 탭만 닫음). 신규 5개(실험 밀집 레이어): 실험 레이어가 별도 옵션으로 제공, `NOT ADOPTED` 라벨과 사유 표시(`LAYER ▸ DENSE · EXPERIMENTAL · 2,087,132 pts in file`), 상태 줄에 실험 점 수 별도 표기(`dense verified 917,498 · dense experimental 2,087,132`), 패널 제목이 레이어를 따름(`Dense 3D map · experimental`), 뷰포트에 레이어 이름·점 수 표시; 기본 밀집 레이어는 여전히 `DENSE · VERIFIED · 917,498 pts in file`. 스크린샷 `outputs/evidence/ui/03e_dense_experimental_layer.png`. 이전 73개(Live 탭 11개 포함)도 유지. 브라우저에서 아직 확인하지 않은 Live 상태: `STALE_DATA`, `STALLED`, `FAILED`, `INCOMPLETE`, `CANCELLED`(NOT_RUN; 라벨은 `live.js`에 존재) |
+| 정적 장면 3D 지도, 스미다 (5 프레임 고정 폴리곤: 조정 3 + 보류 2, 하늘·사람 제외) | GOOD 전역 지도의 포즈, 카메라 포즈 불변 | **기본 레이어 M0 유지; 최종 변형 S3r40 FAIL vs B1 → `dense_static_v2/` trial로만 설치(NOT_ADOPTED)** | 첫 정적 시도 B2(`dense_static/`)는 바이트 동일 재현. B2는 마스크가 7×7 매칭 창 전체를 침식해 하늘 경계 20 px 띠의 구조물 커버리지가 B1 0.74–0.95 → 0.28–0.66으로 떨어졌고, 마스크로 걸러진 희소점이 이웃 선택을 바꿨음(26개 중 15개 뷰). S3r40(유효 픽셀 ZNCC ≥ 40 %, 경계 제외, 전체 희소점 이웃, 정제 비팽창 마스크): 띠 0.63–0.88로 회복, 구조물 전 프레임 +4.9~+7.3 pp, 8 s 바닥 줄무늬 제거(기준 열 대비 0.17 vs 0.19; B1 0.88 vs 0.30), 오류 지표 동일(`float_fs` 중립 0.355, `inconsist` 0.110), 1,530,092점, 221.3 s. 그러나 B1 대비 구조물 −3.1 / −4.0 / −6.7 pp(3 프레임), 벽 −11.6 / −9.3 pp, 띠 −2.5~−23.7 pp, 하늘 오탐 1.4–6.8 %(기준 0.5 %), 중립 `float_fs` 0.355 > 0.338, 221 s > 203 s → 고정 비교 **FAIL**. OpenMVS(별도 CLI, AGPL-3.0)는 구간 바닥 0.385(B1 0.252)로 더 낫고 깨끗하나 구조물 0.118, 기본 해상도 800 px는 segfault로 BLOCKED. 상세는 아래 "정적 장면 3D 지도" 절과 `docs/PLAN_STATIC_MAP.md` Result |
+| 자동 테스트 | `scripts/test_all.sh` | PASS | **130 passed in 86.95 s** (`outputs/evidence/tests/pytest-20261109-125036.log`; 로그는 점 요약만 담고 있어 파일별 수는 미기재, +3은 `test_dense.py`의 정적 지도 테스트 3개 — 마스크가 참조 픽셀을 제외하고 이웃 지지를 요구, 경계 제외가 화면 밖으로 나가는 창을 버림, 유효 픽셀 비용이 마스크 옆 표면은 유지하고 마스크 안에는 점을 만들지 않음 — 으로 추정). 이전: 127 passed in 84.96 s (`pytest-20261109-113035.log`), 신규 `test_dense.py` 3(지면 평면 스윕이 정면 스윕이 놓친 비스듬한 바닥을 복원, 다중 뷰 검증이 일치점은 유지·모순점과 미관측점은 제거, 희소점으로 지면 평면 적합). 이전 단계: 124 passed(043008; `test_live_run.py` 11, `test_server.py` +1), 112 passed(040916), 97 passed(024540), 94 passed(023923). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
+| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | **83/83 checks**, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 12:53 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 브라우저 창에 탭 하나를 열어 실행하고 그 탭만 닫음). 신규 5개(밀집 뷰·정적 v2 레이어): 밀집 레이어가 경로·카메라를 기본 숨김, Path 토글로 궤적 복귀, `Dense · static scene v2 (trial)` 레이어가 `LAYER ▸ DENSE · STATIC SCENE v2 · 1,530,092 pts in file` 칩과 `NOT ADOPTED` 사유로 표시, 경로·카메라 꺼짐과 패널 제목 추종, 상태 줄에 파일 점 수와 그린 점 수(`1,522,767 of 1,530,092 pts drawn`). 스크린샷 `outputs/evidence/ui/03f_static_map_v2.png`. 이전 78개(11:33 KST) 중 신규 5개(실험 밀집 레이어): 실험 레이어가 별도 옵션으로 제공, `NOT ADOPTED` 라벨과 사유 표시(`LAYER ▸ DENSE · EXPERIMENTAL · 2,087,132 pts in file`), 상태 줄에 실험 점 수 별도 표기(`dense verified 917,498 · dense experimental 2,087,132`), 패널 제목이 레이어를 따름(`Dense 3D map · experimental`), 뷰포트에 레이어 이름·점 수 표시; 기본 밀집 레이어는 여전히 `DENSE · VERIFIED · 917,498 pts in file`. 스크린샷 `outputs/evidence/ui/03e_dense_experimental_layer.png`. 이전 73개(Live 탭 11개 포함)도 유지. 브라우저에서 아직 확인하지 않은 Live 상태: `STALE_DATA`, `STALLED`, `FAILED`, `INCOMPLETE`, `CANCELLED`(NOT_RUN; 라벨은 `live.js`에 존재) |
 | 실기체 비행 | — | BLOCKED | 정책상 금지, 기체 없음 |
 
 ## 밀집 점군 바닥 커버리지 실험 (dense coverage)
@@ -222,6 +223,83 @@ PYTHONPATH=packages .venv/bin/python -m mapping.dense_eval outputs/maps/mqg_sumi
 
 **한계.** 밀집 점은 여전히 "검증된 상대 스케일 점"이지 표면이 아니며 미터 거리·충돌 회피를 보장하지 않습니다. `cov1px`는 뷰어가 1 px로 보여주는 것을 재는 지표라 복셀 크기에 상한이 걸립니다(위 (3)); 복원 자체는 `verif`로 따로 보고합니다. `float_knn`은 복셀이 작아지면 구조적으로 내려가므로 복셀 변경의 오류 판단에는 `float_fs`와 `inconsist`를 봐야 하고, `float_fs`는 참조 뷰 수가 바뀌면 검사하는 깊이맵 수도 바뀌는 편향이 있습니다(보조 지표 `float_fs_same_maps`로만 기록). 폴리곤은 스미다 3 프레임에만 있어 FSC는 회귀(뷰 수·점 수·오류·시간)만 확인했습니다. 모든 수치는 Apple M6 한 대의 CPU 측정입니다.
 
+## 정적 장면 3D 지도 (static map)
+
+**목표.** 같은 스미다 영상과 고정된 카메라 포즈로, 길·지면·건물·고정 구조물은 알아볼 수 있고 하늘과 사람은 들어가지 않는 밀집 지도를 만드는 것입니다. 점 수는 보고만 하고 기준으로 쓰지 않습니다. 계획·기준·실험 순서는 첫 실행 전에 `docs/PLAN_STATIC_MAP.md` 1–8절에 고정했고, 구간 실행 뒤의 변경은 날짜가 붙은 보완 A1로만 추가했으며, 끝의 "Result"가 결과입니다. 문헌·도구 조사는 `docs/RESEARCH_STATIC_MAP.md`에 있습니다.
+
+**레이어 네 가지** (모두 `scale=RELATIVE`, `NOT_NAVIGATION_SAFE`; 스미다 세션 `mqg_sumida_0025_0125` 기준 점 수):
+
+| 콘솔 레이어 | 폴더 | 내용 | 상태 |
+|---|---|---|---|
+| `Dense · verified` (기본) | `dense/` | M0: 정면 평행 스윕, 다음 뷰 검증, 1× 복셀 — 917,498점 | 기본 레이어, 변경 없음 |
+| `Dense · experimental (not adopted)` | `dense_experimental/` | B1 = ESVFN2x25: 정면+지면 스윕, ±8 다중 뷰 검증, 0.25× 근거리 복셀, `median_then_near` 이웃 — 2,087,132점 | 바닥 커버리지 실험의 미채택 변형(위 절); 정적 지도 비교의 **기준(B1)** |
+| `Dense · static scene (trial)` | `dense_static/` | B2 = B1 + 하늘∪사람 keep 마스크(384 px에서 3×3 팽창)를 7×7 매칭 창 전체에 적용(창 안에 마스크 픽셀 하나만 있어도 제외) — 1,324,919점 | 첫 정적 시도; 하늘 경계 구조물 손실(F-16) |
+| `Dense · static scene v2 (trial)` | `dense_static_v2/` | S3r40 = B1 + 정제된 비팽창 마스크(하늘 라벨 안의 어두운 가지 픽셀 복원, 30 그레이 레벨), 유효 픽셀만으로 ZNCC(창의 ≥ 40 % 유효), 경계 제외, 전체 희소점으로 이웃·검증 뷰 선택 — 1,530,092점 | **미채택 trial** (`DENSE_STATIC_TRIAL_V2 (relative scale) - not adopted`); FSC에도 같은 설정으로 설치 |
+
+**콘솔에서 보기.** `scripts/run_demo.sh` → Mapping 탭 → `Stored maps`에서 `mqg_sumida_0025_0125` 로드 → 레이어 선택에서 `Dense · static scene v2 (trial)`(폴더가 있을 때만 활성). 밀집 레이어를 고르면 궤적과 카메라가 기본으로 숨겨지며 `P`(Path) / `C`(Cameras) 키나 같은 이름의 토글로 다시 켤 수 있습니다. 60 s 산책 영상이라 전체 지도는 긴 띠 모양이므로 `Full extent`로 전체를 본 뒤 `+`로 확대하거나 `Reset view`(`R`)로 돌아오세요. 칩에 `LAYER ▸ DENSE · STATIC SCENE v2 · 1,530,092 pts in file`과 미채택 사유가 표시되고, 상태 줄에 파일 점 수와 실제로 그린 점 수가 따로 나옵니다(UI 체크 83/83, `outputs/evidence/ui/03f_static_map_v2.png`).
+
+**측정 방법(고정).** 스미다 5 프레임 — 조정용 `f000240`(t≈8 s) / `f000900`(t≈30 s) / `f001560`(t≈52 s), 그리고 어떤 변경 전에 미리 뽑아 두고 선택에 쓰지 않은 보류 프레임 `f000600`(t≈20 s) / `f001260`(t≈42 s) — 에 `floor` / `floor_far` / `structure` / `wall` 폴리곤(`packages/mapping/regions/regions_sumida_v2.json`). 프레임마다 파생 마스크: 하늘(모델 라벨), 사람(모델 라벨 ∪ YOLOX-nano 박스), 하늘 마스크 20 px 안의 구조물 **경계 띠**. 모든 실행을 640×360, 1 px 점으로 같은 깊이맵에 대해 판정: 공통 판정은 B1의 깊이맵(B1 자신의 검증 지도라 B1에 유리 — F-19), A1 이후 중립 판정은 B0의 깊이맵. 지표: 정적 픽셀 `cov1px`(하늘·사람 픽셀 제거), 띠 `cov1px`, `sky_false`(하늘 픽셀로 투영되는 점 비율, 고정된 모델 라벨 기준), 사람 박스 점의 배경/표면/전면 분류, 줄무늬(원본 가장자리 3 px 안 점 비율, `f000240` 576–590열의 바닥 뒤 점 비율 vs 대조 열), `float_fs`(중립·공통), `inconsist`, `float_knn`, 희소 일치율, 시간. 수용 조항 8개(B1 대비): 구조물·벽 −2 pp, 띠 −3 pp, 바닥 −1 pp(+ `f000900`은 B2 이상), `sky_false` ≤ 0.5 %, 사람 표면+전면 ≤ B1, `float_fs` 중립 ≤ B1·`inconsist` +1 pp·`float_knn` +1 pp·희소 ≥ 0.70, 줄무늬 ≤ 0.1 %·대조 +5 pp, 시간 ≤ 1.5× B1(203 s), FSC 회귀. 한 조항이라도 어긋나면 FAIL.
+
+**원인(측정으로 확인).** (1) B2는 마스크로 매칭 창 전체를 침식 → 하늘 경계 띠 0.74–0.95 → 0.28–0.66, 구조물 −5.3~−11.9 pp(F-16). (2) B2는 이웃 뷰·검증 뷰 선택에 쓰는 희소점까지 마스크로 걸러 4–14 s 구간 26개 뷰 중 15개의 이웃 목록이 바뀌고 일부 뷰에서 지면 후보가 급감(`f000190` 23,887 → 8,495)(F-17). (3) 분할 모델이 하늘을 배경으로 한 맨가지를 하늘로 라벨. (4) `f000240` 오른쪽 바닥의 줄무늬는 참조 뷰 `f000720`–`f000800`의 **마지막 4개 열**(u 636–639)에서 열마다 일정한 깊이로 생긴 경계 창 아티팩트이며 B1 원시 점의 1.1 %가 가장자리 3 px 안에 있음(F-18). (5) 공통 판정 깊이맵이 B1 자신의 것이라 B1에 유리 → 중립 판정 추가(F-19).
+
+**실행 결과** (`outputs/evidence/static_map/summary.json`; 구간 행은 `f000240`(t 4–14 s) / `f000900`(t 26–34 s), 전체 클립 행은 `f000240` / `f000900` / `f001560` / `f000600` / `f001260`):
+
+| 실행 | 변경 | 띠 `cov1px` | 구조물 `cov1px` | 바닥 `cov1px` | `sky_false` | 시간 | 판정 — 결정한 조항 |
+|---|---|---|---|---|---|---|---|
+| B1 구간 (기준) | — | 0.775 / 0.792 | 0.689 / 0.646 | 0.252 / 0.111 | 18.4 / 24.6 % | 25.4 / 20.1 s | 기준 |
+| B2 구간 (S0) | 마스크로 창 침식 | 0.292 / 0.349 | 0.631 / 0.537 | 0.206 / 0.132 | 0.56 / 0.27 % | 27.2 / 21.9 s | B2 재현(전체 클립 바이트 동일); 띠 조항 FAIL |
+| S2 | 유효 픽셀 ZNCC(≥ 60 %) + 경계 제외 | 0.503 / 0.554 | 0.660 / 0.579 | 0.210 / 0.135 | 0.77 / 0.34 % | 41.4 / 33.2 s | **FAIL** — 띠(B1 −3 pp 미달), 시간(예산 38.6 / 30.2 s) |
+| S2u | + 비팽창 마스크 | 0.598 / 0.634 | 0.676 / 0.573 | 0.211 / 0.133 | 0.92 / 0.51 % | 41.5 / 33.0 s | **FAIL** — 띠 |
+| S2n (`S2un_*`) | + 전체 희소점으로 이웃·검증 뷰 | 0.600 / 0.692 | 0.665 / 0.631 | 0.230 / 0.104 | 0.95 / 0.42 % | 41.4 / 33.1 s | **FAIL** — 띠; 줄무늬 0.177 vs 대조 0.130(B2 0.378 vs 0.250) → S3r의 기반 |
+| S3r | + 하늘 라벨 안 어두운 픽셀 복원(Δ30) | 0.634 / 0.719 | 0.667 / 0.629 | 0.229 / 0.109 | 1.28 / 0.85 % | 41.7 / 33.0 s | **FAIL** — 띠, `sky_false`(복원된 가지가 고정 라벨상 하늘로 집계) |
+| S3r40 구간 | 유효 창 비율 0.6 → 0.4 | 0.669 / 0.745 | 0.671 / 0.636 | 0.231 / 0.109 | 1.79 / 1.45 % | 41.6 / 33.0 s | **FAIL** — 띠(−10.6 / −4.7 pp), 바닥 `f000240` −2.1 pp, `sky_false`, 시간 |
+| B1 전체 클립 (기준) | — | 0.948 / 0.906 / 0.786 / 0.907 / 0.738 | 0.927 / 0.869 / 0.691 / 0.837 / 0.618 (벽 0.924 / 0.224) | 0.279 / 0.119 / 0.671 / 0.155 / 0.458 | 13.0–24.2 % | 135.1 s | 기준; 줄무늬 0.88 vs 대조 0.30 |
+| B2 전체 클립 | — | 0.462 / 0.660 / 0.283 / 0.382 / 0.376 | 0.840 / 0.817 / 0.578 / 0.765 / 0.500 (벽 0.735 / 0.078) | 0.210 / 0.140 / 0.659 / 0.144 / 0.442 | 0.43 / 1.41 / 1.34 / 0.10 / 3.33 % | 150.3 s | 띠·구조물 조항 FAIL; 줄무늬 0.37 vs 0.25 |
+| **S3r40 전체 클립** | 위와 동일 | 0.839 / 0.881 / 0.628 / 0.670 / 0.649 | 0.896 / 0.866 / 0.651 / 0.824 / 0.551 (벽 0.808 / 0.131) | 0.237 / 0.121 / 0.682 / 0.145 / 0.452 | 1.44 / 4.41 / 3.94 / 1.48 / 6.77 % | 221.3 s | **FAIL vs B1** — 구조물 −3.1 / −4.0 / −6.7 pp(3 프레임), 벽 −11.6 / −9.3 pp, 띠 −2.5~−23.7 pp, 바닥 `f000240` −4.2 pp·`f000900` 0.121 < B2 0.140, `sky_false` > 0.5 %, `f001260` 사람 전면 점 3개, 중립 `float_fs` 0.355 > 0.338, 221 s > 203 s. 통과: `inconsist` 0.110, `float_knn` 0.102, 희소 최소 0.725, 가장자리 점 0 %, 줄무늬 0.17 vs 대조 0.19. **B2 대비** 띠 +22~+38 pp, 구조물 전 프레임 +4.9~+7.3 pp, 줄무늬 제거, 오류 동일 → `dense_static_v2/` trial |
+| S3r40 FSC 회귀 | 동일, FSC 마스크 | (영역 없음) | | | | 244.7 s | **FAIL** — 시간(> 232.7 s)만; 149/149 뷰, 6,444,805점, `float_fs` 0.178(B1 0.182), `inconsist` 0.0435(0.0444) |
+| S4 사람 처리 | 삭제 대신 분류 | `f001260` 사람 박스: B0/B1/B2 점 602 / 1,225 / 1,199 전부 배경, S3r40 배경 1,203 + 전면 3 | | | | | 측정만; S3r40은 전면 3점으로 조항 4 미달 |
+| S5 픽셀별 이웃 선택 | — | | | | | | **NOT_RUN** — S2에서 이미 시간 예산 초과 |
+| OpenMVS 구간, 640 px (비마스크 / 마스크) | 별도 도구, 같은 포즈 | 0.143 / 0.143 | 0.118 / 0.128 | **0.385 / 0.387**(지면 평면 뒤 점 0 %) | 3.17 / 1.19 % | 8.0 / 7.0 s | 비교용: 바닥은 B1보다 넓고 깨끗(`float_fs` 중립 0.235 vs 0.374), 구조물은 거의 없음 |
+| OpenMVS 구간, 기본 해상도 800 px | 동일 | | | | | | **BLOCKED** — `DensifyPointCloud` 시그널 −11(`openmvs_default_res_segfault.log`) |
+| OpenMVS 전체 클립, 640 px 마스크 | 동일 | 0.100 / 0.078 / 0.133 / 0.036 / 0.185 | 0.220 / 0.067 / 0.129 / 0.081 / 0.201 | 0.018 / 0.004 / 0.404 / 0.006 / 0.312 | 0.47–6.18 % | 81.6 s | 비교용: 가까운 바닥 소실(원인 미조사), 141,563점 |
+| S3r40 ∪ OpenMVS (U) | 합집합 | 0.841 / 0.889 / 0.644 / 0.671 / 0.672 | 0.906 / 0.872 / 0.678 / 0.828 / 0.583 | 0.244 / 0.124 / 0.793 / 0.150 / 0.570 | 1.36–6.46 % | 302.9 s | **미통합** — 바닥 `f001560` / `f001260` +11.1 / +11.8 pp, 시간 초과, AGPL 도구는 별도 유지 |
+| Depth Anything 3 | 포즈 조건 깊이 사전 | | | | | | **NOT_RUN** — `.venv`에 torch 없음, `xformers` 필수 의존성에 MPS 미지원, 포즈 입력이 되는 Apache-2.0 체크포인트는 SMALL/BASE뿐 |
+| 메시 | — | | | | | | 미제공 — 통과한 점군이 없어 7절 검사 미실행; 기존 메시는 실험 단계·시각 검사 FAIL 유지 |
+
+**결정.** 기본 밀집 레이어는 M0 그대로이고 `dense_experimental/`·`dense_static/`도 변경이 없습니다. S3r40은 첫 정적 시도(B2)가 잃은 하늘 경계 구조물의 대부분을 되찾고 줄무늬를 없앴지만, B1과의 고정 비교에서 위 조항들을 통과하지 못해 계획 4절 규칙대로 **미채택**이며 `outputs/maps/mqg_sumida_0025_0125/dense_static_v2/`와 `outputs/maps/mqg_fsc_campus_aerial/dense_static_v2/`에 `DENSE_STATIC_TRIAL_V2 (relative scale) - not adopted`(`experimental.status = NOT_ADOPTED`, `run = S3r40_full`, 사유, 사용 마스크 폴더)로만 설치되어 있습니다. 구간 판정이 FAIL인 상태에서 전체 클립·FSC를 실행한 것은 계획 순서에서 벗어난 것이며, 기록을 남기기 위한 실행으로 Result에 적혀 있습니다. S3r40의 유효 창 비율 0.4도 별도 날짜 절 없이 들어간 변경으로 기록되어 있습니다. 카메라 포즈·궤적, 위트레흐트 지도(F-11), 안전·MOCK 정책은 손대지 않았습니다. 어떤 정적 레이어를 기본으로 할지는 **사용자 결정**입니다.
+
+**재현.** 실행별 셸 한 줄은 보관되지 않았고 플래그는 각 `outputs/experiments/static_map/<run>/dense_report.json`의 `config` 블록에 있습니다. 최종 변형(S3r40)과 판정 하네스의 대표 명령:
+
+```zsh
+# 1) 하늘·사람 keep 마스크 (정제: 팽창 없음, 하늘 라벨 안에서 주변 하늘보다 30 그레이 레벨 어두운 픽셀 복원)
+PYTHONPATH=packages .venv/bin/python -m mapping.static_masks outputs/maps/mqg_sumida_0025_0125 \
+  --weights data/models/static/skywater_fp32.onnx --out outputs/experiments/static_map/masks_refined \
+  --dilate 1 --refine-sky 30
+#    B2의 마스크 = --dilate 3 (기본값), --refine-sky 0
+
+# 2) 정적 장면 밀집 점군 (S3r40; B1 = 아래에서 --static-masks 이하를 뺀 것)
+PYTHONPATH=packages .venv/bin/python -m mapping.dense_cpu outputs/maps/mqg_sumida_0025_0125 \
+  --max-pairs 200 --sweep fronto+ground --verify multi --neighbour-rule median_then_near --voxel-near-scale 0.25 \
+  --static-masks outputs/experiments/static_map/masks_refined --mask-cost valid_pixels --border-exclusion \
+  --neighbours-all-sparse --min-valid-frac 0.4 --out outputs/experiments/static_map/S3r40_full
+#    짧은 구간: --t-range 4 14  (또는 26 34);  B2 방식 = --mask-cost erode (기본값), --min-valid-frac 0.6
+
+# 3) 고정 폴리곤·파생 마스크로 판정 (공통 판정 = B1 깊이맵, 중립 판정 = B0 깊이맵; sameview 렌더에 B1·B2 나란히)
+PYTHONPATH=packages .venv/bin/python -m mapping.static_eval outputs/maps/mqg_sumida_0025_0125 \
+  outputs/experiments/static_map/S3r40_full --name S3r40_full \
+  --regions packages/mapping/regions/regions_sumida_v2.json \
+  --judge-maps outputs/experiments/dense_cov/ESVFN2x25_full/diag/depth_maps.npz \
+  --neutral-maps outputs/experiments/dense_cov/M0_sumida_full/diag/depth_maps.npz \
+  --compare B1=outputs/experiments/dense_cov/ESVFN2x25_full B2=outputs/experiments/static_map/B2_full \
+  --out outputs/evidence/static_map
+
+# 4) (선택) OpenMVS 비교 — 공식 v2.4.0 macOS arm64 릴리스의 DensifyPointCloud를 별도 프로세스로 실행(AGPL-3.0; 링크·재배포·커밋 없음)
+PYTHONPATH=packages .venv/bin/python -m mapping.openmvs_compare <scene.mvs가 있는 작업 폴더> \
+  outputs/experiments/static_map/OMVSm_seg --bin <OpenMVS bin 폴더> --masks <마스크 폴더>
+```
+
+**한계.** 모든 점군은 상대 스케일이며 표면이 아니고 미터 거리·충돌 회피를 보장하지 않습니다. `sky_false`는 고정된 분할 라벨로 세므로 S3r이 복원한 가지 점이 하늘 오탐으로 집계됩니다(색 기준 보조 지표 `sky_fringe.json`에서는 S3r40 0.05–0.55 %, B1 0.16–2.92 %; 수용 지표 아님). 분할 모델은 맨가지를 하늘로, `f001260`의 작은 보행자를 사람으로 라벨하지 못하며(YOLOX 박스로 보완), 모델의 라이선스 기록(`SOURCE.md`)이 아직 없습니다. 유효 픽셀 매칭은 마스크 없이도 B1의 1.6배 시간이 들어 1.5× 예산을 넘습니다. OpenMVS는 기본 해상도에서 이 Mac에서 segfault가 나고 전체 클립에서는 가까운 바닥이 사라지며, AGPL이라 별도 도구로만 둡니다. Depth Anything 3와 S5는 실행하지 않았고 메시는 만들지 않았습니다. 폴리곤은 스미다에만 있어 FSC는 회귀(뷰 수·점 수·오류·시간)만 확인했습니다. 모든 수치는 Apple M6 한 대의 CPU 측정입니다.
+
 ## 알려진 한계 / 다음 단계
 
 1. **본인 영상 게이트 NOT_RUN.** `assets/input/`에 영상 한 개를 두고 빠른 시작 3)·5)를 실행하면 `data_origin=REAL_VIDEO`로 기록됩니다. 이것이 가장 먼저 닫아야 할 게이트입니다.
@@ -234,7 +312,7 @@ PYTHONPATH=packages .venv/bin/python -m mapping.dense_eval outputs/maps/mqg_sumi
 7. **단일 환경.** 모든 수치는 Apple M6 / 16 GiB / macOS 27.2 한 대에서 측정했습니다.
 8. **품질 판정은 지도가 "맞다"는 뜻이 아닙니다.** GOOD은 등록률·커버리지·재투영·모델 수·점프 수의 고정 임계값을 통과했다는 뜻이며, 정답 궤적과 비교한 지도는 TUM fr1/desk뿐입니다(증분 2.05 cm, 전역 1.66 cm ATE RMSE, 스케일 차용). 스미다·FSC·위트레흐트 지도에는 정답이 없어 절대 정확도를 주장하지 않습니다. FSC 증분 지도의 후반부 드리프트는 전역 매퍼로 사라졌지만 원인은 확인되지 않았고(F-08), 위트레흐트는 두 매퍼 모두 PARTIAL로 남아 있습니다(F-11).
 9. **편집된 영상은 지도가 되지 않습니다.** 방콕 60 s 구간(컷 18개)은 컷을 넘는 매칭을 막은 뒤 커버리지 0.068–0.085의 POOR로 남았습니다. 한 테이크 영상(스미다·FSC)만 GOOD입니다.
-10. **밀집 점군은 "검증된 상대 스케일 점"이지 표면이 아닙니다.** 평면 스윕 결과 중 희소점 일치와 다중 뷰 일관성을 통과한 점만 남기며, 기본 레이어(M0)에서는 카메라 바로 앞 보도처럼 반복 질감이 가파른 각도로 보이는 영역이 비어 있습니다. 바닥 커버리지 실험(위 절, F-12–F-15)에서 지면 평면 스윕 + 다중 뷰 검증 + 0.25× 근거리 복셀 + 이웃 규칙 변경(ESVFN2x25)이 전체 클립과 FSC의 모든 기준을 충족했지만 사전 등록된 선별 구간의 `float_fs` 기준을 넘지 못해 **미채택**이고, 실험 레이어로만 제공됩니다. 채택은 사용자 결정입니다. Poisson 메시는 시각 검사 FAIL로 콘솔에 제공하지 않습니다(F-09). 합성 방에서는 밀집점의 97.8 %가 실제 표면 0.05 룸 단위 이내였지만 고정된 수용 정의로는 FAIL(3/8 뷰)입니다.
+10. **밀집 점군은 "검증된 상대 스케일 점"이지 표면이 아닙니다.** 평면 스윕 결과 중 희소점 일치와 다중 뷰 일관성을 통과한 점만 남기며, 기본 레이어(M0)에서는 카메라 바로 앞 보도처럼 반복 질감이 가파른 각도로 보이는 영역이 비어 있습니다. 바닥 커버리지 실험(위 절, F-12–F-15)에서 지면 평면 스윕 + 다중 뷰 검증 + 0.25× 근거리 복셀 + 이웃 규칙 변경(ESVFN2x25)이 전체 클립과 FSC의 모든 기준을 충족했지만 사전 등록된 선별 구간의 `float_fs` 기준을 넘지 못해 **미채택**이고, 실험 레이어로만 제공됩니다. 채택은 사용자 결정입니다. Poisson 메시는 시각 검사 FAIL로 콘솔에 제공하지 않습니다(F-09). 합성 방에서는 밀집점의 97.8 %가 실제 표면 0.05 룸 단위 이내였지만 고정된 수용 정의로는 FAIL(3/8 뷰)입니다. 하늘·사람을 뺀 정적 장면 지도(S3r40, `dense_static_v2/`)는 첫 정적 시도(B2) 대비 하늘 경계 구조물을 크게 되찾고 줄무늬를 없앴지만 B1과의 고정 비교(구조물·벽·경계 띠·바닥 일부, 하늘 오탐 > 0.5 %, 사람 전면 점 3개, 중립 `float_fs` 0.355 > 0.338, 221 s > 203 s)에 실패해 역시 **미채택** trial이며, 남은 차이는 매칭 규칙보다 분할 모델의 하늘 경계 라벨과 시간입니다(F-16–F-21).
 11. **VO는 보정된 카메라가 필요합니다.** 초점거리를 0.9 × 폭으로 추정한 스미다 VO는 SfM 궤적 대비 23.3 %로 기준(15 %)에 미달했고, SfM의 초점거리를 빌리면 2.56 %지만 독립 증거가 아닙니다(F-10).
 
 ## 데이터 · 모델 출처
@@ -248,6 +326,8 @@ PYTHONPATH=packages .venv/bin/python -m mapping.dense_eval outputs/maps/mqg_sumi
 | OpenCV 샘플 `vtest.avi` | OpenCV 저장소(Apache-2.0) 배포, 원 촬영 출처 미기재 | `data/public/opencv_vtest/SOURCE.md`. 개발용 보조 클립 |
 | "Free City Street Footage - Royalty Free Stock Footage - People Walking Stock Footage No Copyright" by Montreal Walking Tours | CC BY (YouTube 메타데이터, 2026-11-09 확인) | https://www.youtube.com/watch?v=bwJ-TNu0hGM — `data/public/yt_montreal_street/SOURCE.md` |
 | "Suan Luang Rama IX Park Bangkok \| 4K Walking Tour, Lake, Gardens & Pavilion" by Streets & Spaces \| Travel Walks | CC BY (YouTube 메타데이터, 2026-11-09 확인) | https://www.youtube.com/watch?v=kjciube52gA, 0:30–1:30 구간 — `data/public/yt_bangkok_park/SOURCE.md` |
+| 하늘·사람 분할 모델 `skywater_fp32.onnx` (Realcat/skywater_seg, rev ec20751) | **라이선스 미기록** — `data/models/static/`에 `SOURCE.md`가 아직 없음(확인 필요) | SHA-256 `e4e9a692…71b5`를 `static_masks.py`가 로드 때마다 검증. 정적 지도 trial 레이어의 keep 마스크에만 사용 |
+| OpenMVS v2.4.0 (공식 macOS arm64 릴리스 바이너리) | AGPL-3.0 | 정적 지도의 **독립 비교 도구**로만 사용: `packages/mapping/openmvs_compare.py`가 `DensifyPointCloud`를 별도 프로세스로 실행하며 링크·재배포·커밋하지 않음. 바이너리는 저장소에 포함되지 않음 |
 
 Tello EDU 연동 근거: Ryze Tello SDK 2.0 사용자 가이드(UDP 8889 명령, 8890 상태, 11111 영상). 실기체 접속은 이 저장소 범위 밖이며 Mock으로만 검증했습니다(`docs/TELLO_SDK.md`).
 
@@ -261,6 +341,8 @@ Tello EDU 연동 근거: Ryze Tello SDK 2.0 사용자 가이드(UDP 8889 명령,
 - `docs/PLAN_MAPPING_QUALITY.md`, `docs/PLAN_GEOMETRY_AND_DENSE.md` — 지도 품질 판정·샷 처리 계획, 기하 진단·매퍼 비교·CPU 밀집 경로 계획, 각각 끝에 "Result" 절(기준별 PASS/FAIL/BLOCKED/NOT_RUN)
 - `docs/PLAN_LIVE_RUN_TIMELINE.md` — 한 시간축 라이브 실행(파일 원속도/웹캠, 검출+추적+VO, control.json, 타임라인 재생) 계획과 끝의 "Result" 절(T1–T8 판정, 구현 편차)
 - `docs/PLAN_DENSE_COVERAGE.md` — 밀집 점군 바닥 커버리지 계획(고정 측정 설정, 수용 기준, 실험 순서, 보완 A1–A5)과 10절 "Result"(실행별 판정표, 미채택 결정, 증거 경로)
+- `docs/PLAN_STATIC_MAP.md` — 정적 장면 3D 지도 계획(기준선 B0/B1/B2, 고정 평가 세트, 공통·중립 판정, 수용 조항 1–8, 실험 S0–S6, 보완 A1)과 "Result"(실행표, S3r40 조항별 판정, B2 대비 개선, 순서 이탈 기록, 미채택 결정)
+- `docs/RESEARCH_STATIC_MAP.md` — 정적 지도 밀집화 문헌·도구 조사 요약(방법별 아이디어, 이식 가능한 부분, Apple Silicon 실행 가능성, 코드·가중치 라이선스, 고정 포즈·마스크와의 연결, 여기서 실제 시도한 것과 측정 결과; 원문의 UNVERIFIED 표시 유지)
 - `docs/VERIFICATION_CONTRACT.md`, `docs/RECOVERY_MATRIX.md`, `docs/PHASES_AND_ACCEPTANCE.md` — 검증 기준, 복구 매트릭스, 품질 게이트
 - `docs/TELLO_SDK.md`, `docs/ENV_AUDIT.md`, `docs/DESIGN_ASSETS.md`, `docs/SOURCES_AND_ASSUMPTIONS.md`
 
