@@ -267,6 +267,62 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 
 **Next test:** the same `scene.mvs` at the default resolution with `--max-threads 1` or a memory-bounded `--sub-scene-area`, to separate a memory fault from a threading fault; and `--resolution-level 1` with `--max-resolution 800` explicitly, to confirm which setting triggers the crash.
 
+## F-22 Frame selection F1 (parallax / flow keyframes only) keeps too few frames for dense neighbours (2026-11-09)
+
+**Status:** rejected before SfM; replaced by F1b (a departure from `docs/PLAN_FRAMES_AND_DEPTH.md` section 4 and from its F0 fallback, recorded in the plan's Result). No map was built from F1.
+
+**Observed** (`outputs/experiments/frames_depth/F1_selection_sumida/selection.json`): Sumida, 600 candidates at 10 fps, thresholds overlap 0.6 / parallax 8 px / flow 40 px / slow 3 px, `adaptive_base none`: 92 frames kept — flow 40, connector 22, slow_parallax 13, parallax 9, forced 7, first 1; 0 dropped by the cap. Against the 150 of the fixed 3 fps baseline this leaves too few frames for the dense stage's neighbour rule (which needs several views per reference within a small baseline / depth window).
+
+**Cause:** forward motion over a near-planar floor makes the rotation-compensated parallax (median residual flow after a homography fit) small — the homography absorbs most of the floor's motion — so the parallax rule rarely triggers and frames are kept mostly by the flow and slow rules.
+
+**What followed:** F1b (`adaptive_base fixed`): the fixed 3 fps frames are always kept, the uniform `linspace` cap is dropped, and connector / flow frames are added where the tracker asks for them. F1b runs: Sumida 190, FSC 213, Utrecht 343 frames (F-23).
+
+## F-23 F1b improves the camera path on every clip but raises dense error measures; FAIL as a dense default (2026-11-09)
+
+**Status:** path clause PASS on Sumida, FSC and Utrecht; dense clause 4 FAIL on Sumida and FSC. Default selection stays `fixed`; `--selection adaptive` is opt-in. F1b's dense clouds are installed only as `dense_static_v3/` trials (`mqf_sumida_F1b` = F1b + D12, `mqf_fsc_F1b` = F1b).
+
+**Path, observed** (`outputs/maps/mqf_{sumida,fsc,utrecht}_F1b/map_report.json`, `summary.json` `paths`): Sumida max internal gap 0.67 → 0.33 s, reprojection 0.512 → 0.46 px, 0 jumps, 150 → 190 frames all registered; FSC 0.67 → 0.33 s, 0.708 → 0.685 px, 0 jumps, 150 → 213; Utrecht jumps 43 → 19 and first-10-s jumps 34 → 0, 298 → 343 frames, still PARTIAL with the 19 jumps at 49.0–51.9 s (one 337x step at 51.65–51.85 s) and two unusable spans recorded as time + cause at 45.2–45.3 s and 45.8–45.9 s (tracked share 0.56 / 0.49, no usable frame between).
+
+**Dense, observed** (`static_metrics_F1b_mqf_sumida_F1b.json`, `fs_rates.json`): floor `cov1px` up on all seven Sumida eval frames (0.2369 / 0.1205 / 0.6816 / 0.145 / 0.4522 / 0.0536 / 0.228 → 0.3069 / 0.2156 / 0.8201 / 0.2111 / 0.5223 / 0.0613 / 0.3258) and structure up on six, but own-map free-space violations 0.3627 → 0.4538, per-check violation rate 6.67 → 8.8 %, points violated in the majority of their checking views 1.2 → 3.3 %, `float_knn` 0.1024 → 0.1364, `sky_false` on f001560 0.03944 → 0.04548 (+0.60 pp, limit +0.5). The fast frame f001080 gains only +0.8 pp floor (clause 1 asked +3 pp on the fast frames). FSC: far class −1.1 / −1.2 pp on f000320 / f001720, own free-space 0.1777 → 0.1896.
+
+**Reading (not proven):** denser frames give the sweep more references and more verifiers; more points are placed, and more of them are seen past by some other view. Because the F1b poses differ from V2's, only own-map judges exist (`neutral_fs: null`), and own-map free-space grows with the number of checking views (the view-set bias already recorded in F-14). Whether the rise is "more wrong points" or "more views checking" is not separated.
+
+**Next test:** check the F1b cloud against V2's 145 depth maps and the V2 cloud against F1b's 169 maps (same-view-set comparison), and time F1b alone (331.0 s under parallel load; budget 332 s).
+
+## F-24 D1 / D12 raise floor and structure on fixed poses but fail the frozen error clauses as recorded; judge and rounding rulings pending (2026-11-09)
+
+**Status:** FAIL as recorded in `summary.json` `verdicts`; D12 installed as `outputs/maps/mqg_sumida_0025_0125/dense_static_v3/` (trial, NOT ADOPTED). Two points need a ruling before the FAIL is treated as final.
+
+**Observed** (`static_metrics_{D1,D12}_full.json` vs `static_metrics_V2_full.json`): D1 (`neighbour_rule median_then_near_far`: after the median and p10 passes, neighbours within ±12 frames whose baseline / p90 co-visible depth lies in [0.05, 0.30]) raises structure +2.0 … +5.3 pp on all seven frames and floor +0.5 … +1.6 pp; the fast segment t 33–39 s goes from 4 to 9 verified views of 16 and 5,352 to 25,043 points. D12 (D1 + `--coarse-ground`, half-resolution sweep of the ground rows below the horizon) raises floor +1.2 … +4.3 pp and structure +1.9 … +5.2 pp, `inconsist` 0.1074 → 0.1045. Errors: own-map free-space 0.3627 → 0.3866 (D1) / 0.3863 (D12), +2.4 pp; `sky_false` on f001560 0.03944 → 0.04509 (D1, +0.57 pp) / 0.04363 (D12, +0.42 pp); person points on f001680 612 + 265 (D1) / 615 + 273 (D12) vs V2 579 + 271. FSC D1: about no change.
+
+**Ruling 1 — judge.** Plan section 2 assigns the neutral depth maps (`M0_sumida_full/diag/depth_maps.npz`) to `float_fs` / `inconsist` of D runs, because own maps are biased by the run's own verification. The recorded verdict cites own-map free-space (+2.4 pp). Neutral values in `summary.json`: V2 0.3551 → D1 0.3582 (+0.3 pp) → D12 0.3563 (+0.1 pp), within clause 4's +1 pp.
+
+**Ruling 2 — D12 sky.** The installed layer's `reason` says "sky points +0.5 pp on f001560"; `summary.json` and `static_metrics_D12_full.json` give 0.04363 − 0.03944 = +0.42 pp, inside the +0.5 pp limit. D1's +0.57 pp is outside it either way.
+
+**What this does not change:** no default was altered; the person count on f001680 is above V2 for both. Any re-statement of the verdict must be a dated amendment to the plan, not an edit of the clauses.
+
+**Ruling (2026-11-09, recorded in `summary.json` `verdicts` and the plan's Result):** plan section 2 governs, D runs are judged on the neutral maps. **D12**: free-space neutral 0.3551 → 0.3563 (+0.1 pp) PASS, `inconsist` 0.1099 → 0.1047 PASS, `sky_false` max +0.42 pp (f001560) PASS, floor and structure ≥ V2 on all 7 frames PASS, fast-frame structure +5.2 / +3.6 pp PASS; **FAIL** on (a) time — 400.0 s measured with no other dense job running (`outputs/experiments/frames_depth/D12_full_timing.log`, output byte-identical to `D12_full`) against the 332 s limit — and (b) person front + surface on f001680 850 → 888. Not adopted. **D1**: free-space neutral +0.3 pp PASS; **FAIL** sky f001560 +0.57 pp, person f001680 850 → 877; time not measured quietly. The "+0.5 pp sky" wording in the installed D12 layer's reason was wrong (+0.42 pp) and has been corrected in `outputs/maps/mqg_sumida_0025_0125/dense_static_v3/dense_report.json`; the UI smoke caption archived at 14:15 KST still shows the old wording until the next run.
+
+**Next test:** find which reference views place the 38 extra person-box points on f001680 (surface 615 + front 273 vs V2 579 + 271) — far-neighbour rule or coarse ground pass — and time D1 alone.
+
+## F-25 Time clause unmeasurable: all full-clip runs timed under parallel load (2026-11-09)
+
+**Status:** UNMEASURED_QUIET for every full-clip run of the FD plan except D12, which was re-timed alone: **400.0 s** (`outputs/experiments/frames_depth/D12_full_timing.log`, output byte-identical to `D12_full`) → clause 5 **FAIL** (> 332 s). Not a code defect.
+
+**Observed** (`summary.json` `verdicts.time`, `runs.*.seconds`): the user asked for parallel work, so D1_full (382.2 s), D12_full (508.2 s), F1b Sumida dense (331.0 s), F1bD12_full (597.9 s), D1_fsc (481.0 s) and F1b FSC dense (577.8 s) ran while other jobs were running, as did the three F1b builds (390.4 / 548.4 / 531.4 s including 102.7 / 171.0 / 115.9 s of adaptive selection). Budgets were ≤ 332 s (Sumida) and ≤ 367 s (FSC). The numbers are reported in every table but no PASS / FAIL is attached to clause 5.
+
+**Next test:** re-run `V2_full` and the remaining runs alone on an idle machine with the archived flags (`config` block of each `dense_report.json`); D12 is settled (400.0 s vs 1.5 x 221.3 = 332 s, the 221.3 s baseline itself measured under load).
+
+## F-26 Learned multi-view depth: first BLOCKED, now approved by the user and in progress (2026-11-09)
+
+**Status:** was BLOCKED (installation refused by the session's permission check); the user has since approved it and installation is in progress in a separate environment under `outputs/tools/` (coordinator-reported; not yet present when this entry was updated). Results NOT_RUN in this round, to be documented later. "Mirage" family researched separately: no-go.
+
+**Observed:** the route most likely to give a filled, dense look comparable to the reference recording of an indoor dense reconstruction supplied by the user is a learned multi-view depth model run on the existing COLMAP poses. Installing external model code and weights was refused by the session's permission check (`summary.json` `verdicts."learned multi-view depth"`); `import torch` fails in the project `.venv` (`research_mirage.md`). The user has stated that the project is personal and non-commercial, so weights under a non-commercial licence would be acceptable licence-wise; this is recorded, not acted on.
+
+**"Mirage" candidates** (`outputs/evidence/frames_depth/research_mirage.md`): the reconstruction method of that name needs LiDAR + IMU input and presumably CUDA; the monocular-depth benchmark of that name is MIT code over non-commercial weights and dataset, needs torch and an A100-class GPU to fine-tune, and addresses single-image depth that this pipeline does not use; the others are generative, CUDA-only, hosted, or unrelated. Recommendation in the note: no-go for integration; one zero-dependency idea kept (gate any future floor depth prior with a planarity check and keep it labelled as model-guessed).
+
+**Next step:** once installed, run it on the existing COLMAP poses and judge with the same seven Sumida eval frames; the result would be an `ALIGNED_PREVIEW`-class layer, never metric, and never merged with the real-video MVS points.
+
 ## Not failures, but open gates
 
 - REAL_VIDEO route NOT_RUN: `assets/input/` is empty. Command in `docs/PROGRESS.md`.
@@ -274,3 +330,4 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 - (closed 2026-11-09) UI smoke re-run after F-06: 51 / 51; `scripts/test_all.sh` after the Skywarden rename: 94 passed (`outputs/evidence/tests/pytest-20261109-023923.log`).
 - (closed 2026-11-09) E4 test archive: `tests/test_appearance.py` 3 passed inside `outputs/evidence/tests/pytest-20261109-024540.log` (97 passed) and every later log.
 - (closed 2026-11-09) Live run / timeline replay: implemented and measured (`docs/PLAN_LIVE_RUN_TIMELINE.md` Result; `outputs/evidence/live/`); no acceptance test failed. Still open from it, not failures: a run with a physical webcam (NOT_RUN, no camera on this Mac; `webcam:0` correctly ends `FAILED NO_DEVICE` in 0.285 s), browser assertions for the live tab's `STALE_DATA` / `STALLED` / `FAILED` / `INCOMPLETE` / `CANCELLED` states (NOT_RUN; labels exist in `live.js`), and the observation that on the Utrecht person-following clip the target was LOCKED in only 155 of 899 frames (17 %) with 7 scripted re-selections after LOST — a tracker limitation on that clip (compare F-11), recorded in `t7_utrecht_realtime_30s.json`, not a live-run defect. Stored-map relocalisation: NOT_IMPLEMENTED (VO and live headers say so). Bangkok per-boundary cause classification (plan D1 field): not written.
+- (2026-11-09, frame selection and depth) Adaptive selection stays opt-in (`--selection adaptive`), not a failure: path PASS on all three clips (F-23). Ruled: D runs on the neutral judge — D12 fails only quiet time (400.0 s) and person points on f001680, D1 fails sky and person (F-24). Open: clause 5 timing alone for every run but D12 (F-25); same-view-set free-space comparison for F1b (F-23); learned multi-view depth approved by the user, installation in progress, results later (F-26). Closed: `data/models/static/SOURCE.md` now records the segmentation model (Realcat/skywater_seg rev ec20751, MIT, SHA-256).
