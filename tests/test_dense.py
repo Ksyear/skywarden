@@ -164,3 +164,14 @@ def test_ground_rows_crop_gives_identical_result():
         # a near-tie between the fronto and ground family can flip on that rounding; allow it on < 0.5 % of pixels
         same = np.isclose(a[0][a[1]], b[0][b[1]], rtol=1e-3)
         assert np.array_equal(a[1], b[1]) and same.mean() > 0.995, same.mean()
+
+
+def test_umeyama_recovers_similarity():
+    from mapping.learned_align import umeyama
+    r = np.random.default_rng(1)
+    src = r.normal(size=(40, 3))
+    a = 0.7
+    R = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1.0]])
+    dst = (2.5 * (R @ src.T)).T + np.array([1.0, -2.0, 0.5])
+    s, R2, t = umeyama(src, dst)
+    assert abs(s - 2.5) < 1e-6 and np.allclose(R2, R, atol=1e-6) and np.allclose(t, [1.0, -2.0, 0.5], atol=1e-6)

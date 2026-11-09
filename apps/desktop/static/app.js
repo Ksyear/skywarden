@@ -209,7 +209,7 @@ async function loadSession(sid, modelRank = 0) {
     const models = info.report?.reconstruction?.models || null;  // per-model exports (report schema @2)
     const prefix = models && modelRank > 0 ? `models/${modelRank}/` : "";
     const pf = report_point_filter(info.report, modelRank);
-    const densePaths = { dense: "dense", dense_exp: "dense_experimental", dense_static: "dense_static", dense_static_v2: "dense_static_v2", dense_static_v3: "dense_static_v3" };
+    const densePaths = { dense: "dense", dense_exp: "dense_experimental", dense_static: "dense_static", dense_static_v2: "dense_static_v2", dense_static_v3: "dense_static_v3", dense_learned: "dense_learned", model_estimated: "model_estimated" };
     const denseReports = Object.fromEntries(await Promise.all(Object.entries(densePaths).map(async ([key, dir]) =>
       [key, modelRank === 0 ? await api(`${base}/files/${dir}/dense_report.json`).catch(() => null) : null])));
     let layer = $("layer").value;
@@ -229,7 +229,7 @@ async function loadSession(sid, modelRank = 0) {
     const poses = traj.poses.map((p) => ({ ...p, R: p.T_world_camera.slice(0, 3).map((r) => r.slice(0, 3)), C: p.T_world_camera.slice(0, 3).map((r) => r[3]) }));
     state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now(), modelRank, models, coverage,
       pointFilter: pf, filtered: !!useFiltered, layer, dense: denseReports.dense,
-      denseExp: denseReports.dense_exp, denseStatic: denseReports.dense_static, denseStaticV2: denseReports.dense_static_v2, denseStaticV3: denseReports.dense_static_v3 };
+      denseExp: denseReports.dense_exp, denseStatic: denseReports.dense_static, denseStaticV2: denseReports.dense_static_v2, denseStaticV3: denseReports.dense_static_v3, denseLearned: denseReports.dense_learned, modelEstimated: denseReports.model_estimated };
     $("layer").value = layer;
     $("layer").options[1].disabled = !pf;
     for (const option of $("layer").options) {
@@ -281,19 +281,21 @@ function renderLabels() {
     dense_exp: `DENSE · EXPERIMENTAL, NOT ADOPTED — ${denseMethod(state.loaded.denseExp)}; ${state.loaded.denseExp?.experimental?.reason ?? "failed the frozen acceptance"}`,
     dense_static: "DENSE · STATIC SCENE TRIAL — sky and person masks applied during matching and depth verification",
     dense_static_v2: `DENSE · STATIC SCENE v2, NOT ADOPTED — ${denseMethod(state.loaded.denseStaticV2)}; ${state.loaded.denseStaticV2?.experimental?.reason ?? ""}`,
-    dense_static_v3: `DENSE · STATIC SCENE v3, ${state.loaded.denseStaticV3?.experimental?.status ?? "TRIAL"} — ${denseMethod(state.loaded.denseStaticV3)}; ${state.loaded.denseStaticV3?.experimental?.reason ?? ""}` }[layer];
+    dense_static_v3: `DENSE · STATIC SCENE v3, ${state.loaded.denseStaticV3?.experimental?.status ?? "TRIAL"} — ${denseMethod(state.loaded.denseStaticV3)}; ${state.loaded.denseStaticV3?.experimental?.reason ?? ""}`,
+    dense_learned: `DENSE + LEARNED DEPTH, ${state.loaded.denseLearned?.experimental?.status ?? "TRIAL"} — ${state.loaded.denseLearned?.experimental?.reason ?? "learned depth kept only where other frames and measured surfaces agree"}`,
+    model_estimated: "MODEL ESTIMATED — learned depth that multi-view geometry did NOT confirm; a guess, never part of the map" }[layer];
   const shown = viewer.cloud?.count;
-  const trial = layer === "dense_exp" || layer.startsWith("dense_static");
-  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL", dense_static: "DENSE · STATIC SCENE", dense_static_v2: "DENSE · STATIC SCENE v2", dense_static_v3: "DENSE · STATIC SCENE v3" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, trial ? "layer warn" : "layer"), chip(layerChip, trial ? "warn" : ""));
+  const trial = layer === "dense_exp" || layer.startsWith("dense_static") || layer === "dense_learned" || layer === "model_estimated";
+  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL", dense_static: "DENSE · STATIC SCENE", dense_static_v2: "DENSE · STATIC SCENE v2", dense_static_v3: "DENSE · STATIC SCENE v3", dense_learned: "DENSE + LEARNED DEPTH", model_estimated: "MODEL ESTIMATED (NOT VERIFIED)" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, trial ? "layer warn" : "layer"), chip(layerChip, trial ? "warn" : ""));
   const M = state.loaded.models;
   if (q !== "GOOD" || (M && M.length > 1)) {
     const m = M ? M[state.loaded.modelRank] : null, n = state.loaded.report.reconstruction.selected_frames;
     tl.append(chip(M && M.length > 1 ? `PARTIAL RECONSTRUCTION — model ${state.loaded.modelRank + 1} of ${M.length} (${m.registered_images}/${n} frames); models have separate coordinate frames and are never merged`
                                     : `PARTIAL RECONSTRUCTION — quality ${q}`, "warn"));
   }
-  const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS", dense_static: "DENSE_STATIC_MVS_TRIAL", dense_static_v2: "DENSE_STATIC_MVS_TRIAL_V2", dense_static_v3: "DENSE_STATIC_MVS_TRIAL_V3" }[layer] ?? L.geometry;
+  const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS", dense_static: "DENSE_STATIC_MVS_TRIAL", dense_static_v2: "DENSE_STATIC_MVS_TRIAL_V2", dense_static_v3: "DENSE_STATIC_MVS_TRIAL_V3", dense_learned: "MVS + LEARNED_DEPTH_VERIFIED", model_estimated: "MODEL_ESTIMATED" }[layer] ?? L.geometry;
   bl.append(chip("Relative units · scale unknown", "warn"), chip(`${geom} · ${state.loaded.poses.length} cameras`));
-  $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental", dense_static: "Dense 3D map · static scene trial", dense_static_v2: "Dense 3D map · static scene v2 trial", dense_static_v3: "Dense 3D map · static scene v3 trial" }[layer] ?? "3D map";
+  $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental", dense_static: "Dense 3D map · static scene trial", dense_static_v2: "Dense 3D map · static scene v2 trial", dense_static_v3: "Dense 3D map · static scene v3 trial", dense_learned: "Dense 3D map · with learned depth", model_estimated: "Model estimate (not a map)" }[layer] ?? "3D map";
 }
 
 function renderMetrics() {
