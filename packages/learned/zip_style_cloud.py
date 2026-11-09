@@ -25,14 +25,13 @@ CONF = 1.5
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="learned.zip_style_cloud")
-    ap.add_argument("session_dir"); ap.add_argument("model_out")
+    ap.add_argument("session_dir"); ap.add_argument("model_out", nargs="+", help="one or more runner output dirs (chunks)")
     ap.add_argument("--src-fps", type=float, required=True); ap.add_argument("--demo-fps", type=float, default=1.0)
     ap.add_argument("--frames-dir", required=True, help="the demo's input frames (for colours)")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--stride", type=int, default=1, help="unproject every n-th pixel (display thinning only)")
     a = ap.parse_args(argv)
-    sd, md, out = Path(a.session_dir), Path(a.model_out), Path(a.out)
-    P = np.load(md / "predictions.npz")
-    names = json.loads((md / "names.json").read_text())
+    sd, out = Path(a.session_dir), Path(a.out)
     rec = pycolmap.Reconstruction(str(sd / "sparse" / "0"))
     by_src = {}
     frames = json.loads((sd / "frames.json").read_text())
@@ -41,26 +40,40 @@ def main(argv=None) -> int:
         if f["file"] in by_name:
             by_src[f["source_index"]] = by_name[f["file"]]
     interval = max(1, round(a.src_fps / a.demo_fps))
-    T = P["c2w"]
-    pairs = [(i, by_src[int(Path(n).stem) * interval]) for i, n in enumerate(names) if int(Path(n).stem) * interval in by_src]
-    C_m = np.array([T[i, :3, 3] for i, _ in pairs])
-    C_o = np.array([-_pose(im)[0].T @ _pose(im)[1] for _, im in pairs])
-    s, R, t = umeyama(C_m, C_o)
-    res = np.linalg.norm((s * (R @ C_m.T)).T + t - C_o, axis=1)
-    path = float(np.sum(np.linalg.norm(np.diff(C_o, axis=0), axis=1)))
     import cv2
-    D, Cf, K = P["depth"], P["depth_conf"], P["intrinsic"]
-    H, W = D.shape[1:]
-    vv, uu = np.mgrid[0:H, 0:W]
-    pts, cols = [], []
-    for i, n in enumerate(names):
-        m = (Cf[i] >= CONF) & np.isfinite(D[i]) & (D[i] > 0)
-        z = D[i][m]; u = uu[m]; v = vv[m]
-        Xc = np.stack([(u - K[i, 0, 2]) / K[i, 0, 0] * z, (v - K[i, 1, 2]) / K[i, 1, 1] * z, z], 1)
-        Xw_m = (T[i, :3, :3] @ Xc.T).T + T[i, :3, 3]
-        pts.append((s * (R @ Xw_m.T)).T + t)
-        img = cv2.resize(cv2.imread(str(Path(a.frames_dir) / n)), (W, H), interpolation=cv2.INTER_AREA)
-        cols.append(img[v, u][:, ::-1])
+    pts, cols, seen, fits = [], [], set(), []
+    for md in map(Path, a.model_out):
+        P = np.load(md / "predictions.npz")
+        names = json.loads((md / "names.json").read_text())
+        T = P["c2w"]
+        def ours(n):  # demo frames are numbered per second; session frames are named by source index
+            if n in by_name:
+                return by_name[n]
+            st = Path(n).stem
+            return by_src.get(int(st) * interval) if st.isdigit() else None
+        pairs = [(i, ours(n)) for i, n in enumerate(names) if ours(n) is not None]
+        C_m = np.array([T[i, :3, 3] for i, _ in pairs])
+        C_o = np.array([-_pose(im)[0].T @ _pose(im)[1] for _, im in pairs])
+        s, R, t = umeyama(C_m, C_o)
+        res = np.linalg.norm((s * (R @ C_m.T)).T + t - C_o, axis=1)
+        path = float(np.sum(np.linalg.norm(np.diff(C_o, axis=0), axis=1)))
+        fits.append({"chunk": md.name, "frames": len(names), "matched": len(pairs), "sim3_scale": s,
+                     "sim3_rms_over_path_length": float(np.sqrt(np.mean(res ** 2)) / max(path, 1e-9))})
+        D, Cf, K = P["depth"], P["depth_conf"], P["intrinsic"]
+        H, W = D.shape[1:]
+        vv, uu = np.mgrid[0:H:a.stride, 0:W:a.stride]
+        for i, n in enumerate(names):
+            if n in seen:  # overlapping chunks: each frame once
+                continue
+            seen.add(n)
+            Di, Ci = D[i][vv, uu], Cf[i][vv, uu]
+            m = (Ci >= CONF) & np.isfinite(Di) & (Di > 0)
+            z = Di[m]; u = uu[m]; v = vv[m]
+            Xc = np.stack([(u - K[i, 0, 2]) / K[i, 0, 0] * z, (v - K[i, 1, 2]) / K[i, 1, 1] * z, z], 1)
+            Xw_m = (T[i, :3, :3] @ Xc.T).T + T[i, :3, 3]
+            pts.append((s * (R @ Xw_m.T)).T + t)
+            img = cv2.resize(cv2.imread(str(Path(a.frames_dir) / n)), (W, H), interpolation=cv2.INTER_AREA)  # colours at model resolution
+            cols.append(img[v, u][:, ::-1])
     X = np.concatenate(pts); Cc = np.concatenate(cols)
     arr = np.zeros(len(X), dtype=PLY_DTYPE)
     arr["x"], arr["y"], arr["z"] = X.T; arr["red"], arr["green"], arr["blue"] = Cc.T
@@ -68,10 +81,10 @@ def main(argv=None) -> int:
     write_ply(out / "dense_verified.ply", arr)
     rep = {"session": sd.name, "model_rank": 0, "label": "ZIP-STYLE REFERENCE: every pixel with model confidence >= 1.5, model cameras, no verification, no masks (as in the earlier demo run)",
            "dense_verified_points": int(len(X)), "config": {"work_width": 640}, "views": [], "voxel": None,
-           "frames": len(names), "matched_to_our_frames": len(pairs), "sim3_scale": s,
-           "sim3_rms_over_path_length": float(np.sqrt(np.mean(res ** 2)) / max(path, 1e-9))}
+           "frames": len(seen), "chunks": fits, "stride_px": a.stride,
+           "note": "the demo ran all frames in one pass on a CUDA PC; on the 16 GB Mac one pass ran out of memory, so the same frames run in overlapping chunks, each aligned to our path"}
     (out / "dense_report.json").write_text(json.dumps(rep, indent=1))
-    print(json.dumps({k: rep[k] for k in ("dense_verified_points", "frames", "matched_to_our_frames", "sim3_rms_over_path_length")}, indent=1))
+    print(json.dumps({k: rep[k] for k in ("dense_verified_points", "frames", "chunks")}, indent=1))
     return 0
 
 

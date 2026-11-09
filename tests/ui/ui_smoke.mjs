@@ -198,6 +198,11 @@ try {
       check("Nearby view shows the overview of the whole map", await evaluate(`document.getElementById('roi').getAttribute('aria-pressed') === 'true' && !document.getElementById('map-overview').hidden`));
       await shot("03h_learned_nearby_overview.png");
       await evaluate(`document.getElementById('roi').click()`);
+      if (existsSync(join(ROOT, "outputs/maps", MQ_DENSE, "dense_zipstyle", "dense_verified.ply"))) {
+        await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'dense_zipstyle'; s.dispatchEvent(new Event('change')); })()`);
+        check("model-output layer (as in the demo) is labelled unverified", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('MODEL OUTPUT, ALL PIXELS')`, 90000), await text("map-overlay-tl"));
+        await sleep(1500); await shot("03i_model_output_all_pixels.png");
+      }
       check("model-estimated layer is not selected by default", await evaluate(`document.getElementById('layer').value !== 'model_estimated'`));
     }
     await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'sparse'; s.dispatchEvent(new Event('change')); })()`);
