@@ -28,6 +28,24 @@ from lingbot_map.utils.load_fn import load_and_preprocess_images
 from lingbot_map.utils.pose_enc import pose_encoding_to_extri_intri
 
 
+def _mem(stage: str, log: list) -> None:
+    """Process peak RSS, MPS allocations, macOS memory pressure and swap at a pipeline stage."""
+    import resource, subprocess
+    row = {"stage": stage, "max_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2)}
+    if torch.backends.mps.is_available():
+        row["mps_current_gb"] = round(torch.mps.current_allocated_memory() / 1e9, 2)
+        row["mps_driver_gb"] = round(torch.mps.driver_allocated_memory() / 1e9, 2)
+    try:
+        q = subprocess.run(["memory_pressure", "-Q"], capture_output=True, text=True, timeout=10).stdout
+        row["system_free_pct"] = int(q.strip().splitlines()[-1].split(":")[-1].strip().rstrip("%"))
+        sw = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=10).stdout.split()
+        row["swap_used_mb"] = float(sw[sw.index("used") + 2].rstrip("M"))
+    except Exception:
+        pass
+    log.append(row)
+    print("MEM", row, flush=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", required=True)
@@ -45,6 +63,8 @@ def main() -> int:
         t = {f["file"]: f["timestamp_s"] for f in json.loads(Path(a.frames_json).read_text())}
         names = [n for n in names if a.t_range[0] <= t[n] <= a.t_range[1]]
     paths = [str(Path(a.frames) / n) for n in names]
+    mem: list = []
+    _mem("start", mem)
     t0 = time.monotonic()
     images = load_and_preprocess_images(paths, mode="crop", image_size=a.image_size, patch_size=14)
     dev = torch.device(a.device)
@@ -54,6 +74,10 @@ def main() -> int:
                       camera_num_iterations=4)
     ckpt = torch.load(a.model, map_location="cpu", weights_only=False)
     missing, unexpected = model.load_state_dict(ckpt.get("model", ckpt), strict=False)
+    del ckpt  # the state dict was copied into the model; keeping the 4 GB checkpoint doubles host memory
+    import gc
+    gc.collect()
+    _mem("model_loaded_cpu", mem)
     # MPS has no float64 / complex128: rotary-embedding frequency tables are created in float64 and moved lazily in forward
     for m in model.modules():
         for k, v in list(vars(m).items()):
@@ -63,12 +87,21 @@ def main() -> int:
             if v is not None and v.dtype in (torch.float64, torch.complex128):
                 m._buffers[k] = v.to(torch.complex64 if v.is_complex() else torch.float32)
     model = model.to(dev).eval()
+    _mem("model_on_device", mem)
     t_load = time.monotonic() - t0
     t1 = time.monotonic()
     with torch.no_grad():
         pred = model.inference_streaming(images.to(dev), num_scale_frames=a.num_scale_frames, keyframe_interval=1,
                                          output_device=torch.device("cpu"))
     t_inf = time.monotonic() - t1
+    _mem("inference_done", mem)
+    # outputs are already on the CPU: drop the model and return the MPS cache before post-processing and saving
+    del model
+    import gc
+    gc.collect()
+    if dev.type == "mps":
+        torch.mps.empty_cache()
+    _mem("mps_released", mem)
     # The decoded pose is camera-to-world with OpenCV axes (upstream docs corrected 2026-10-14: "no pose inversion is
     # performed during decoding"); older demo code inverted it for its viewer. Saved as-is; the project-side alignment
     # also checks the inverse and records which convention matches our SfM path.
@@ -91,7 +124,12 @@ def main() -> int:
            "frames": len(names), "input_hw": list(images.shape[-2:]), "num_scale_frames": a.num_scale_frames,
            "missing_keys": len(missing), "unexpected_keys": len(unexpected),
            "seconds_load": round(t_load, 1), "seconds_inference": round(t_inf, 1),
-           "seconds_per_frame": round(t_inf / max(1, len(names)), 3)}
+           "seconds_per_frame": round(t_inf / max(1, len(names)), 3),
+           "mps_high_watermark_ratio": os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "default"), "memory": mem}
+    _mem("saved", mem)
+    rep["memory"] = mem
+    rep["peak_rss_gb"] = max(r["max_rss_gb"] for r in mem)
+    rep["peak_mps_driver_gb"] = max(r.get("mps_driver_gb", 0) for r in mem)
     (out / "run_report.json").write_text(json.dumps(rep, indent=1))
     print(json.dumps(rep, indent=1))
     return 0

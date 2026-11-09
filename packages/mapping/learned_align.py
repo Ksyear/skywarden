@@ -65,6 +65,24 @@ def run(sd: Path, md: Path, out: Path) -> dict:
     focal_ratio = float(np.median(Km[:, 0, 0] / intr["fx"]))
     out.mkdir(parents=True, exist_ok=True)
     pts = {pid: p.xyz for pid, p in rec.points3D.items()}
+    # Scale check: ratio between triangulated depth and learned depth for the nearest 40 % of points in each frame
+    near_ratios = []
+    for i, n in enumerate(names):
+        R_, t_ = _pose(by[n])
+        X = np.array([pts[j] for j in (p2.point3D_id for p2 in by[n].points2D if p2.has_point3D())])
+        if not len(X):
+            continue
+        Xc = (R_ @ X.T).T + t_; z = Xc[:, 2]
+        u = np.round(intr["fx"] * Xc[:, 0] / z + intr["cx"]).astype(int); v = np.round(intr["fy"] * Xc[:, 1] / z + intr["cy"]).astype(int)
+        ins = (z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+        if ins.sum() < 20:
+            continue
+        zi, di = z[ins], depth[i][v[ins], u[ins]]
+        near = zi <= np.percentile(zi, 40)
+        near_ratios += list(zi[near] / np.maximum(di[near], 1e-9))
+    k = float(np.median(near_ratios)) if near_ratios else 1.0
+    # k is a DIAGNOSTIC only (independent check of the Sim3 scale against triangulated points); applying it made
+    # neighbouring chunks disagree more on fast-turning stretches (k up to 2.2), so the depth keeps the Sim3 scale
     agree = []
     for i, n in enumerate(names):
         np.save(out / f"depth_{n[:-4]}.npy", depth[i].astype(np.float32))
@@ -80,7 +98,8 @@ def run(sd: Path, md: Path, out: Path) -> dict:
            "weights_sha256": rep_m.get("weights_sha256"), "device": rep_m.get("device"),
            "seconds_per_frame": rep_m.get("seconds_per_frame"), "frames": len(names),
            "intrinsics": intr, "pose_convention_fit": fits, "pose_convention_used": conv,
-           "alignment": f"one Sim3 from the model's camera centres to ours (scale {s:.4f}); our path unchanged",
+           "alignment": f"one Sim3 from the model's camera centres to ours (scale {s:.4f}), near-point check factor {k:.4f} (not applied); our path unchanged",
+           "scale_sim3": s, "scale_near_sparse_factor": k,
            "model_focal_over_ours": round(focal_ratio, 4),
            "sparse_agreement_per_frame": dict(zip(names, [round(a, 3) for a in agree])),
            "sparse_agreement_median": round(float(np.median(agree)), 3)}

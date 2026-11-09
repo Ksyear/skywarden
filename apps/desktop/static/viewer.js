@@ -64,6 +64,7 @@ export class PointViewer {
     const n = cloud.count;
     const med = (k) => { const a = []; for (let i = k; i < 3 * n; i += 3 * Math.max(1, Math.floor(n / 4000))) a.push(cloud.xyz[i]); a.sort((x, y) => x - y); return a[a.length >> 1] ?? 0; };
     this.center = n ? [med(0), med(1), med(2)] : [0, 0, 0];
+    this._center0 = this.center.slice(); this.roi = null; this._ov = null;
     let up = [0, 0, 0], fwd = [0, 0, 0];
     for (const p of poses) { const R = p.R; up = sub(up, [R[0][1], R[1][1], R[2][1]]); fwd = [fwd[0] + R[0][2], fwd[1] + R[1][2], fwd[2] + R[2][2]]; }
     up = poses.length ? norm(up) : [0, -1, 0];
@@ -76,6 +77,14 @@ export class PointViewer {
     d.sort((a, b) => a - b);
     // Frame the bulk of the points and the whole camera path (cameras often sit outside the point cloud).
     const camD = poses.map((p) => Math.hypot(...sub(p.C, this.center))).sort((a, b) => a - b);
+    // typical point-to-nearest-camera distance (sampled) sets the area-of-interest radius
+    this.camDist = [];
+    for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 3000))) {
+      const q = [cloud.xyz[3 * i], cloud.xyz[3 * i + 1], cloud.xyz[3 * i + 2]];
+      let best = Infinity; for (let k = 0; k < poses.length; k += Math.max(1, Math.floor(poses.length / 60))) best = Math.min(best, Math.hypot(...sub(q, poses[k].C)));
+      this.camDist.push(best);
+    }
+    this.camDist.sort((a, b) => a - b);
     const camR = camD[Math.min(camD.length - 1, Math.floor(camD.length * 0.95))] || 0;  // p95: one stray camera must not shrink the scene
     const camMax = camD[camD.length - 1] || 0;
     // Two framings: the main observed region (90th percentile of point distances + the camera path) and the full
@@ -95,7 +104,47 @@ export class PointViewer {
   }
   resetView() { Object.assign(this.view, { yaw: 0, pitch: 0.35, dist: this.radius ? this.radius * 2.6 : 3, panX: 0, panY: 0 }); this.request(); }
   setVisibleUpTo(k) { this.visibleUpTo = k; this.request(); }
-  setCurrent(k) { this.current = k; this.request(); }
+  setCurrent(k) { this.current = k; if (this.roi?.on) this._frameRoi(false); this.request(); }
+  // Area of interest: only points near the current camera are drawn and framed; the overview shows the whole map.
+  setRoi(on) {
+    if (!this.cloud) return;
+    if (!this.roi) {
+      const d = this.camDist || [];
+      this.roi = { r: Math.max(1e-6, (d[Math.floor(d.length * 0.5)] || this.radiusMain * 0.2) * 3) };
+    }
+    this.roi.on = on;
+    if (on) this._frameRoi(true); else { this.center = this._center0; this.radius = this.framing === "full" ? this.radiusFull : this.radiusMain; this.resetView(); }
+    this.request();
+  }
+  _frameRoi(reset) {
+    const p = this.poses[Math.max(0, Math.min(this.poses.length - 1, this.current || 0))];
+    if (!p) return;
+    this.center = p.C.slice(); this.radius = this.roi.r;
+    if (reset) this.resetView(); else this.request();
+  }
+  drawOverview(canvas) {
+    if (!canvas || !this.cloud) return;
+    const dpr = window.devicePixelRatio || 1, W = Math.max(1, Math.round(canvas.clientWidth * dpr)), H = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    const g = canvas.getContext("2d"); g.fillStyle = "rgba(11,14,18,.92)"; g.fillRect(0, 0, W, H);
+    const [ax, , az] = this.align, c0 = this._center0 || this.center;
+    if (!this._ov || this._ov.cloud !== this.cloud) {  // top-down projection of a decimated copy, computed once per map
+      const { xyz, rgb, count } = this.cloud, step = Math.max(1, Math.floor(count / 60000)), P = [], C = [];
+      for (let i = 0; i < count; i += step) { const q = [xyz[3 * i] - c0[0], xyz[3 * i + 1] - c0[1], xyz[3 * i + 2] - c0[2]]; P.push(dot(q, ax), dot(q, az)); C.push(rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]); }
+      const cams = this.poses.map((p) => { const q = sub(p.C, c0); return [dot(q, ax), dot(q, az)]; });
+      let ext = 1e-9; for (const [x, y] of cams) ext = Math.max(ext, Math.abs(x), Math.abs(y));
+      this._ov = { cloud: this.cloud, P, C, cams, ext: Math.max(ext * 1.3, this.radiusMain) };
+    }
+    const o = this._ov, s = 0.48 * Math.min(W, H) / o.ext, cx = W / 2, cy = H / 2;
+    for (let i = 0; i < o.P.length; i += 2) { g.fillStyle = `rgb(${o.C[1.5 * i]},${o.C[1.5 * i + 1]},${o.C[1.5 * i + 2]})`; g.fillRect(cx + s * o.P[i], cy - s * o.P[i + 1], dpr, dpr); }
+    g.strokeStyle = "#4cc3ff"; g.lineWidth = dpr; g.beginPath();
+    o.cams.forEach(([x, y], k) => (k ? g.lineTo(cx + s * x, cy - s * y) : g.moveTo(cx + s * x, cy - s * y))); g.stroke();
+    const cur = o.cams[Math.max(0, Math.min(o.cams.length - 1, this.current || 0))];
+    if (cur) {
+      g.fillStyle = "#ffb020"; g.beginPath(); g.arc(cx + s * cur[0], cy - s * cur[1], 3 * dpr, 0, 7); g.fill();
+      if (this.roi?.on) { g.strokeStyle = "#ffb020"; g.beginPath(); g.arc(cx + s * cur[0], cy - s * cur[1], s * this.roi.r, 0, 7); g.stroke(); }
+    }
+  }
   setOverlays({ path, cameras }) {
     if (path !== undefined) this.showPath = path;
     if (cameras !== undefined) this.showCameras = cameras;
@@ -139,9 +188,11 @@ export class PointViewer {
     const { xyz, rgb, first, count } = this.cloud;
     const m = M.flat(), s = Math.max(1, Math.round(this.pointSize * dpr));
     let drawn = 0;
+    const roiR2 = this.roi?.on ? this.roi.r * this.roi.r : Infinity;
     for (let i = 0; i < count; i++) {
       if (first[i] > this.visibleUpTo) continue;
       const x = xyz[3 * i] - cen[0], y = xyz[3 * i + 1] - cen[1], z = xyz[3 * i + 2] - cen[2];
+      if (roiR2 !== Infinity && x * x + y * y + z * z > roiR2) continue;
       const vz = m[6] * x + m[7] * y + m[8] * z, depth = dist - vz;
       if (depth <= near) continue;
       const sx = Math.round(cx + f * (m[0] * x + m[1] * y + m[2] * z + panX) / depth);
@@ -177,6 +228,7 @@ export class PointViewer {
       }
     }
     this.lastDrawn = drawn;
+    if (this.overviewCanvas && !this.overviewCanvas.hidden) this.drawOverview(this.overviewCanvas);
     this.onRender?.(performance.now() - t0, drawn);
   }
 

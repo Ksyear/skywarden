@@ -209,7 +209,7 @@ async function loadSession(sid, modelRank = 0) {
     const models = info.report?.reconstruction?.models || null;  // per-model exports (report schema @2)
     const prefix = models && modelRank > 0 ? `models/${modelRank}/` : "";
     const pf = report_point_filter(info.report, modelRank);
-    const densePaths = { dense: "dense", dense_exp: "dense_experimental", dense_static: "dense_static", dense_static_v2: "dense_static_v2", dense_static_v3: "dense_static_v3", dense_learned: "dense_learned", model_estimated: "model_estimated" };
+    const densePaths = { dense: "dense", dense_exp: "dense_experimental", dense_static: "dense_static", dense_static_v2: "dense_static_v2", dense_static_v3: "dense_static_v3", dense_learned: "dense_learned", model_estimated: "model_estimated", dense_static_local: "dense_static_local" };
     const denseReports = Object.fromEntries(await Promise.all(Object.entries(densePaths).map(async ([key, dir]) =>
       [key, modelRank === 0 ? await api(`${base}/files/${dir}/dense_report.json`).catch(() => null) : null])));
     let layer = $("layer").value;
@@ -229,7 +229,7 @@ async function loadSession(sid, modelRank = 0) {
     const poses = traj.poses.map((p) => ({ ...p, R: p.T_world_camera.slice(0, 3).map((r) => r.slice(0, 3)), C: p.T_world_camera.slice(0, 3).map((r) => r[3]) }));
     state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now(), modelRank, models, coverage,
       pointFilter: pf, filtered: !!useFiltered, layer, dense: denseReports.dense,
-      denseExp: denseReports.dense_exp, denseStatic: denseReports.dense_static, denseStaticV2: denseReports.dense_static_v2, denseStaticV3: denseReports.dense_static_v3, denseLearned: denseReports.dense_learned, modelEstimated: denseReports.model_estimated };
+      denseExp: denseReports.dense_exp, denseStatic: denseReports.dense_static, denseStaticV2: denseReports.dense_static_v2, denseStaticV3: denseReports.dense_static_v3, denseLearned: denseReports.dense_learned, modelEstimated: denseReports.model_estimated, denseStaticLocal: denseReports.dense_static_local };
     $("layer").value = layer;
     $("layer").options[1].disabled = !pf;
     for (const option of $("layer").options) {
@@ -240,6 +240,7 @@ async function loadSession(sid, modelRank = 0) {
     const staticView = layer.startsWith("dense");
     viewer.setData(cloud, poses, { frameOnCloud: staticView });
     setOverlays(!staticView, !staticView);
+    $("roi").setAttribute("aria-pressed", "false"); $("map-overview").hidden = true; viewer.overviewCanvas = $("map-overview");
     viewer.setBreaks(modelRank === 0 && coverage ? (coverage.jumps_in_largest_model || []).map((j) => j.t_to) : []);
     $("map-empty").hidden = true;
     renderLabels(); renderMetrics(); refreshSessions();
@@ -283,19 +284,20 @@ function renderLabels() {
     dense_static_v2: `DENSE · STATIC SCENE v2, NOT ADOPTED — ${denseMethod(state.loaded.denseStaticV2)}; ${state.loaded.denseStaticV2?.experimental?.reason ?? ""}`,
     dense_static_v3: `DENSE · STATIC SCENE v3, ${state.loaded.denseStaticV3?.experimental?.status ?? "TRIAL"} — ${denseMethod(state.loaded.denseStaticV3)}; ${state.loaded.denseStaticV3?.experimental?.reason ?? ""}`,
     dense_learned: `DENSE + LEARNED DEPTH, ${state.loaded.denseLearned?.experimental?.status ?? "TRIAL"} — ${state.loaded.denseLearned?.experimental?.reason ?? "learned depth kept only where other frames and measured surfaces agree"}`,
-    model_estimated: "MODEL ESTIMATED — learned depth that multi-view geometry did NOT confirm; a guess, never part of the map" }[layer];
+    model_estimated: "MODEL ESTIMATED — learned depth that multi-view geometry did NOT confirm; a guess, never part of the map",
+    dense_static_local: `NEARBY SCENE (COMPARISON ONLY) — ${state.loaded.denseStaticLocal?.hidden_points?.toLocaleString() ?? "?"} points farther than ${state.loaded.denseStaticLocal?.radius?.toFixed?.(2) ?? "?"} from the camera path omitted from ${state.loaded.denseStaticLocal?.source_layer ?? "?"}; a distance cut also removes real far structures` }[layer];
   const shown = viewer.cloud?.count;
-  const trial = layer === "dense_exp" || layer.startsWith("dense_static") || layer === "dense_learned" || layer === "model_estimated";
-  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL", dense_static: "DENSE · STATIC SCENE", dense_static_v2: "DENSE · STATIC SCENE v2", dense_static_v3: "DENSE · STATIC SCENE v3", dense_learned: "DENSE + LEARNED DEPTH", model_estimated: "MODEL ESTIMATED (NOT VERIFIED)" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, trial ? "layer warn" : "layer"), chip(layerChip, trial ? "warn" : ""));
+  const trial = layer === "dense_exp" || layer.startsWith("dense_static") || layer === "dense_learned" || layer === "model_estimated";  // dense_static_local included
+  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL", dense_static: "DENSE · STATIC SCENE", dense_static_v2: "DENSE · STATIC SCENE v2", dense_static_v3: "DENSE · STATIC SCENE v3", dense_learned: "DENSE + LEARNED DEPTH", model_estimated: "MODEL ESTIMATED (NOT VERIFIED)", dense_static_local: "DENSE · NEARBY SCENE (COMPARISON)" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, trial ? "layer warn" : "layer"), chip(layerChip, trial ? "warn" : ""));
   const M = state.loaded.models;
   if (q !== "GOOD" || (M && M.length > 1)) {
     const m = M ? M[state.loaded.modelRank] : null, n = state.loaded.report.reconstruction.selected_frames;
     tl.append(chip(M && M.length > 1 ? `PARTIAL RECONSTRUCTION — model ${state.loaded.modelRank + 1} of ${M.length} (${m.registered_images}/${n} frames); models have separate coordinate frames and are never merged`
                                     : `PARTIAL RECONSTRUCTION — quality ${q}`, "warn"));
   }
-  const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS", dense_static: "DENSE_STATIC_MVS_TRIAL", dense_static_v2: "DENSE_STATIC_MVS_TRIAL_V2", dense_static_v3: "DENSE_STATIC_MVS_TRIAL_V3", dense_learned: "MVS + LEARNED_DEPTH_VERIFIED", model_estimated: "MODEL_ESTIMATED" }[layer] ?? L.geometry;
+  const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS", dense_static: "DENSE_STATIC_MVS_TRIAL", dense_static_v2: "DENSE_STATIC_MVS_TRIAL_V2", dense_static_v3: "DENSE_STATIC_MVS_TRIAL_V3", dense_learned: "MVS + LEARNED_DEPTH_VERIFIED", model_estimated: "MODEL_ESTIMATED", dense_static_local: "DENSE_STATIC_LOCAL_COMPARISON" }[layer] ?? L.geometry;
   bl.append(chip("Relative units · scale unknown", "warn"), chip(`${geom} · ${state.loaded.poses.length} cameras`));
-  $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental", dense_static: "Dense 3D map · static scene trial", dense_static_v2: "Dense 3D map · static scene v2 trial", dense_static_v3: "Dense 3D map · static scene v3 trial", dense_learned: "Dense 3D map · with learned depth", model_estimated: "Model estimate (not a map)" }[layer] ?? "3D map";
+  $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental", dense_static: "Dense 3D map · static scene trial", dense_static_v2: "Dense 3D map · static scene v2 trial", dense_static_v3: "Dense 3D map · static scene v3 trial", dense_learned: "Dense 3D map · with learned depth", model_estimated: "Model estimate (not a map)", dense_static_local: "Dense 3D map · nearby scene (comparison)" }[layer] ?? "3D map";
 }
 
 function renderMetrics() {
@@ -330,6 +332,28 @@ function renderModelSelect() {
   const n = state.loaded.report.reconstruction.selected_frames;
   sel.replaceChildren(...M.map((m, i) => new Option(`model ${i + 1} of ${M.length} · ${m.registered_images}/${n} frames${m.time_range_s ? ` · ${m.time_range_s[0].toFixed(1)}–${m.time_range_s[1].toFixed(1)} s` : ""}`, String(i))));
   sel.value = String(state.loaded.modelRank);
+}
+function drawStateLane() {
+  // Same time axis as the slider and the coverage strip: learned-depth state per frame (chunk, trust range, verified share)
+  const c = $("state-lane"), meta = $("state-meta"), Ld = state.loaded?.denseLearned, F = state.loaded?.coverage?.frames;
+  const show = !!(Ld && Ld.views && F); c.hidden = !show; meta.hidden = !show; if (!show) return;
+  const g = c.getContext("2d"), dpr = window.devicePixelRatio || 1, r = c.getBoundingClientRect();
+  c.width = Math.max(1, Math.round(r.width * dpr)); c.height = Math.max(1, Math.round(r.height * dpr)); g.clearRect(0, 0, c.width, c.height);
+  const css = getComputedStyle(document.documentElement), v = (k) => css.getPropertyValue(k).trim();
+  const byFrame = Object.fromEntries(Ld.views.map((x) => [x.frame, x])), n = F.length, w = c.width / n;
+  F.forEach((f, i) => {
+    const x = byFrame[f.file];
+    if (!x) { g.fillStyle = v("--muted"); g.globalAlpha = 0.25; }
+    else if (x.status !== "USED") { g.fillStyle = v("--error"); g.globalAlpha = 0.6; }
+    else { g.fillStyle = v("--ok") || v("--accent"); g.globalAlpha = 0.25 + 0.75 * Math.min(1, (x.verified || 0) / Math.max(1, x.pixels || 1)); }
+    g.fillRect(i * w, 0, Math.ceil(w), c.height);
+  });
+  g.globalAlpha = 1; g.fillStyle = v("--text");
+  for (const ch of Ld.chunks || []) { const i = F.findIndex((f) => f.timestamp_s >= ch.t0); if (i > 0) g.fillRect(i * w - dpr / 2, 0, dpr, c.height); }
+  const p = state.loaded.poses[state.idx], cur = p ? F.findIndex((f) => f.file === p.image_name) : -1;
+  if (cur >= 0) { g.fillStyle = v("--focus"); g.fillRect((cur + 0.5) * w - dpr, 0, 2 * dpr, c.height); }
+  const x = p && byFrame[p.image_name];
+  meta.textContent = `learned depth at t=${p?.timestamp_s?.toFixed?.(1) ?? "?"} s: ` + (x ? `${x.status === "USED" ? "used" : "not used"} · trust range ≤ ${x.trust_depth ?? "–"} · verified ${(x.verified ?? 0).toLocaleString()} of ${(x.pixels ?? 0).toLocaleString()} px` : "no learned depth for this frame") + " · bar: brighter = more verified, red = frame rejected, ticks = chunk starts";
 }
 function drawCoverage() {
   const c = $("coverage"), g = c.getContext("2d"), dpr = window.devicePixelRatio || 1;
@@ -374,6 +398,7 @@ function setIndex(i, force = false) {
     probe.src = url;
     renderFilmstrip();
     drawCoverage();
+    drawStateLane();
   });
 }
 function renderFilmstrip() {
@@ -412,7 +437,7 @@ function renderControls() {
   $("build").title = trackRunning ? "A tracking run is in progress; one job at a time" : "";
   $("cancel").disabled = !online || !running;
   if (!running) $("cancel-confirm").hidden = true;
-  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "framing", "show-path", "show-cams"]) $(id).disabled = !has;
+  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "framing", "show-path", "show-cams", "roi"]) $(id).disabled = !has;
   $("layer").disabled = !has;
   $("input-select").disabled = running; $("fps").disabled = running; $("max-frames").disabled = running; $("use-calib").disabled = running;
 }
@@ -470,6 +495,11 @@ function setOverlays(path, cams) {
   $("show-path").setAttribute("aria-pressed", String(path)); $("show-cams").setAttribute("aria-pressed", String(cams));
   viewer.setOverlays({ path, cameras: cams });
 }
+$("roi").addEventListener("click", () => {
+  const on = $("roi").getAttribute("aria-pressed") !== "true";
+  $("roi").setAttribute("aria-pressed", String(on)); $("map-overview").hidden = !on;
+  viewer.setRoi(on); viewer.request();
+});
 $("show-path").addEventListener("click", () => setOverlays($("show-path").getAttribute("aria-pressed") !== "true", $("show-cams").getAttribute("aria-pressed") === "true"));
 $("show-cams").addEventListener("click", () => setOverlays($("show-path").getAttribute("aria-pressed") === "true", $("show-cams").getAttribute("aria-pressed") !== "true"));
 $("framing").addEventListener("click", () => {
@@ -500,6 +530,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "r" || e.key === "R") viewer.resetView();
   else if (e.key === "g" || e.key === "G") $("growth").click();
   else if (e.key === "p" || e.key === "P") $("show-path").click();
+  else if (e.key === "n" || e.key === "N") $("roi").click();
   else if (e.key === "c" || e.key === "C") $("show-cams").click();
 });
 

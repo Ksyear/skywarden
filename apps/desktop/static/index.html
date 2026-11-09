@@ -42,6 +42,8 @@
       <canvas id="coverage" height="22" aria-label="Coverage of the selected input frames by the reconstruction"></canvas>
       <div class="legend cov-legend" aria-hidden="true"><span><i class="c-this"></i>in this model</span><span><i class="c-other"></i>other model</span><span><i class="c-none"></i>not registered</span><span><i class="c-jump"></i>path jump</span><span><i class="c-cut"></i>shot change</span></div>
       <span class="frame-meta" id="coverage-meta"></span>
+      <canvas id="state-lane" height="16" hidden aria-label="Per-frame learned-depth state on the same time axis as the frame slider"></canvas>
+      <span class="frame-meta" id="state-meta" hidden></span>
     </div>
     <div class="filmstrip" id="filmstrip" aria-label="Nearby frames"></div>
   </section>
@@ -63,13 +65,16 @@
         <option value="dense_static_v3" disabled>Dense · static scene v3 (trial)</option>
         <option value="dense_learned" disabled>Dense · with learned depth (trial)</option>
         <option value="model_estimated" disabled>Model estimated (not verified)</option>
+        <option value="dense_static_local" disabled>Dense · nearby scene (comparison)</option>
       </select>
       <button class="btn" id="show-path" aria-pressed="true" disabled title="Show the camera trajectory (P)">Path</button>
       <button class="btn" id="show-cams" aria-pressed="true" disabled title="Show camera frustums (C)">Cameras</button>
+      <button class="btn" id="roi" aria-pressed="false" disabled title="Area of interest: only the surroundings of the current camera, with an overview of the whole map (N)">Nearby</button>
       <button class="btn" id="framing" aria-pressed="false" disabled title="Frame every point (full extent) instead of the main observed region">Full extent</button>
       <button class="btn" id="reset-view" disabled title="Reset view (R)">Reset view</button>
     </div>
     <div class="map-stage">
+      <canvas id="map-overview" class="map-overview" hidden aria-label="Overview of the whole map from above with the area of interest"></canvas>
       <canvas id="map-canvas" tabindex="0" aria-label="3D point map. Drag to orbit, Shift+drag to pan, scroll or +/- to zoom, arrow keys to rotate, R to reset."></canvas>
       <div class="overlay tl" id="map-overlay-tl"></div>
       <div class="overlay bl" id="map-overlay-bl"></div>

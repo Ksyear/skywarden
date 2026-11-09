@@ -188,6 +188,18 @@ try {
       await sleep(1500);
       await shot("03g_static_map_v3.png");
     }
+    if (existsSync(join(ROOT, "outputs/maps", MQ_DENSE, "dense_learned", "dense_verified.ply"))) {
+      await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'dense_learned'; s.dispatchEvent(new Event('change')); })()`);
+      check("learned-depth layer is a labelled trial", await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('DENSE + LEARNED DEPTH, TRIAL')`, 90000), await text("map-overlay-tl"));
+      await sleep(1500);
+      check("state lane shows learned depth on the frame time axis", await waitFor(`!document.getElementById('state-lane').hidden && document.getElementById('state-meta').textContent.includes('learned depth at t=')`, 10000), await text("state-meta"));
+      await evaluate(`document.getElementById('roi').click()`);
+      await sleep(800);
+      check("Nearby view shows the overview of the whole map", await evaluate(`document.getElementById('roi').getAttribute('aria-pressed') === 'true' && !document.getElementById('map-overview').hidden`));
+      await shot("03h_learned_nearby_overview.png");
+      await evaluate(`document.getElementById('roi').click()`);
+      check("model-estimated layer is not selected by default", await evaluate(`document.getElementById('layer').value !== 'model_estimated'`));
+    }
     await evaluate(`(() => { const s = document.getElementById('layer'); s.value = 'sparse'; s.dispatchEvent(new Event('change')); })()`);
     await waitFor(`document.getElementById('map-overlay-tl').textContent.includes('SPARSE POINTS (SfM)')`, 20000);
   }
