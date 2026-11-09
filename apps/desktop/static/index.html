@@ -69,10 +69,11 @@
       <button class="btn" id="roi" aria-pressed="false" disabled title="Area of interest: only the surroundings of the current camera, with an overview of the whole map (N)">Nearby</button>
       <button class="btn" id="framing" aria-pressed="false" disabled title="Frame every point (full extent) instead of the main observed region">Full extent</button>
       <button class="btn" id="top-view" disabled title="Look straight down - for drone (aerial) maps (T)">Top</button>
+      <button class="btn" id="follow" aria-pressed="true" disabled title="Follow the camera: while the video plays the map moves with it; pause to move the map freely (F)">Follow</button>
       <button class="btn" id="reset-view" disabled title="Reset view (R)">Reset view</button>
     </div>
     <div class="map-stage">
-      <canvas id="map-overview" class="map-overview" hidden aria-label="Overview of the whole map from above with the area of interest"></canvas>
+      <canvas id="map-overview" class="map-overview" hidden aria-label="Map from above: camera path, current camera and its view direction; click to jump there" title="Click to jump to that point of the video"></canvas>
       <canvas id="map-canvas" tabindex="0" aria-label="3D point map. Drag to orbit, Shift+drag to pan, scroll or +/- to zoom, arrow keys to rotate, R to reset."></canvas>
       <div class="overlay tl" id="map-overlay-tl"></div>
       <div class="overlay bl" id="map-overlay-bl"></div>

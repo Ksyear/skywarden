@@ -44,8 +44,8 @@ const mul = (A, B) => A.map((r) => [0, 1, 2].map((j) => r[0] * B[0][j] + r[1] * 
 const apply = (M, v) => [dot(M[0], v), dot(M[1], v), dot(M[2], v)];
 
 export class PointViewer {
-  constructor(canvas, { onRender } = {}) {
-    this.canvas = canvas;
+  constructor(canvas, { onRender, onPick, onFollowOff } = {}) {
+    this.canvas = canvas; this.onPick = onPick; this.onFollowOff = onFollowOff; this.follow = false;
     this.ctx = canvas.getContext("2d");
     this.onRender = onRender;
     this.cloud = null; this.poses = [];
@@ -84,7 +84,7 @@ export class PointViewer {
     let f = sub(fwd, up.map((u) => u * dot(fwd, up)));
     if (Math.hypot(...f) < 1e-6) f = Math.abs(up[2]) < 0.9 ? cross(up, [0, 0, 1]) : cross(up, [1, 0, 0]);
     const z = norm(f.map((v) => -v)), x = norm(cross(up, z));
-    this.align = [x, up, z];
+    this.align = [x, up, z]; this._align0 = this.align; this.follow = false; this._fvShown = null; this._tw = null;
     const d = [];
     for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 4000))) d.push(Math.hypot(...sub([cloud.xyz[3 * i], cloud.xyz[3 * i + 1], cloud.xyz[3 * i + 2]], this.center)));
     d.sort((a, b) => a - b);
@@ -117,13 +117,38 @@ export class PointViewer {
   }
   // Flat (levelled) scenes such as aerial maps start from a drone-like angle along the camera direction: a low
   // 20-degree view of a flat map shows it edge-on, as a thin disc.
+  _restoreFrame() { if (this._align0) this.align = this._align0; if (!this.roi?.on && this._center0) this.center = this._center0; }
   resetView() {
+    this._restoreFrame();
     const flat = this.levelled;
     Object.assign(this.view, { yaw: 0, pitch: flat ? 0.75 : 0.35, dist: this.radius ? this.radius * (flat ? 1.7 : 2.6) : 3, panX: 0, panY: 0 }); this.request();
   }
-  topView() { Object.assign(this.view, { pitch: 1.5, dist: this.radius ? this.radius * 2.4 : 3, panX: 0, panY: 0 }); this.request(); }
+  topView() { this._restoreFrame(); Object.assign(this.view, { pitch: 1.5, dist: this.radius ? this.radius * 2.4 : 3, panX: 0, panY: 0 }); this.request(); }
+  // Follow: the view rides just behind the current camera, looking where it looked, so the map moves with the video.
+  setFollow(on) {
+    if (!on) return this.freeze();
+    this.follow = true; this._fvShown = null; this._tw = null; this.request();
+  }
+  // Leave Follow without a jump: the free view starts exactly where the camera view was, orbiting the point it looked at.
+  freeze() {
+    if (!this.follow) return;
+    const fv = this._fvShown || this._followView();
+    this.follow = false; this._tw = null;
+    if (fv) { this.align = fv.M; this.center = fv.cen; Object.assign(this.view, { yaw: 0, pitch: 0, dist: fv.dist, panX: 0, panY: 0 }); }
+    this.request();
+  }
+  _followView(k = this.current) {
+    const p = this.poses[Math.max(0, Math.min(this.poses.length - 1, k || 0))];
+    if (!p) return null;
+    const R = p.R, right = [R[0][0], R[1][0], R[2][0]], up = [-R[0][1], -R[1][1], -R[2][1]], fwd = [R[0][2], R[1][2], R[2][2]];
+    const D = this.radius * 0.5, back = this.radius * 0.12, lift = this.radius * 0.04;
+    const eye = [0, 1, 2].map((k) => p.C[k] - fwd[k] * back + up[k] * lift);
+    return { M: [right, up, fwd.map((v) => -v)], dist: D, cen: [0, 1, 2].map((k) => eye[k] + fwd[k] * D) };
+  }
   setVisibleUpTo(k) { this.visibleUpTo = k; this.request(); }
-  setCurrent(k) { this.current = k; if (this.roi?.on) this._frameRoi(false); this.request(); }
+  setCurrent(k) {
+    if (this.follow && this._fvShown && k !== this.current) this._tw = { from: this._fvShown, t0: performance.now(), dur: 180 };
+    this.current = k; if (this.roi?.on) this._frameRoi(false); this.request(); }
   // Area of interest: only points near the current camera are drawn and framed; the overview shows the whole map.
   setRoi(on) {
     if (!this.cloud) return;
@@ -146,7 +171,7 @@ export class PointViewer {
     const dpr = window.devicePixelRatio || 1, W = Math.max(1, Math.round(canvas.clientWidth * dpr)), H = Math.max(1, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
     const g = canvas.getContext("2d"); g.fillStyle = "rgba(11,14,18,.92)"; g.fillRect(0, 0, W, H);
-    const [ax, , az] = this.align, c0 = this._center0 || this.center;
+    const [ax, , az] = this._align0 || this.align, c0 = this._center0 || this.center;
     if (!this._ov || this._ov.cloud !== this.cloud) {  // top-down projection of a decimated copy, computed once per map
       const { xyz, rgb, count } = this.cloud, step = Math.max(1, Math.floor(count / 60000)), P = [], C = [];
       for (let i = 0; i < count; i += step) { const q = [xyz[3 * i] - c0[0], xyz[3 * i + 1] - c0[1], xyz[3 * i + 2] - c0[2]]; P.push(dot(q, ax), dot(q, az)); C.push(rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]); }
@@ -158,9 +183,16 @@ export class PointViewer {
     for (let i = 0; i < o.P.length; i += 2) { g.fillStyle = `rgb(${o.C[1.5 * i]},${o.C[1.5 * i + 1]},${o.C[1.5 * i + 2]})`; g.fillRect(cx + s * o.P[i], cy - s * o.P[i + 1], dpr, dpr); }
     g.strokeStyle = "#4cc3ff"; g.lineWidth = dpr; g.beginPath();
     o.cams.forEach(([x, y], k) => (k ? g.lineTo(cx + s * x, cy - s * y) : g.moveTo(cx + s * x, cy - s * y))); g.stroke();
-    const cur = o.cams[Math.max(0, Math.min(o.cams.length - 1, this.current || 0))];
+    o.s = s / dpr; o.cx = cx / dpr; o.cy = cy / dpr;  // CSS-pixel transform, for clicks
+    const k0 = Math.max(0, Math.min(o.cams.length - 1, this.current || 0)), cur = o.cams[k0];
     if (cur) {
-      g.fillStyle = "#ffb020"; g.beginPath(); g.arc(cx + s * cur[0], cy - s * cur[1], 3 * dpr, 0, 7); g.fill();
+      const R = this.poses[k0].R, fw = [R[0][2], R[1][2], R[2][2]];
+      let fx = dot(fw, ax), fy = dot(fw, az); const fl = Math.hypot(fx, fy) || 1; fx /= fl; fy /= fl;
+      const X0 = cx + s * cur[0], Y0 = cy - s * cur[1], L = 22 * dpr, sp = 0.45;  // view direction wedge
+      g.fillStyle = "rgba(255,176,32,.35)"; g.beginPath(); g.moveTo(X0, Y0);
+      g.lineTo(X0 + L * (fx * Math.cos(sp) - fy * Math.sin(sp)), Y0 - L * (fx * Math.sin(sp) + fy * Math.cos(sp)));
+      g.lineTo(X0 + L * (fx * Math.cos(-sp) - fy * Math.sin(-sp)), Y0 - L * (fx * Math.sin(-sp) + fy * Math.cos(-sp))); g.closePath(); g.fill();
+      g.fillStyle = "#ffb020"; g.beginPath(); g.arc(X0, Y0, 3.5 * dpr, 0, 7); g.fill();
       if (this.roi?.on) { g.strokeStyle = "#ffb020"; g.beginPath(); g.arc(cx + s * cur[0], cy - s * cur[1], s * this.roi.r, 0, 7); g.stroke(); }
     }
   }
@@ -193,7 +225,18 @@ export class PointViewer {
     ctx.fillStyle = "#0b0e12"; ctx.fillRect(0, 0, W, H);
     if (!this.cloud) return;
 
-    const M = this._matrix(), { dist, panX, panY } = this.view, cen = this.center;
+    let fv = this.follow ? this._followView() : null;
+    if (fv && this._tw) {  // glide from the previous camera view to this one
+      const a = Math.min(1, (performance.now() - this._tw.t0) / this._tw.dur), e = a * a * (3 - 2 * a), F = this._tw.from;
+      const L = (p, q) => p.map((v, i) => v + (q[i] - v) * e);
+      const r0 = norm(L(F.M[0], fv.M[0])), r2 = norm(L(F.M[2], fv.M[2])), r1 = norm(cross(r2, r0));
+      fv = { M: [r0, r1, r2], dist: F.dist + (fv.dist - F.dist) * e, cen: L(F.cen, fv.cen) };
+      if (a < 1) requestAnimationFrame(() => this.request()); else this._tw = null;
+    }
+    this._fvShown = fv;
+    this.canvas.dataset.follow = fv ? "on" : "off";
+    const M = fv ? fv.M : this._matrix(), { panX, panY } = fv ? { panX: 0, panY: 0 } : this.view;
+    const dist = fv ? fv.dist : this.view.dist, cen = fv ? fv.cen : this.center;
     const f = 0.9 * Math.min(W, H), cx = W / 2, cy = H / 2, near = this.radius * 0.02;
     const project = (p) => {
       const v = apply(M, sub(p, cen)); const depth = dist - v[2];
@@ -263,9 +306,23 @@ export class PointViewer {
     ctx.stroke();
   }
 
+  // click on the overview: jump to the nearest camera
+  bindOverview(canvas) {
+    this.overviewCanvas = canvas;
+    if (canvas._bound) return; canvas._bound = true;
+    canvas.addEventListener("click", (e) => {
+      const o = this._ov; if (!o?.s) return;
+      const r = canvas.getBoundingClientRect(), x = (e.clientX - r.left - o.cx) / o.s, y = -(e.clientY - r.top - o.cy) / o.s;
+      let best = -1, bd = Infinity; o.cams.forEach(([a, b], k) => { const d = (a - x) ** 2 + (b - y) ** 2; if (d < bd) { bd = d; best = k; } });
+      if (best >= 0) this.onPick?.(best);
+    });
+  }
+
   _bindInput() {
     const c = this.canvas; let drag = null;
-    c.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 }; c.setPointerCapture(e.pointerId); });
+    c.addEventListener("pointerdown", (e) => {
+      if (this.follow) { this.freeze(); this.onFollowOff?.(); }  // grabbing the view during playback frees it
+      drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 }; c.setPointerCapture(e.pointerId); });
     c.addEventListener("pointermove", (e) => {
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;

@@ -136,6 +136,15 @@ try {
   check("session list never says READY", await evaluate(`![...document.querySelectorAll('#sessions .badge')].some(b => b.textContent === 'READY')`));
   check("real map shows its quality verdict", (await text("badges")).includes("QUALITY GOOD"), await text("badges"));
   check("sparse-points caption shown", (await text("map-overlay-tl")).includes("SPARSE POINTS"));
+  check("overview map shown in the corner for a loaded map", await evaluate(`!document.getElementById('map-overview').hidden`));
+  check("Follow is on by default", await evaluate(`document.getElementById('follow').getAttribute('aria-pressed') === 'true'`));
+  await evaluate(`(() => { const s = document.getElementById('scrub'); s.value = 20; s.dispatchEvent(new Event('input')); })()`);
+  await evaluate(`document.getElementById('play').click()`); await sleep(1200);
+  check("map rides with the camera while the video plays", await evaluate(`document.getElementById('map-canvas').dataset.follow === 'on'`));
+  await shot("03h2_follow_camera.png");
+  await evaluate(`document.getElementById('play').click()`); await sleep(600);
+  check("pausing hands the map to the user (free view)", await evaluate(`document.getElementById('map-canvas').dataset.follow === 'off' && document.getElementById('play').getAttribute('aria-pressed') === 'false'`));
+  await evaluate(`document.getElementById('reset-view').click()`);
   if (existsSync(join(ROOT, "outputs/maps", MQ_PARTIAL))) {
     await clickSession(MQ_PARTIAL);
     check("partial map loads with QUALITY PARTIAL/POOR", await waitFor(`document.getElementById('map-empty').hidden && /QUALITY (PARTIAL|POOR)/.test(document.getElementById('badges').textContent)`, 20000), await text("badges"));

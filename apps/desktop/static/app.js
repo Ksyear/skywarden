@@ -35,6 +35,8 @@ let tracking = null;
 let live = null;  // tracking workspace (tracking.js), created once the helpers below exist
 const viewer = new PointViewer($("map-canvas"), {
   onRender: (ms) => { state.renderMs.push(ms); if (state.renderMs.length > 120) state.renderMs.shift(); },
+  onPick: (k) => { stopPlay(); setIndex(k); },  // click on the overview map
+  onFollowOff: () => {},  // dragging during playback frees the view; Follow resumes on the next Play
 });
 
 function pct(arr, p) { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; }
@@ -241,7 +243,8 @@ async function loadSession(sid, modelRank = 0) {
     const staticView = layer.startsWith("dense");
     viewer.setData(cloud, poses, { frameOnCloud: staticView });
     setOverlays(!staticView, !staticView);
-    $("roi").setAttribute("aria-pressed", "false"); $("map-overview").hidden = true; viewer.overviewCanvas = $("map-overview");
+    $("roi").setAttribute("aria-pressed", "false"); $("map-overview").hidden = false; viewer.bindOverview($("map-overview"));
+    viewer.setFollow(false);
     viewer.setBreaks(modelRank === 0 && coverage ? (coverage.jumps_in_largest_model || []).map((j) => j.t_to) : []);
     $("map-empty").hidden = true;
     renderLabels(); renderMetrics(); refreshSessions();
@@ -430,7 +433,9 @@ function togglePlay() {
   if (state.playing && state.idx >= state.loaded.poses.length - 1) setIndex(0);
   $("play").setAttribute("aria-pressed", String(state.playing)); $("play").textContent = state.playing ? "❚❚" : "▶︎";
   $("play").setAttribute("aria-label", state.playing ? "Pause replay (Space)" : "Play replay (Space)");
-  if (state.playing) playLoop();
+  // the map rides with the camera while the video plays (Follow on); pausing hands the view to the user
+  if (state.playing) { if ($("follow").getAttribute("aria-pressed") === "true") viewer.setFollow(true); playLoop(); }
+  else viewer.freeze();
 }
 function stopPlay() { if (state.playing) togglePlay(); }
 
@@ -442,7 +447,7 @@ function renderControls() {
   $("build").title = trackRunning ? "A tracking run is in progress; one job at a time" : "";
   $("cancel").disabled = !online || !running;
   if (!running) $("cancel-confirm").hidden = true;
-  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "top-view", "framing", "show-path", "show-cams", "roi"]) $(id).disabled = !has;
+  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "top-view", "follow", "framing", "show-path", "show-cams", "roi"]) $(id).disabled = !has;
   $("layer").disabled = !has;
   $("input-select").disabled = running; $("fps").disabled = running; $("max-frames").disabled = running; $("use-calib").disabled = running;
 }
@@ -494,8 +499,12 @@ $("prev").addEventListener("click", () => { stopPlay(); setIndex(state.idx - 1);
 $("next").addEventListener("click", () => { stopPlay(); setIndex(state.idx + 1); });
 $("play").addEventListener("click", togglePlay);
 $("scrub").addEventListener("input", (e) => { stopPlay(); setIndex(parseInt(e.target.value, 10)); });
-$("reset-view").addEventListener("click", () => viewer.resetView());
-$("top-view").addEventListener("click", () => viewer.topView());
+$("reset-view").addEventListener("click", () => { viewer.freeze(); viewer.resetView(); });
+$("top-view").addEventListener("click", () => { viewer.freeze(); viewer.topView(); });
+$("follow").addEventListener("click", () => {
+  const on = $("follow").getAttribute("aria-pressed") !== "true";
+  $("follow").setAttribute("aria-pressed", String(on)); viewer.setFollow(on);
+});
 $("layer").addEventListener("change", () => { if (state.loaded) loadSession(state.loaded.sid, state.loaded.modelRank); });
 function setOverlays(path, cams) {
   $("show-path").setAttribute("aria-pressed", String(path)); $("show-cams").setAttribute("aria-pressed", String(cams));
@@ -503,7 +512,7 @@ function setOverlays(path, cams) {
 }
 $("roi").addEventListener("click", () => {
   const on = $("roi").getAttribute("aria-pressed") !== "true";
-  $("roi").setAttribute("aria-pressed", String(on)); $("map-overview").hidden = !on;
+  $("roi").setAttribute("aria-pressed", String(on)); $("map-overview").hidden = false;
   viewer.setRoi(on); viewer.request();
 });
 $("show-path").addEventListener("click", () => setOverlays($("show-path").getAttribute("aria-pressed") !== "true", $("show-cams").getAttribute("aria-pressed") === "true"));
@@ -533,11 +542,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === " " && !e.target.closest("button")) { e.preventDefault(); togglePlay(); }
   else if (e.key === "ArrowLeft") { stopPlay(); setIndex(state.idx - 1); }
   else if (e.key === "ArrowRight") { stopPlay(); setIndex(state.idx + 1); }
-  else if (e.key === "r" || e.key === "R") viewer.resetView();
+  else if (e.key === "r" || e.key === "R") $("reset-view").click();
   else if (e.key === "g" || e.key === "G") $("growth").click();
   else if (e.key === "p" || e.key === "P") $("show-path").click();
   else if (e.key === "n" || e.key === "N") $("roi").click();
   else if (e.key === "c" || e.key === "C") $("show-cams").click();
+  else if (e.key === "f" || e.key === "F") $("follow").click();
 });
 
 tracking = initTracking({ api, badge, announce, pct, isOnline: () => state.conn === "ONLINE", apiMs: () => state.apiMs,
