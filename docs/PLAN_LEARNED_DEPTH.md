@@ -66,3 +66,126 @@ Evidence per run: `outputs/experiments/learned_depth/<run>/` with `align.json` (
 **Comparison layer only.** A nearby-scene layer cut by distance from the camera path (`packages/mapping/local_view.py`, from a user-supplied patch) is kept for comparison; an earlier check showed the distance-only cut lowers structure coverage at t = 30 s from 85.1 % to 70.0 %, so it is never a candidate for the map.
 
 **App.** Area-of-interest view (Nearby, key N: only points near the current camera, with an overview map from above showing the area) and a per-frame learned-depth state lane on the same time axis as the frame slider. Static camera-based maps only; MOCK / DRY_RUN unchanged.
+
+## Result (2026-11-09, after the runs of section 4 under Amendment A1)
+
+Status: **FAIL as recorded on both clips** (one clause each); learned layers installed as labelled trials; **default dense layer unchanged**. Numbers below come from `outputs/evidence/learned_depth/summary.json`, `static_metrics_<run>.json`, `outputs/experiments/learned_depth/chunks_{sumida,fsc}.json` and `lingbot_v2_{sumida,fsc}_merged/run_report.json`. Scale is RELATIVE everywhere; no distance carries a unit; nothing here is navigation-safe.
+
+### R1. Model, code and environment as actually run
+
+- The checkout supplied by the user (code 1f480ae, weights `lingbot-map.pt`) was used **only for the check run** of section 1 (Sumida t 4–14 s, 26 frames: 26.7 s/frame vs 15.3 s/frame on the newer code, identical depth output). Every chunk run records `code_commit b9dd1b1de535e6d36e777fb42b8433c781bfd783` and `weights_sha256 ee665103348e07e6…cd72` (same weight file), `device mps`, decoded pose used as camera-to-world (`pose_convention_used: c2w`; the c2w fit beats the inverse on both clips: Sumida 0.0097 vs 0.0195 of path length, FSC 0.0078 vs 0.0091).
+- Environment `outputs/tools/venv_learned` (torch, MPS), separate from the project `.venv`; the model is run as an external tool in its own process by `packages/learned/run_lingbot_map.py`. Checkout, weights and environment are not committed. Mac changes of section 1 (complex64 rotary tables, SDPA attention, `PYTORCH_ENABLE_MPS_FALLBACK=1`) stayed as described; A1 runner changes (checkpoint released after loading, model and MPS cache released after inference, per-stage memory log) are visible in the `memory` arrays of `chunks_*.json`.
+- The 4–14 s check (floor `cov1px` 0.258 → 0.431, free-space 0.403 → 0.333) remains a **segment result** and is not the verdict.
+
+### R2. Memory and the resume protocol (A1)
+
+- The unchunked 150-frame run was stopped by the session for low memory (`outputs/experiments/learned_depth/lingbot_v2_full.log`); nothing from it is used (`docs/FAILURES.md` F-27).
+- Chunked runs: **peak process RSS 9.02 GB** (FSC chunk 36–44), **MPS driver peak 12.56 GB** (every Sumida chunk up to 50–58) and 11.49 GB (Sumida 56–60 and all FSC chunks). Chunks started only at ≥ 35 % free memory (observed 62–76 % at start); macOS free memory fell to 4–24 % at `inference_done` and recovered to 73–77 % after the MPS release; swap 9–15 GB throughout, attributed to other processes. The first Sumida chunk (0–10 s, 26 frames, 19.3 s/frame) predates the memory logging and has no peak values.
+- fp16/bf16 (A1 "Precision") was **not tried**: the default precision completed every chunk.
+
+### R3. Chunk runs and joining (per-chunk status = `chunked_run` verification; join status = `merge_chunks` against the preceding chunk on their overlapping frames; thresholds 5 % median relative depth difference on the nearest 40 % of depths, 5 % scale ratio, 5 % near-point scale check)
+
+Sumida (`outputs/maps/mqg_sumida_0025_0125`, plan `--t-end 60 --first 0 10`, chunk 8 s / overlap 2 s):
+
+| Chunk (s) | Frames | s/frame | Peak RSS GB | MPS driver GB | Alignment residual (of path) | Chunk | Join | Overlap diff / scale ratio | Near-point scale |
+|---|---|---|---|---|---|---|---|---|---|
+| 0–10 | 26 | 19.298 | — | — | 0.0097 | DONE | **used** | — | — |
+| 8–16 | 21 | 6.242 | 5.01 | 12.56 | 0.0047 | DONE | HELD_OVERLAP_DISAGREES | 0.0743 / 0.9259 | 0.9947 |
+| 14–22 | 21 | 4.345 | 5.52 | 12.56 | 0.0046 | DONE | HELD_OVERLAP_DISAGREES | 0.0892 / 0.9108 | 1.0172 |
+| 20–28 | 21 | 0.968 | 8.44 | 12.56 | 0.0075 | DONE | **used** | 0.0471 / 0.9529 | 1.0042 |
+| 26–34 | 21 | 3.021 | 4.06 | 12.56 | 0.0118 | DONE | HELD_SCALE_VS_TRIANGULATION | 0.0143 / 0.9997 | **1.1794** |
+| 32–40 | 21 | 4.499 | 4.33 | 12.56 | 0.0137 | DONE | HELD_SCALE_VS_TRIANGULATION | 0.0272 / 1.0267 | **2.2161** |
+| 38–46 | 21 | 2.300 | 8.33 | 12.56 | 0.0077 | DONE | **used** | 0.0476 / 1.0415 | 1.0163 |
+| 44–52 | 21 | 2.282 | 8.84 | 12.56 | 0.0091 | DONE | HELD_OVERLAP_DISAGREES | 0.0869 / 1.0868 | 0.9895 |
+| 50–58 | 21 | 4.781 | 7.57 | 12.56 | **0.0612** | **REJECTED** (> 0.02) | — | — | — |
+| 56–60 | 10 | 0.839 | 7.12 | 11.49 | **0.0503** | **REJECTED** (> 0.02) | — | — | — |
+
+Merged Sumida input: **68 frames** from chunks 0–10, 20–28, 38–46 s (`lingbot_v2_sumida_merged/run_report.json`; merged Sim3 scale 1.709, model focal / ours 0.976, sparse agreement median 0.376). Learned depth therefore exists for **0–10, 20–28 and 38–46 s only**; 10–20 s and 46–52 s are held by overlap disagreement (7.4–8.9 %), **26–40 s** by the triangulation scale check (1.18 / 2.22), **50–60 s** rejected by the alignment residual (6.1 % / 5.0 % of path length on the fast turn).
+
+FSC (`outputs/maps/mqg_fsc_campus_aerial`, `--t-end 71`, chunk 8 s / overlap 2 s):
+
+| Chunk (s) | Frames | s/frame | Peak RSS GB | MPS driver GB | Alignment residual | Chunk | Join | Overlap diff / scale ratio | Near-point scale |
+|---|---|---|---|---|---|---|---|---|---|
+| 0–8 | 16 | 1.020 | 4.97 | 11.49 | 0.0078 | DONE | **used** | — | — |
+| 6–14 | 17 | 0.880 | 6.53 | 11.49 | 0.0052 | DONE | **used** | 0.0374 / 0.9632 | 0.9640 |
+| 12–20 | 17 | 0.822 | 8.06 | 11.49 | 0.0084 | DONE | **used** | 0.0283 / 0.9741 | 0.9665 |
+| 18–26 | 17 | 0.909 | 7.85 | 11.49 | 0.0059 | DONE | **used** | 0.0373 / 0.9628 | 0.9774 |
+| 24–32 | 17 | 0.967 | 4.13 | 11.49 | 0.0050 | DONE | HELD_OVERLAP_DISAGREES | 0.0523 / 0.9477 | 1.0208 |
+| 30–38 | 17 | 0.846 | 7.83 | 11.49 | 0.0052 | DONE | **used** | 0.0328 / 1.0322 | 0.9532 |
+| 36–44 | 17 | 0.862 | **9.02** | 11.49 | 0.0046 | DONE | HELD_OVERLAP_DISAGREES | 0.1041 / 0.8960 | 1.0449 |
+| 42–50 | 17 | 0.817 | 8.36 | 11.49 | 0.0097 | DONE | HELD_OVERLAP_DISAGREES | 0.0548 / 1.0541 | 0.9869 |
+| 48–56 | 17 | 0.857 | 5.66 | 11.49 | 0.0095 | DONE | HELD_SCALE_VS_TRIANGULATION | 0.0281 / 0.9864 | **0.9447** |
+| 54–62 | 17 | 0.835 | 8.95 | 11.49 | 0.0067 | DONE | HELD_OVERLAP_DISAGREES | 0.1199 / 0.8808 | 1.0065 |
+| 60–68 | 16 | 0.838 | 7.90 | 11.49 | 0.0099 | DONE | **used** | 0.0201 / 0.9819 | 0.9813 |
+| 66–71 | 11 | 0.838 | 4.22 | 11.49 | 0.0083 | DONE | HELD_OVERLAP_DISAGREES | 0.0535 / 0.9476 | 1.0469 |
+
+All **12 of 12** FSC chunks completed; **6 accepted**. Merged FSC input: **88 frames** covering 0–26, 30–38 and 60–68 s (merged Sim3 scale 4.577, focal ratio 0.991, sparse agreement median 0.854). Empty of learned depth: 26–30, 38–60 and 68–71 s (held chunks 24–32, 36–44, 42–50, 48–56, 54–62, 66–71).
+
+**Scale refinement, tried and rejected.** Rescaling a chunk's depth by the near-triangulated-point factor (the quantity reported as `near_point_scale_check`) was tried and made the fast-turn chunks worse, so it was dropped (implementer-reported; no metrics of the rejected variant were archived). The factor is kept only as a diagnostic and as the A1 hold rule (`HELD_SCALE_VS_TRIANGULATION`).
+
+### R4. Measured results (frozen regions, 1 px points at 640 px; Sumida judged on the neutral depth maps, FSC on its own maps)
+
+Sumida, 7 frames (`regions_sumida_v3.json`), D12 = `dense_static_v3` baseline on the same poses; D12L = D12 + verified learned points; D12LFC = D12L + far cleanup; NEARBY = distance cut of D12LFC (comparison only):
+
+| Frame (t) | Role | Floor `cov1px` D12 → D12L → D12LFC (NEARBY) | Structure D12 → D12L → D12LFC (NEARBY) | `sky_false` D12 → D12L → D12LFC | Person front+surface |
+|---|---|---|---|---|---|
+| f000240 (8 s) | tuning | 0.2625 → **0.4305** → 0.4304 (0.4294) | 0.9158 → 0.9182 → 0.9134 (0.4807) | 0.01399 → 0.0118 → 0.01192 | 0 |
+| f000900 (30 s) | tuning | 0.1531 → 0.1531 → 0.1531 (0.1526) | 0.8916 → 0.8916 → 0.8818 (0.0511) | 0.04432 → 0.04421 → 0.04331 | 0 |
+| f001560 (52 s) | tuning | 0.7037 → 0.7038 → 0.7038 (0.7038) | 0.6761 → 0.6761 → 0.6744 (0.5754) | 0.04363 → 0.04363 → 0.04368 | 0 |
+| f000600 (20 s) | held-out | 0.1569 → **0.2752** → 0.2752 (0.2739) | 0.8528 → 0.853 → 0.8444 (0.179); wall 0.8265 → 0.8265 → 0.8202 | 0.01587 → 0.01479 → 0.01467 | 0 |
+| f001260 (42 s) | held-out | 0.4925 → **0.7153** → 0.7153 (0.7151) | 0.5788 → 0.6678 → 0.6653 (0.6051); wall 0.1429 → 0.1429 → 0.1419 | 0.06782 → 0.05876 → 0.05926 | 0 |
+| f001080 (36 s) | fast | 0.0968 → 0.1031 → 0.1031 (0.1001) | 0.7209 → 0.724 → 0.7144 (0.1776) | 0.01806 → 0.01814 → 0.017 | 0 |
+| f001680 (56 s) | fast | 0.2481 → 0.2481 → 0.2481 (0.2474) | 0.5744 → 0.5744 → 0.5713 (0.5353) | 0.1339 → 0.1339 → 0.13489 | 888 → 888 → 888 |
+
+Whole-cloud, Sumida: points 1,653,054 → 1,936,318 → 1,909,684 (NEARBY 1,363,015); free-space violations (neutral judge) **0.3563 → 0.3295 → 0.3207** (NEARBY 0.2838); isolated points `float_knn` **0.1033 → 0.0882 → 0.085** (NEARBY 0.0342). `floor_far`: 0.7617 → 0.7629, 0.5317 → 0.5317 → 0.5287, 0.6174, 0.4703 → 0.5711, 0.5905 → 0.6393 → 0.6386, 0.4532 → 0.4763 → 0.4762.
+
+FSC, 3 frames (`regions_fsc_v1.json`), D1 = baseline on the same poses; D1L = D1 + verified learned points; D1LFC = D1L + far cleanup (judged, **not installed**):
+
+| Frame | Role | Floor D1 → D1L → D1LFC | Structure D1 → D1L → D1LFC | Far D1 → D1L → D1LFC | `sky_false` (all three) |
+|---|---|---|---|---|---|
+| f000320 | tuning | 0.9426 → **0.9841** (+4.1 pp) → 0.9807 | 0.8289 → **0.979** → 0.9782 | 0.66 → 0.6615 → 0.6574 | 1e-05 |
+| f001000 | tuning | 0.7639 → **0.9569** (+19.3 pp) → 0.9569 | 0.9536 → 0.9744 → 0.9731 | 0.7729 → 0.7761 → 0.7726 | 0.00023 / 0.00022 / 0.00022 |
+| f001720 | held-out | 0.7467 → 0.7901 (+4.3 pp) → **0.7622** | 0.6888 → 0.7502 → **0.7298** | 0.7964 → 0.7972 → 0.7949 | 6e-05 / 5e-05 / 5e-05 |
+
+Whole-cloud, FSC: points 6,493,418 → 8,234,561 → 8,192,708; free-space (field `float_fs_neutral` in `summary.json`) **0.1982 → 0.1691** → 0.1668; `float_knn` 0.0543 → 0.0428 → 0.0415; person points 0 on all frames.
+
+### R5. Verdicts, clause by clause (section 4 and A1; one clause missed = FAIL)
+
+| Run | Clause 1 coverage | Clause 2 errors | Clause 3 sky / people | Clause 4 separation | Clause 5 time | Verdict as recorded in `summary.json` |
+|---|---|---|---|---|---|---|
+| **Sumida D12 + learned** | floor and structure ≥ D12 on all 7 frames (PASS); floor +5 pp on the tuning frames: f000240 +16.8 pp PASS, **f000900 (30 s) +0.0 pp FAIL, f001560 (52 s) +0.0 pp FAIL** — both lie in spans without accepted chunks (26–40 s held, 50–60 s rejected); held-out +11.8 / +22.3 pp | free-space neutral 0.3563 → 0.3295, isolated 0.1033 → 0.0882, both down (PASS) | `sky_false` ≤ D12 + 0.5 pp on every frame (largest rise +0.008 pp on f001080); person 888 = 888 (PASS) | MODEL_ESTIMATED written as a separate cloud (`model_estimated/`), never in the map layer by construction; the provenance-tag **count of 0 in the map PLY was not archived** (see R7) | learned time reported per chunk (R3); our part (align + fuse + dense) **not archived** | **FAIL** — "FAIL: floor +5 pp clause at 30 s and 52 s (chunks 26-40 held by the triangulation scale check, 50-60 rejected by alignment residual)"; coverage and all error measures improved |
+| **Sumida far cleanup** (D12LFC vs D12L) | structure change −0.2 … −1.0 pp on the 7 frames (f000900 −0.98, f001080 −0.96, f000600 −0.86; limit −1 pp) PASS; floor unchanged | free-space 0.3295 → 0.3207, isolated 0.0882 → 0.085 (PASS) | sky within +0.5 pp; person unchanged | removed points kept in a separate file | — | **PASS its clause** — 26,634 of 768,214 far points removed, 741,580 kept; **applied in the Sumida layer** |
+| **FSC D1 + learned** | floor +4.1 / +19.3 / +4.3 pp, structure +15.0 / +2.0 / +6.1 pp, far ≥ D1 on all 3; **floor +5 pp on tuning f000320 missed (+4.1 pp, floor already 0.94)** | free-space 0.1982 → 0.1691, isolated 0.0543 → 0.0428 (PASS) | sky ≤ D1; person 0 (PASS) | separate `model_estimated/` cloud; count not archived | learned ≈ 0.8–1.0 s/frame per chunk; our part not archived | **FAIL** — "floor +5 pp on f000320 (+4.1, already 0.94)" |
+| **FSC far cleanup** (D1LFC vs D1L) | held-out f001720 structure 0.7502 → 0.7298 (**−2.0 pp** > −1 pp limit) and floor 0.7901 → 0.7622 (**−2.8 pp**) | free-space 0.1691 → 0.1668 | — | — | — | **FAIL** → **not applied on FSC**; the FSC layer is D1 + learned only |
+| Nearby distance cut | structure at 30 s 0.8818 → 0.0511, at 8 s 0.9134 → 0.4807 (verdict text: "0.882 -> 0.051 at 30 s, 0.913 -> 0.481 at 8 s"); floor about unchanged | free-space 0.2838, isolated 0.0342 (lower because far structure is removed, not because it is better) | — | — | — | **comparison only**, never a map candidate (A1) |
+| Default | — | — | — | — | — | **unchanged**; learned layers are trials |
+
+### R6. What is installed and shown
+
+- `outputs/maps/mqg_sumida_0025_0125/dense_learned/` — label `DENSE + LEARNED DEPTH (verified) + FAR CLEANUP - trial`, 1,909,684 points (= D12LFC), `experimental.status "TRIAL, NOT ADOPTED"`, per-view `trust_depth`, quintile bands, `verified / contradicted_by_mvs / estimated_only` pixel counts, chunk table and far-cleanup counts in its `dense_report.json`. `model_estimated/` — `MODEL_ESTIMATED - learned depth NOT confirmed by multi-view geometry; hidden by default, never part of the map`. `dense_static_local/` — the distance-cut comparison layer (`packages/mapping/local_view.py`, from a user-supplied patch).
+- `outputs/maps/mqg_fsc_campus_aerial/dense_learned/` — `DENSE + LEARNED DEPTH (verified) - trial`, 8,234,561 points (= D1L); `model_estimated/`.
+- Console (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 09:36 UTC, attached to the user's open browser window, **88 / 88**, 0 console errors): layer options `Dense · with learned depth (trial)`, `Model estimated (not verified)` (never selected by default — checked), `Dense · nearby scene (comparison)`; chip `LAYER ▸ DENSE + LEARNED DEPTH · 1,909,684 pts in file` with the TRIAL, NOT ADOPTED reason; **Nearby** button (key N) with the overview map of the whole map and the current camera marked; learned-depth **state lane** under the coverage strip (`learned depth at t=0.0 s: used · trust range ≤ 3.548 · verified 8,134 of 19,565 px · bar: brighter = more verified, red = frame rejected, ticks = chunk starts`). Screenshot `outputs/evidence/ui/03h_learned_nearby_overview.png`. Default layer still `DENSE · VERIFIED · 917,498 pts in file`.
+- Tests: `outputs/evidence/tests/pytest-20261109-183645.log` — **134 passed in 87.44 s** (+3 over 131: `tests/test_learned_chunks.py` 2 — chunk plan overlaps and covers the clip, plan without a first chunk starts at zero; `tests/test_dense.py::test_umeyama_recovers_similarity`).
+- Same-view renders: `outputs/evidence/learned_depth/sameview_<frame>_D12LFC_full.jpg` (source / D12 / + learned / + far cleanup, 7 frames), `sameview_<frame>_D1LFC_fsc.jpg` (3 frames), plus `_D12L_full`, `_D1L_fsc`, `_D1_fsc`, `_NEARBY_sumida`.
+
+### R7. Deviations from sections 4–5 and A1 (recorded, not corrected)
+
+1. Evidence file names: section 4 promised `align.json`, `trust.json`, `fuse_report.json`, `<run>.cmd` per run and a row in `outputs/evidence/static_map/summary.json`. What exists instead: `outputs/experiments/learned_depth/chunks_<tag>.json` (per-chunk alignment scale and residual, memory per stage, status), `lingbot_v2_<tag>_merged/run_report.json` (Sim3 fit for both pose conventions, boundary table), per-view trust bands and pixel outcomes inside the installed layer's `dense_report.json`, `outputs/evidence/learned_depth/{summary.json,static_metrics_<run>.json,static_table.csv}`, chunk logs `lingbot_v2_<tag>_t<t0>_<t1>.log` (first Sumida chunk: `lingbot_v2_sumida_c0.log`, `_c0_align.log`) and eval logs `<run>.eval.log`. No `.cmd` file; the exact `learned_fuse` / `far_cleanup` / `static_eval` argument lines were not archived.
+2. Clause 4 asks for a provenance-tag count of 0 inside the map layer; separation is by construction (two output clouds), but no artifact records the count. Treated as **not measured**, not as PASS.
+3. Clause 5 (our part's time) was not archived for any run; learned per-frame time is reported per chunk.
+4. The judgement is made on **merged accepted chunks**, not on one full-clip model run (A1). Sumida eval frames at 30 s, 36 s, 52 s and 56 s lie in spans without accepted chunks, so the full-clip floor clause of section 4 was, in effect, tested on 3 of the 7 frames' spans.
+5. Far cleanup was applied in the Sumida layer only; FSC keeps D1 + learned (R5).
+6. `summary.json` names the FSC free-space field `float_fs_neutral` although section 4 assigns FSC its own maps; the value is reported under the file's field name.
+
+### R8. Open items and next tests
+
+- **Empty spans.** Sumida 10–20 s, 26–40 s and 46–60 s have no accepted learned depth; FSC 26–30, 38–60 and 68–71 s likewise. The next test for the fast-turn spans (Sumida 50–60 s, alignment residual 5–6 %) is a shorter chunk anchored inside the turn, judged by the same ≤ 2 % residual; for the triangulation-held spans (26–40 s, scale 1.18 / 2.22) the next test is a chunk whose frames straddle the open-park stretch, so the near sparse points used for the check are not all far away. Neither is run.
+- **FSC far cleanup** removed real structure on the held-out frame (F-31); a variant with a higher support threshold on aerial views is a new plan item, not a tuning.
+- **Adoption** of either trial layer as default is a user decision after both clips pass; today neither does (one clause each).
+- Resume commands (from `summary.json`; verified chunks are skipped, a chunk starts only above 35 % free memory):
+
+```zsh
+PYTHONPATH=packages .venv/bin/python -m learned.chunked_run --session outputs/maps/mqg_sumida_0025_0125 --tag sumida --t-end 60 --first 0 10
+PYTHONPATH=packages .venv/bin/python -m learned.chunked_run --session outputs/maps/mqg_fsc_campus_aerial --tag fsc --t-end 71
+PYTHONPATH=packages .venv/bin/python -m learned.merge_chunks --tag sumida --out outputs/experiments/learned_depth/lingbot_v2_sumida_merged
+```

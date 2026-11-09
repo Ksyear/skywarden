@@ -313,15 +313,77 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 
 **Next test:** re-run `V2_full` and the remaining runs alone on an idle machine with the archived flags (`config` block of each `dense_report.json`); D12 is settled (400.0 s vs 1.5 x 221.3 = 332 s, the 221.3 s baseline itself measured under load).
 
-## F-26 Learned multi-view depth: first BLOCKED, now approved by the user and in progress (2026-11-09)
+## F-26 Learned multi-view depth: first BLOCKED, then approved, run and judged (2026-11-09)
 
-**Status:** was BLOCKED (installation refused by the session's permission check); the user has since approved it and installation is in progress in a separate environment under `outputs/tools/` (coordinator-reported; not yet present when this entry was updated). Results NOT_RUN in this round, to be documented later. "Mirage" family researched separately: no-go.
+**Status:** closed as a blocker. Was BLOCKED (installation refused by the session's permission check); the user approved; the model (LingBot-Map, Apache-2.0) was installed as an external tool in a separate environment under `outputs/tools/` (not committed) and run under `docs/PLAN_LEARNED_DEPTH.md` with Amendment A1. The outcomes of that round are F-27 to F-32 below; the per-clause verdicts are in the plan's Result. "Mirage" family researched separately: no-go.
 
 **Observed:** the route most likely to give a filled, dense look comparable to the reference recording of an indoor dense reconstruction supplied by the user is a learned multi-view depth model run on the existing COLMAP poses. Installing external model code and weights was refused by the session's permission check (`summary.json` `verdicts."learned multi-view depth"`); `import torch` fails in the project `.venv` (`research_mirage.md`). The user has stated that the project is personal and non-commercial, so weights under a non-commercial licence would be acceptable licence-wise; this is recorded, not acted on.
 
 **"Mirage" candidates** (`outputs/evidence/frames_depth/research_mirage.md`): the reconstruction method of that name needs LiDAR + IMU input and presumably CUDA; the monocular-depth benchmark of that name is MIT code over non-commercial weights and dataset, needs torch and an A100-class GPU to fine-tune, and addresses single-image depth that this pipeline does not use; the others are generative, CUDA-only, hosted, or unrelated. Recommendation in the note: no-go for integration; one zero-dependency idea kept (gate any future floor depth prior with a planarity check and keep it labelled as model-guessed).
 
 **Next step:** once installed, run it on the existing COLMAP poses and judge with the same seven Sumida eval frames; the result would be an `ALIGNED_PREVIEW`-class layer, never metric, and never merged with the real-video MVS points.
+
+## F-27 Learned depth: the unchunked full-clip run was stopped by the session for low memory (2026-11-09)
+
+**Status:** BLOCKED for that configuration; replaced by the resume protocol of Amendment A1 (`packages/learned/chunked_run.py`), under which every planned chunk completed. Plan `docs/PLAN_LEARNED_DEPTH.md` A1 and Result R2.
+
+**Observed** (`outputs/experiments/learned_depth/lingbot_v2_full.log`): the 150-frame Sumida run in one process was stopped by the session for low memory on the 16 GB Mac. Nothing from it is used.
+
+**What was done instead:** one chunk per separate process (8 s with 2 s overlap; the verified 0–10 s chunk reused after re-checking frame list, weight hash, output files and alignment residual), no chunk start below 35 % free memory, 4 GB checkpoint released after loading, model and MPS cache released after inference, memory logged per stage. Measured over 22 chunks (`chunks_{sumida,fsc}.json`): peak process RSS **9.02 GB** (FSC 36–44), MPS driver peak **12.56 GB** (Sumida) / 11.49 GB (FSC); free memory 62–76 % at start, 4–24 % at `inference_done`, 73–77 % after the MPS release; swap 9–15 GB from other processes throughout. fp16/bf16 (A1 "Precision") never triggered.
+
+**Next test:** none needed for completion; if a longer chunk is ever wanted, the A1 precision clause applies (fp16 on the 4–14 s segment, continued only if peak memory falls and the coverage / error clauses still pass).
+
+## F-28 Learned depth: the two fast-turn chunks of Sumida (50–58 s, 56–60 s) rejected by the alignment residual (2026-11-09)
+
+**Status:** FAIL (REJECTED by `chunked_run.verify`), not joined; the Sumida learned layer has no learned depth in 50–60 s, and the eval frames f001560 (52 s) and f001680 (56 s) are unchanged by it.
+
+**Observed** (`chunks_sumida.json`): chunk 50–58 s (21 frames) aligned to our path with an RMS residual of **0.0612** of path length (limit 0.02), Sim3 scale 4.20; chunk 56–60 s (10 frames) **0.0503**, scale 14.61. Every other Sumida chunk lies at 0.0046–0.0137. Both chunks cover the fast turn at the end of the clip, the same stretch where the plane-sweep baselines struggle (F-24 fast frames).
+
+**Reading (not proven):** the model's own camera path disagrees with ours where the camera turns nearly in place with little translation; a single Sim3 cannot bring the chunk's cameras onto ours, so the depth scale would be unreliable and the chunk is refused by rule rather than fused.
+
+**Next test:** a shorter chunk anchored inside the turn (for example 4 s with 2 s overlap) judged by the same ≤ 0.02 residual; and a chunk that starts before the turn so that the Sim3 is dominated by translating frames. Neither has been run.
+
+## F-29 Learned depth: neighbouring chunks disagree on overlapping frames or on scale against triangulated points; held, not fused (2026-11-09)
+
+**Status:** by design (A1 "Chunk joining"); recorded because it leaves spans without learned depth. Sumida: 5 of 8 DONE chunks held; FSC: 6 of 12 held.
+
+**Observed** (`summary.json` `boundary`, `lingbot_v2_*_merged/run_report.json`): held by **overlap disagreement** (median relative depth difference on the nearest 40 % of depths > 5 %): Sumida 8–16 s (7.4 %), 14–22 s (8.9 %), 44–52 s (8.7 %); FSC 24–32 s (5.2 %), 36–44 s (10.4 %), 42–50 s (5.5 %), 54–62 s (12.0 %), 66–71 s (5.4 %). Held by the **near-point scale check** against our triangulated points (> 5 % off): Sumida 26–34 s (**1.18**) and 32–40 s (**2.22**) although their overlap agreement was fine (1.4 % / 2.7 %); FSC 48–56 s (0.945). Result: learned depth exists only for Sumida 0–10, 20–28, 38–46 s (68 frames) and FSC 0–26, 30–38, 60–68 s (88 frames). The Sumida eval frames at 30 s and 36 s sit in the triangulation-held span; the +5 pp floor clause at 30 s therefore fails (F-32).
+
+**Reading (not proven):** chunks are separate model runs with separate scales; where two runs see the near floor differently by more than 5 % a merged map would carry two shifted floor surfaces, which is the case the hold rule exists for. The large triangulation factors on 26–40 s coincide with the open-park stretch where our own sparse points are mostly far away, so the near-point check has few near points to use.
+
+**Next test:** a chunk whose frames straddle the open-park stretch (so near triangulated points exist on both sides); report the number of near points used by the check per chunk (not currently in the index).
+
+## F-30 Learned depth: rescaling chunks by the near-point factor made the fast-turn chunks worse; rejected (2026-11-09)
+
+**Status:** rejected before any evaluation row; implementer-reported, no artifact of the rejected variant archived. The quantity survives only as the `near_point_scale_check` diagnostic and as the A1 hold rule (`HELD_SCALE_VS_TRIANGULATION`).
+
+**Observed:** applying the near-triangulated-point scale factor (`scale_near_sparse_factor` in each aligned chunk's `run_report.json`; merged values 1.0113 Sumida, 0.9718 FSC) as a correction to the chunk depth was tried and made the fast-turn chunks worse; it was dropped, and the Sim3 scale from the camera centres stayed the only scale applied.
+
+**Why it is recorded:** a correction that helps the good chunks and hurts the bad ones would have hidden the disagreement that F-28 / F-29 expose. Keeping the factor as a check rather than a correction leaves the hold decisions inspectable per chunk pair.
+
+**Next test:** none planned; if revisited, it needs its own dated plan section with the fast-turn segment as the pre-registered screening run.
+
+## F-31 Learned depth: far cleanup removes real structure on the FSC held-out frame; FAIL, not applied on FSC (2026-11-09)
+
+**Status:** FAIL under the A1 far-cleanup clause (structure `cov1px` must not drop by more than 1 pp on any frame) on FSC; PASS on Sumida. The FSC learned layer is D1 + learned without far cleanup; the Sumida layer includes it.
+
+**Observed** (`static_metrics_D1L_fsc.json` vs `static_metrics_D1LFC_fsc.json`): held-out f001720 structure 0.7502 → **0.7298 (−2.0 pp)** and floor 0.7901 → **0.7622 (−2.8 pp)**; tuning frames f000320 floor −0.3 pp / structure −0.1 pp, f001000 structure −0.1 pp; free-space 0.1691 → 0.1668; 8,234,561 → 8,192,708 points. Sumida (`D12L_full` → `D12LFC_full`): 26,634 of 768,214 far points removed, structure −0.17 … −0.98 pp on all 7 frames (within the −1 pp limit), floor unchanged, free-space 0.3295 → 0.3207.
+
+**Reading (not proven):** the rule (points beyond 2 x the median camera distance need ≥ 2 agreeing plane-sweep maps and more agreement than free-space conflict) was set for a walking camera, where "far" is mostly background; on an aerial flyover, large parts of the real ground and buildings are "far" by that definition and are seen by few overlapping maps, so support < 2 removes them.
+
+**Next test:** a variant with the far threshold tied to the per-clip depth distribution and a support threshold that counts available views, judged first on the held-out FSC frame; this is a new plan item, not a tuning of the frozen rule.
+
+## F-32 Learned depth: the +5 pp floor clause missed on Sumida at 30 s and 52 s and on FSC f000320 (+4.1 pp); FAIL as recorded (2026-11-09)
+
+**Status:** FAIL as recorded in `summary.json` `verdicts` on both clips (one clause missed = FAIL, plan section 4); both learned layers stay trials (`experimental.status "TRIAL, NOT ADOPTED"`); default unchanged. Adoption is a user decision after both clips pass.
+
+**Observed, Sumida** (`static_metrics_D12_full.json` → `static_metrics_D12L_full.json`, 7 frames, neutral judge): floor 0.2625 → 0.4305 (+16.8 pp, 8 s), 0.1569 → 0.2752 (+11.8, 20 s, held-out), 0.4925 → 0.7153 (+22.3, 42 s, held-out), 0.0968 → 0.1031 (36 s), but **0.1531 → 0.1531 at 30 s and 0.7037 → 0.7038 at 52 s** — the two tuning frames inside spans with no accepted chunk (26–40 s held by the triangulation check, 50–60 s rejected; F-28, F-29). Every other clause improved or held: structure ≥ D12 on all 7, free-space neutral 0.3563 → 0.3295, isolated 0.1033 → 0.0882, sky ≤ D12 + 0.5 pp, person 888 = 888.
+
+**Observed, FSC** (`static_metrics_D1_fsc.json` → `static_metrics_D1L_fsc.json`, 3 frames): floor 0.9426 → **0.9841 (+4.1 pp)** on tuning f000320 against the +5 pp clause, with the floor already at 0.94 before; f001000 +19.3 pp, held-out f001720 +4.3 pp; structure +15.0 / +2.0 / +6.1 pp; free-space 0.1982 → 0.1691.
+
+**What this does not change:** the clause was frozen before the runs and is not re-stated after seeing the numbers. The Sumida misses are a consequence of empty spans rather than of wrong points (the frames are unchanged), and the FSC miss is a ceiling effect on a frame that was already 94 % covered; both facts are recorded beside the FAIL, not instead of it.
+
+**Next test:** the chunk re-runs of F-28 / F-29 for the Sumida spans; for FSC, no further run changes the clause outcome on f000320 unless the clause itself is re-stated in a dated amendment with a new baseline table.
 
 ## Not failures, but open gates
 
@@ -330,4 +392,5 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 - (closed 2026-11-09) UI smoke re-run after F-06: 51 / 51; `scripts/test_all.sh` after the Skywarden rename: 94 passed (`outputs/evidence/tests/pytest-20261109-023923.log`).
 - (closed 2026-11-09) E4 test archive: `tests/test_appearance.py` 3 passed inside `outputs/evidence/tests/pytest-20261109-024540.log` (97 passed) and every later log.
 - (closed 2026-11-09) Live run / timeline replay: implemented and measured (`docs/PLAN_LIVE_RUN_TIMELINE.md` Result; `outputs/evidence/live/`); no acceptance test failed. Still open from it, not failures: a run with a physical webcam (NOT_RUN, no camera on this Mac; `webcam:0` correctly ends `FAILED NO_DEVICE` in 0.285 s), browser assertions for the live tab's `STALE_DATA` / `STALLED` / `FAILED` / `INCOMPLETE` / `CANCELLED` states (NOT_RUN; labels exist in `live.js`), and the observation that on the Utrecht person-following clip the target was LOCKED in only 155 of 899 frames (17 %) with 7 scripted re-selections after LOST — a tracker limitation on that clip (compare F-11), recorded in `t7_utrecht_realtime_30s.json`, not a live-run defect. Stored-map relocalisation: NOT_IMPLEMENTED (VO and live headers say so). Bangkok per-boundary cause classification (plan D1 field): not written.
-- (2026-11-09, frame selection and depth) Adaptive selection stays opt-in (`--selection adaptive`), not a failure: path PASS on all three clips (F-23). Ruled: D runs on the neutral judge — D12 fails only quiet time (400.0 s) and person points on f001680, D1 fails sky and person (F-24). Open: clause 5 timing alone for every run but D12 (F-25); same-view-set free-space comparison for F1b (F-23); learned multi-view depth approved by the user, installation in progress, results later (F-26). Closed: `data/models/static/SOURCE.md` now records the segmentation model (Realcat/skywater_seg rev ec20751, MIT, SHA-256).
+- (2026-11-09, frame selection and depth) Adaptive selection stays opt-in (`--selection adaptive`), not a failure: path PASS on all three clips (F-23). Ruled: D runs on the neutral judge — D12 fails only quiet time (400.0 s) and person points on f001680, D1 fails sky and person (F-24). Open: clause 5 timing alone for every run but D12 (F-25); same-view-set free-space comparison for F1b (F-23); (closed 2026-11-09) learned multi-view depth approved, installed in a separate environment and run (F-26 → F-27–F-32). Closed: `data/models/static/SOURCE.md` now records the segmentation model (Realcat/skywater_seg rev ec20751, MIT, SHA-256).
+- (2026-11-09, learned depth) Not failures: the model runs only as an external tool in `outputs/tools/venv_learned` and nothing of it is committed; `model_estimated/` is a separate, hidden cloud by construction. Open, not failures: the provenance-tag count of 0 inside the learned map layer (plan clause 4) and the time of our own alignment + fusion + dense part (clause 5) were not archived; fp16/bf16 NOT_RUN (never triggered); Sumida 10–20, 26–40, 46–60 s and FSC 26–30, 38–60, 68–71 s have no accepted learned depth (next tests in F-28, F-29); the FSC far-cleanup variant for aerial views (F-31) is a new plan item. Regression after the round: 134 tests (`outputs/evidence/tests/pytest-20261109-183645.log`), UI 88/88.
