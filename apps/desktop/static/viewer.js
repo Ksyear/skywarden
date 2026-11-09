@@ -115,7 +115,12 @@ export class PointViewer {
     this.framing = mode;
     if (this.cloud) { this.radius = mode === "full" ? this.radiusFull : this.radiusMain; this.resetView(); }
   }
-  resetView() { Object.assign(this.view, { yaw: 0, pitch: 0.35, dist: this.radius ? this.radius * 2.6 : 3, panX: 0, panY: 0 }); this.request(); }
+  // Flat (levelled) scenes such as aerial maps start from a drone-like angle along the camera direction: a low
+  // 20-degree view of a flat map shows it edge-on, as a thin disc.
+  resetView() {
+    const flat = this.levelled;
+    Object.assign(this.view, { yaw: 0, pitch: flat ? 0.75 : 0.35, dist: this.radius ? this.radius * (flat ? 1.7 : 2.6) : 3, panX: 0, panY: 0 }); this.request();
+  }
   topView() { Object.assign(this.view, { pitch: 1.5, dist: this.radius ? this.radius * 2.4 : 3, panX: 0, panY: 0 }); this.request(); }
   setVisibleUpTo(k) { this.visibleUpTo = k; this.request(); }
   setCurrent(k) { this.current = k; if (this.roi?.on) this._frameRoi(false); this.request(); }

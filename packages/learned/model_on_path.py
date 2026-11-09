@@ -76,6 +76,35 @@ def all_error(depth, K, R, t, X, W, H):
     return float(np.median(np.abs(d[ok] - z[ins][ok]) / z[ins][ok])) if ok.sum() >= 30 else np.inf
 
 
+def local_fix(depth, K, R, t, X, W, H, k=8, radius=60.0, spread=0.12):
+    """per-pixel correction from the nearest triangulated points in the image (median of their ratio our/model).
+    Used for frames where one curve does not fit (turns, shake). Pixels without >= 4 points within radius px,
+    or whose neighbours disagree (relative spread > spread), are dropped. Returns (depth, keep)."""
+    from scipy.spatial import cKDTree
+    if not len(X):
+        return depth, np.zeros(depth.shape, bool)
+    Xc = (R @ np.asarray(X).T).T + t; z = Xc[:, 2]
+    u = K[0, 0] * Xc[:, 0] / z + K[0, 2]; v = K[1, 1] * Xc[:, 1] / z + K[1, 2]
+    ins = (z > 0) & (u >= 0) & (u < W - 0.5) & (v >= 0) & (v < H - 0.5)
+    u, v, z = u[ins], v[ins], z[ins]
+    d = depth[np.round(v).astype(int), np.round(u).astype(int)]; ok = d > 0
+    u, v, r = u[ok], v[ok], np.log(z[ok] / d[ok])
+    if len(r) < 30:
+        return depth, np.zeros(depth.shape, bool)
+    vv, uu = np.mgrid[0:H, 0:W]
+    dist, idx = cKDTree(np.stack([u, v], 1)).query(np.stack([uu.ravel(), vv.ravel()], 1), k=k, distance_upper_bound=radius)
+    valid = np.isfinite(dist)
+    R_ = np.where(valid, r[np.minimum(idx, len(r) - 1)], np.nan)
+    n = valid.sum(1)
+    with np.errstate(all="ignore"):
+        import warnings
+        warnings.simplefilter("ignore", RuntimeWarning)
+        med = np.nanmedian(np.where(n[:, None] >= 1, R_, 0.0), axis=1)
+        mad = np.nanmedian(np.abs(R_ - med[:, None]), axis=1)
+    keep = (n >= 3) & (mad < spread)
+    return depth * np.exp(np.nan_to_num(med)).reshape(H, W), keep.reshape(H, W)
+
+
 def depth_curve(depth, K, R, t, X, W, H, bins=8):
     """monotone map model depth -> our depth, fitted on this frame's triangulated points (median per distance bin).
     Returns (f, d_max) with f(depth) and the farthest model depth our points support, or (None, 0) if too few."""
@@ -122,6 +151,9 @@ def main(argv=None) -> int:
     ap.add_argument("--tol", type=float, default=0.05, help="relative depth tolerance for the neighbour check")
     ap.add_argument("--neighbours", default="1,2", help="frame offsets (each side) used by the neighbour check")
     ap.add_argument("--edge", type=float, default=0.0, help="drop pixels whose depth jumps by more than this share to an adjacent pixel (smeared edge points)")
+    ap.add_argument("--local-fix", action="store_true", help="frames that disagree are corrected pixel by pixel from nearby triangulated points instead of skipped")
+    ap.add_argument("--local-conf", type=float, default=1.0, help="model confidence needed in locally corrected frames")
+    ap.add_argument("--fuse", action="store_true", help="each kept point moved to the median depth its neighbouring frames see (thinner surfaces)")
     ap.add_argument("--fill-mvs", help="multi-view cloud: its points whose nearest camera is a skipped frame fill those gaps")
     a = ap.parse_args(argv)
     sd, out = Path(a.session), Path(a.out)
@@ -164,30 +196,38 @@ def main(argv=None) -> int:
             depth = depth * k
         err, ne = frame_error(depth, K, R, t, X, W, H)
         row = {"frame": n, "t": t_of[n], "chunk": d.name, "scale_fix": round(k, 4), "err_vs_sfm": None if err is None else round(err, 4), "sfm_points": ne, "curve": curve_used}
+        keep = np.ones((H, W), bool); strict = None
         if err is not None and err > a.max_err:
-            rows.append(row | {"used": False, "why": f"model depth disagrees with our points by {err:.0%} after scaling"}); continue
-        keep = np.ones((H, W), bool)
+            if not a.local_fix:
+                rows.append(row | {"used": False, "why": f"model depth disagrees with our points by {err:.0%} after scaling"}); continue
+            depth, strict = local_fix(np.load(d / f"depth_{st}.npy"), K, R, t, X, W, H)
+            far_cut = np.inf; row["local_fix"] = True
+            row["err_after_local_fix"] = round(frame_error(depth, K, R, t, X, W, H)[0] or 0, 4)
         if a.masks and (Path(a.masks) / (n + ".png")).exists():
-            keep = cv2.resize(cv2.imread(str(Path(a.masks) / (n + ".png")), 0), (W, H), interpolation=cv2.INTER_NEAREST) > 0
-        keep &= (conf >= CONF) & np.isfinite(depth) & (depth > 0) & (depth <= far_cut)
-        if a.edge:  # depth edges: points there land between foreground and background as streaks along the ray
-            lo = cv2.erode(depth.astype(np.float32), np.ones((3, 3), np.uint8)); hi = cv2.dilate(depth.astype(np.float32), np.ones((3, 3), np.uint8))
-            keep &= (hi - lo) <= a.edge * depth
-        frames.append((n, R, t, depth.astype(np.float32), keep))
+            keep = keep & cv2.resize(cv2.imread(str(Path(a.masks) / (n + ".png")), 0), (W, H), interpolation=cv2.INTER_NEAREST) > 0
+        # locally corrected frames: every kept pixel is backed by >= 3 agreeing triangulated points nearby, so a
+        # lower model confidence is accepted there (shaky frames have few pixels above 1.5)
+        keep &= (conf >= (a.local_conf if strict is not None else CONF)) & np.isfinite(depth) & (depth > 0) & (depth <= far_cut)
+        if a.edge:  # depth edges (on the model's own depth): points there land as streaks along the ray
+            raw = np.load(d / f"depth_{st}.npy").astype(np.float32)
+            lo = cv2.erode(raw, np.ones((3, 3), np.uint8)); hi = cv2.dilate(raw, np.ones((3, 3), np.uint8))
+            keep &= (hi - lo) <= a.edge * raw
+        # neighbours look this frame up over all its confident pixels; its own points need the strict local mask too
+        frames.append((n, R, t, depth.astype(np.float32), keep, keep if strict is None else keep & strict))
         rows.append(row | {"used": True})
     rowd = {r["frame"]: r for r in rows}
-    for i, (n, R, t, depth, keep) in enumerate(frames):
+    for i, (n, R, t, depth, _, keep) in enumerate(frames):
         z = depth[vv, uu]; m = keep[vv, uu]
         u_, v_, z_ = uu[m], vv[m], z[m]
         Xc = (Kinv @ np.stack([u_, v_, np.ones_like(u_)]).astype(float)) * z_
         Xw = (R.T @ (Xc - t[:, None])).T
         if a.consistency:
-            votes = np.zeros(len(Xw), int)
+            votes = np.zeros(len(Xw), int); ratios = []
             offs = [int(o) for o in a.neighbours.split(",")]
             for j in [i - o for o in offs] + [i + o for o in offs]:
                 if not 0 <= j < len(frames):
                     continue
-                _, Rj, tj, dj, kj = frames[j]
+                _, Rj, tj, dj, kj, _ = frames[j]
                 Y = Xw @ Rj.T + tj; zj = Y[:, 2]
                 uj = np.round(K[0, 0] * Y[:, 0] / np.maximum(zj, 1e-9) + K[0, 2]).astype(int)
                 vj = np.round(K[1, 1] * Y[:, 1] / np.maximum(zj, 1e-9) + K[1, 2]).astype(int)
@@ -196,7 +236,12 @@ def main(argv=None) -> int:
                 dd = dj[vj[ins], uj[ins]]
                 ok[ins] = kj[vj[ins], uj[ins]] & (np.abs(dd - zj[ins]) <= a.tol * zj[ins])
                 votes += ok
+                rr = np.full(len(Xw), np.nan); rr[ok] = (dd / zj[ins])[ok[ins]]; ratios.append(rr)
             sel = votes >= a.consistency
+            if a.fuse and ratios:  # median over this frame (ratio 1) and the agreeing neighbours
+                Rm = np.vstack([np.ones(len(Xw))] + ratios)
+                f_ = np.nanmedian(Rm, axis=0)
+                C = -R.T @ t; Xw = C + (Xw - C) * f_[:, None]
             Xw, u_, v_ = Xw[sel], u_[sel], v_[sel]
         P.append(Xw)
         img = cv2.resize(cv2.imread(str(sd / "frames" / n)), (W, H), interpolation=cv2.INTER_AREA)
@@ -226,8 +271,8 @@ def main(argv=None) -> int:
                     + ("per-frame depth curve fitted to our points by distance, pixels beyond our points dropped, " if a.curve else "per-frame scale checked against our points, ")
                     + "shaky frames whose depth disagrees skipped (multi-view points fill their area when given); "
                     + (f"each pixel kept only where >= {a.consistency} neighbouring frames see the same surface (within {a.tol:.0%})" if a.consistency else "not checked against other views"),
-           "dense_verified_points": int(len(arr)), "frames": len(used), "frames_skipped": len(rows) - len(used), "mvs_fill_points": n_fill,
-           "max_err": a.max_err, "depth_curve": a.curve, "consistency_min_views": a.consistency, "consistency_tol": a.tol, "neighbours": a.neighbours, "edge": a.edge, "per_frame": rows, "config": {"work_width": 640}, "views": [], "voxel": float(np.median(nn[:, 1]))}
+           "dense_verified_points": int(len(arr)), "frames": len(used), "frames_skipped": len(rows) - len(used), "frames_local_fix": sum(1 for r in used if r.get("local_fix")), "mvs_fill_points": n_fill,
+           "max_err": a.max_err, "depth_curve": a.curve, "consistency_min_views": a.consistency, "consistency_tol": a.tol, "neighbours": a.neighbours, "edge": a.edge, "local_fix": a.local_fix, "fuse": a.fuse, "per_frame": rows, "config": {"work_width": 640}, "views": [], "voxel": float(np.median(nn[:, 1]))}
     (out / "dense_report.json").write_text(json.dumps(rep, indent=1))
     print(json.dumps({k: rep[k] for k in ("dense_verified_points", "frames", "frames_skipped")}))
     return 0
