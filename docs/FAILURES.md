@@ -159,6 +159,54 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 
 **Next test:** run the masked variant on Sumida and FSC against the guard (150/150, points >= 0.9x, reproj <= 0.60 px on Sumida, 0 jumps); and declare a Utrecht sub-section starting after 7.2 s to test whether the stretched start is an initialisation effect.
 
+## F-12 Dense coverage: ESVF passes the segment and FSC but misses the `f000900` floor clause on the full clip (2026-11-09)
+
+**Status:** FAIL as recorded (plan `docs/PLAN_DENSE_COVERAGE.md` section 4: one clause missed = FAIL). Default dense layer stays M0. Cause measured, follow-up change E-N2 run (F-14).
+
+**Expected (frozen, section 2):** floor `cov1px` +8 pp on each of `f000240`, `f000900`, `f001560`.
+
+**Observed** (`outputs/evidence/dense_cov/stage_metrics_ESVF_full.json` vs `stage_metrics_M0_full.json`): floor `cov1px` 0.0244 -> 0.1266 (+10.2 pp), **0.0024 -> 0.0096 (+0.7 pp)**, 0.2764 -> 0.5862 (+31.0 pp); every other criterion met (`inconsist` 0.151 -> 0.1154, `float_knn` 0.138 -> 0.122, `float_fs` 0.485 -> 0.352, structure +1.0 / −0.5 / +10.8 pp, sparse agreement min 0.711, 113/117 views, 100.2 s). On the t 4–14 s segment ESVF had passed every criterion (floor +9.6 pp, `stage_metrics_ESVF_seg.json`); on FSC it passes the regression clause (145/145, `inconsist` 0.0443, `float_fs` 0.2385, 151.6 s, `stage_metrics_ESVF_fsc.json`).
+
+**Cause** (diagnostic run `outputs/experiments/dense_cov/diag30_ESVF/`, `f000880` with the `f000900` polygon as proxy; plan A4 item 3): reference views at t ≈ 23–35 s have only 2 neighbours, both ±6 frames away, with baseline / median co-visible depth 0.051–0.058 — the lower edge of the [0.05, 0.30] window. The open park makes the median depth large, so frames close enough in time to give parallax on the near floor never qualify as neighbours. `f000880` floor `conf` 0.0125 with `cost` 98.5 % of rejections; `boundary_near` 0; texture and margin not dominant. Neighbour selection, not depth range, texture or plane orientation. A second, independent limit: the 0.5 x voxel ceiling on `f000900` is 0.084 (`fusion_ceiling.json`), while +8 pp needs 0.0824, i.e. 98 % of the ceiling (F-15).
+
+**What followed:** E-N (F-13) and E-N2 (F-14), each a single pre-declared neighbour-rule change stacked on ESVF.
+
+## F-13 Dense coverage: E-N (`median_or_near`) regresses structure on t 4–14 s and raises free-space violations on t 26–34 s (2026-11-09)
+
+**Status:** FAIL on both segments; superseded by E-N2 (F-14). Plan A4 item 4 / A5 item 3.
+
+**Observed** (`outputs/evidence/dense_cov/stage_metrics_ESVFN_seg.json`, `stage_metrics_ESVFN_seg30.json`): on t 4–14 s structure `cov1px` 0.621 (M0) -> 0.500 (−12 pp, clause −2 pp), views verified 26 -> 24, points 313,831 (ESVF) -> 188,849, although floor `cov1px` reached 0.119 and `inconsist` fell to 0.0547. On t 26–34 s reference views 6 -> 21, floor 0.0002 -> 0.0664, structure 0.454 -> 0.636, `inconsist` 0.124 -> 0.119, but `float_fs` 0.151 -> 0.292 (+14 pp, tolerance +2 pp). The 0.25 x variant (ESVFN25) shows the same two failures (structure 0.5008; `float_fs` 0.2602).
+
+**Cause** (A5 item 3): under E-N a candidate qualifies when either the median or the p10 co-visible depth gives baseline/depth in [0.05, 0.30], and candidates are taken in scan order (±1 first). The near-qualified close frames therefore displace the median-qualified ones that give far structure its parallax, and the sweep loses the distant trees and buildings.
+
+**Fix tried (E-N2, F-14):** median-qualified neighbours are collected first (max 4); only when fewer than 4 exist do near-qualified candidates fill the remaining slots. A view with 4 median-qualified neighbours is unchanged by construction, which is why ESVFN2_seg equals ESVF_seg on t 4–14 s (floor 0.1182, structure 0.651 vs 0.653).
+
+## F-14 Dense coverage: ESVFN2x25 fails the pre-registered screening on `float_fs` while meeting every full-clip and FSC criterion; recorded NOT_ADOPTED (2026-11-09)
+
+**Status:** NOT_ADOPTED (plan section 4). Default dense layer stays M0; the variant is installed as a labelled experimental layer only (`outputs/maps/mqg_{sumida_0025_0125,fsc_campus_aerial}/dense_experimental/`, label `DENSE_EXPERIMENTAL (relative scale) - not adopted`). Adoption is a user decision.
+
+**Screening run** (A5 item 5 order: segment t 26–34 s first; `outputs/evidence/dense_cov/stage_metrics_ESVFN2x25_seg30.json` vs `stage_metrics_M0_seg30.json`): floor `cov1px` 0.0002 -> 0.1105 (+11.0 pp, passes), structure 0.454 -> 0.663, `inconsist` 0.124 -> 0.1317 (+0.8 pp, passes), `float_knn` 0.200 -> 0.167, but **`float_fs` 0.1508 -> 0.2634 (+11.3 pp, tolerance +2 pp) -> FAIL**. The 0.5 x variant ESVFN2 also fails there, on the floor clause (0.0563, +5.6 pp) and on `float_fs` (0.2916).
+
+**View-set bias in the screening metric** (stated before the run in A5 item 4, not after): `float_fs` counts a violation when any view with a depth map sees past a point. E-N2 raises the reference views on this segment from 6 to 21, so the "before" cloud is checked against 6 depth maps and the "after" cloud against 21 — the after cloud is tested harder by construction. The supplementary `float_fs_same_maps` (both clouds against the after run's 21 maps) reads 0.3586 -> 0.2634, i.e. down. The plan keeps `float_fs` as defined for acceptance and forbids changing a criterion after seeing the result, so the screening FAIL stands.
+
+**Full clip and FSC, run and reported for the record** (`stage_metrics_ESVFN2x25_full.json`, `stage_metrics_ESVFN2x25_fsc.json`): Sumida floor `cov1px` 0.0244 / 0.0024 / 0.2764 -> 0.2789 / 0.119 / 0.6714 (+25.4 / +11.7 / +39.5 pp; mean 0.101 -> 0.356, x 3.5), `fused_n_src` floor 491 -> 7,701 and 794 -> 6,574, `fused_n_proj` on `f000900` 162 -> 12,532; structure 0.8766 / 0.8773 / 0.6644 (all up); `inconsist` 0.151 -> 0.1165 (<= 0.15); `float_knn` 0.138 -> 0.096; `float_fs` 0.485 -> 0.369 (same maps 0.519 -> 0.369); sparse agreement min 0.749 (>= 0.70), median 0.9265 -> 0.932; 147 reference views, 141 verified; 917,498 -> 2,087,132 points; 135.1 s (<= 176). FSC: 149/149 views (>= 143), 6,520,886 points (>= 0.9 x 1,942,876), `inconsist` 0.0638 -> 0.0444, `float_knn` 0.1833 -> 0.0546, `float_fs` 0.397 -> 0.182, 155.1 s (<= 230.4). Every section 2 criterion is met on these inputs.
+
+**Why it is still not the default:** the pre-registered rule (A5 item 5) made the seg30 screening a gate, and a gate that is redefined after it fails is no gate. The result is therefore NOT_ADOPTED with both tables on disk, and the user can decide with the numbers in front of them.
+
+**Observed, not measured:** `outputs/evidence/dense_cov/sameview_f000240_ESVFN2x25_full.jpg` shows a thin vertical streak of points near the right edge of the floor region in the experimental cloud. No metric in the plan covers it.
+
+**Next test (if the user wants to pursue adoption):** a new dated plan section that (a) defines a same-view-set free-space metric as the acceptance metric with a fresh M0 baseline table computed under that definition, and (b) adds a criterion for the streak artefact (e.g. column-wise point density outliers on the floor region). Until then the layer stays experimental.
+
+## F-15 Dense coverage: the frozen `cov1px` criterion depends on the fusion voxel footprint, not only on reconstruction (2026-11-09)
+
+**Status:** recorded; the criterion was not changed (plan A3 item 2, A5 item 2). This is a property of the measurement, not a code defect.
+
+**Observed** (`outputs/evidence/dense_cov/fusion_ceiling.json`; method: floor pixels intersected with the fitted ground plane, one voxel's foreshortened footprint, ceiling = mean min(1, 1/(sx·sy))): with the baseline voxel 0.0302 and the fitted ground plane of `f000240` (camera height 0.254, floor depth p10/p50/p90 0.42 / 0.62 / 1.19) one voxel projects to a median 16.4 x 5.7 px on the floor at 640 px. If every floor voxel were filled, `cov1px(floor)` could not exceed **0.0262** on `f000240`, **0.0211** on `f000900`, 0.5916 on `f001560`; at 0.5 x voxel 0.1047 / 0.0844 / 0.9839; at 0.25 x 0.328 / 0.2924 / 1.0. The +8 pp clause therefore cannot be met by any depth-estimation or verification change while the voxel stays at 1 x on the two near-floor frames, and on `f000900` it needs 98 % of the 0.5 x ceiling. E-S demonstrates the gap directly: floor `verif` 0.0117 -> 0.0897 and raw verified floor points about 9,440, yet `cov1px` only 0.0225 -> 0.0337 because those points merge into 1,561 voxels (`stage_metrics_ES_seg.json`).
+
+**Consequence in the plan:** E-F (finer voxel for near points only) was triggered by E-S (`fused_n` up, `cov1px` flat) and is what lets ESVF / ESVFN2x25 reach the clause; the pre-fusion verified share S3 `verif` is reported beside `cov1px` as the reconstruction measure (A3 item 3). Related caveat (A3 item 4): `float_knn` uses an absolute radius of 2 base voxels, so a finer near voxel raises neighbour counts by construction; `float_fs` and `inconsist` are the density-neutral error measures.
+
+**Reading:** `cov1px` measures what the viewer shows at 1 px, which is what the plan set out to improve, but a future plan that wants to score reconstruction alone should use S3 `verif` or a voxel-normalised coverage as the acceptance measure, with a new baseline.
+
 ## Not failures, but open gates
 
 - REAL_VIDEO route NOT_RUN: `assets/input/` is empty. Command in `docs/PROGRESS.md`.

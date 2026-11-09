@@ -11,10 +11,10 @@ Skywarden은 스마트폰·웹캠·Tello EDU급 소형 드론의 단안 영상�
 | 영역 | 구현 내용 | 결과물 |
 |---|---|---|
 | 희소 3D 지도 | 영상 파일 또는 이미지 폴더 → 샷(컷) 검출·정지 카메라 판정 → 프레임 선별(블러·저질감·중복 제거, 컷을 넘는 매칭 없음) → pycolmap SIFT/매칭 → **전역(global) 매퍼 기본**, `--mapper incremental` 선택 → 모델별 PLY + 카메라 궤적 + 보고서(`skywarden/map_report@2`). 보정 파일이 없으면 COLMAP이 SIMPLE_RADIAL 내부 파라미터를 추정. 작업 상태(`status`)와 별개로 **품질 판정** `quality.verdict` GOOD / PARTIAL / POOR을 고정 임계값(등록률 ≥ 0.6, 시간 커버리지 ≥ 0.7, 내부 공백 ≤ 2 s, 재투영 ≤ 1.5 px, 10 % 이상 모델 정확히 1개, 시간 정규화 궤적 점프 0, 점 ≥ 2,000)과 함께 기록. 여러 모델은 각자 좌표계로 따로 내보내며 절대 합치지 않음. 표시용 점 필터(`sparse_filtered.ply`: 삼각측량각 < 1.5°, 트랙 < 3, 재투영 > 2 × 중앙값 제거)는 원본 PLY를 바꾸지 않음 | `outputs/maps/<session>/{sparse.ply,sparse_filtered.ply,trajectory.json,map_report.json,coverage.json,shots.json,models/<i>/,log.txt}` |
-| 검증된 밀집 점군 (CPU) | GOOD 지도의 포즈로 CPU 평면 스윕 MVS(ZNCC, 이웃 4개 중 상위 2개, 640 px) → 뷰마다 희소점 일치율 ≥ 0.70 **그리고** 다중 뷰 일관성 ≥ 0.30을 통과한 깊이만 융합 → `DENSE_VERIFIED (relative scale)`. PatchMatch(CUDA/HIP 전용)는 이 Mac에서 BLOCKED. Poisson 메시는 시각 검사 FAIL로 **실험 단계**, 콘솔 레이어 아님 | `outputs/maps/<session>/dense/{dense_report.json,dense_verified.ply}` |
+| 검증된 밀집 점군 (CPU) | GOOD 지도의 포즈로 CPU 평면 스윕 MVS(ZNCC, 이웃 4개 중 상위 2개, 640 px) → 뷰마다 희소점 일치율 ≥ 0.70 **그리고** 다중 뷰 일관성 ≥ 0.30을 통과한 깊이만 융합 → `DENSE_VERIFIED (relative scale)`. PatchMatch(CUDA/HIP 전용)는 이 Mac에서 BLOCKED. Poisson 메시는 시각 검사 FAIL로 **실험 단계**, 콘솔 레이어 아님. 바닥 커버리지 실험(`docs/PLAN_DENSE_COVERAGE.md`)의 최종 변형 ESVFN2x25는 사전 등록된 선별 구간을 통과하지 못해 **미채택**이며, `dense_experimental/`에 `DENSE_EXPERIMENTAL (relative scale) - not adopted` 라벨로만 설치됨(아래 "밀집 점군 바닥 커버리지 실험" 절) | `outputs/maps/<session>/dense/{dense_report.json,dense_verified.ply}`, 실험 레이어 `outputs/maps/<session>/dense_experimental/{dense_report.json,dense_verified.ply}` |
 | 단안 시각 주행거리계 (VO, 오프라인) | 저장된 영상에서 프레임 간 상대 포즈 추적. 모든 출력에 `kind=VO, scale=RELATIVE, loop_closure=false, relocalization=NOT_IMPLEMENTED, NOT_NAVIGATION_SAFE` 라벨. 컷·추적 실패 시 새 세그먼트(독립 좌표계, 연결하지 않음) | `packages/vision/vo.py`, `outputs/evidence/vo/` |
 | 라이브 실행 (한 시간축) | 영상 파일을 **원래 시간 기준**(`--rate realtime`) 또는 최대 속도(`--rate max`)로, 혹은 `webcam:N`을 입력으로 받아 검출 → Kalman 추적 → 대상 선택 → MOCK yaw → VO를 한 워커에서 처리. 처리가 밀리면 오래된 프레임을 버리고 **세어서 기록**(1칸 버퍼). 두 시계를 분리 기록: `media_t`(영상 시간)와 `run_t`(벽시계). `control.json`(순번 `seq`)로 pause / resume / seek / stop / select / clear; seek마다 `epoch`이 늘고 추적기·선택기·제어기·VO 세그먼트가 초기화. 완료 판정은 파일 기반: `timeline.jsonl` 줄 수·SHA-256·프레임 매니페스트가 맞을 때만 `SUCCEEDED`, 워커가 죽으면 `INCOMPLETE`, SIGTERM은 `CANCELLED`. 끝난 실행은 Tracking 탭에서 `OPEN_LOOP_REPLAY`로 재생. `map_position=NOT_AVAILABLE`, `relocalization=NOT_IMPLEMENTED`, 명령 `MOCK`·미송신 | `outputs/runs/<session>/{timeline.jsonl,run_report.json,tracks.json,status.json,frames/}` |
-| 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등), **품질 배지 GOOD / PARTIAL / POOR / UNRATED(READY 제거)**, 모델 선택기("partial: model i of N"), 샷 변화·궤적 점프를 표시하는 커버리지 띠(점프를 가로질러 경로를 그리지 않음), 기하 레이어 선택(희소 원본 / 필터 / 검증 밀집), 주 관측 영역 vs 전체 범위 프레이밍, `raw / filtered / drawn` 점 수 | `apps/desktop/` |
+| 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등), **품질 배지 GOOD / PARTIAL / POOR / UNRATED(READY 제거)**, 모델 선택기("partial: model i of N"), 샷 변화·궤적 점프를 표시하는 커버리지 띠(점프를 가로질러 경로를 그리지 않음), 기하 레이어 선택(희소 원본 / 필터 / 검증 밀집 / **실험 밀집 — `Dense · experimental (not adopted)`, 해당 폴더가 있을 때만 활성, 경고색 `LAYER ▸ DENSE · EXPERIMENTAL · n pts in file` 칩과 미채택 사유 표시, 패널 제목 `Dense 3D map · experimental`**), 주 관측 영역 vs 전체 범위 프레이밍, `raw / filtered / dense verified / dense experimental / drawn` 점 수 | `apps/desktop/` |
 | 사람 검출·추적 | YOLOX-nano ONNX(Apache-2.0)를 OpenCV DNN CPU로 실행(`source=REAL_MODEL`), 등속 Kalman 기반 `MultiTracker`: 마지막 **신뢰** 검출 후 2.0 s가 지난 트랙을 연관 **이전에** 만료, 게이트 = Mahalanobis χ² 9.21 **그리고** 픽셀 거리 ≤ 0.5 × 박스 높이, 확정 트랙은 게이트 그래프의 연결 성분으로 연관(트랙 1 : 검출 1만 신뢰, 그 외는 `AMBIGUOUS` — 보정·갱신 없음, 해당 검출은 보류), 잠정(TENTATIVE) 트랙만 남은 검출에 게이트된 Hungarian 적용. 한 명을 고르는 `TargetSelector`는 LOST 후 다시 선택하기 전까지 LOST 유지(자동 재선택 없음) | `outputs/tracks/<session>/{tracks.json,tracking_report.json,status.json,frames/}` |
 | Tracking 탭 | 프레임 위 박스 오버레이, 트랙 목록에서 대상 선택, 대상 상태(LOCKED / PREDICTING / AMBIGUOUS / LOST) 타임라인, 기록된 트랙 위에서 계산한 **가상** yaw 명령(`MOCK`, 송신 안 함). AMBIGUOUS 프레임은 배지와 `STOP · TARGET_AMBIGUOUS`로 표시되며 yaw는 0 | 콘솔 `Tracking` 탭 |
 | 제어 · Mock 기체 | yaw 전용 `YawController`(PID, 클램프, anti-windup, STOP 사유), Tello SDK 2.0 텍스트 프로토콜 파서, 루프백 UDP `MockTello`, 가상 경계 `GeofenceGuard` | `packages/control/`, `adapters/tello/` |
@@ -112,14 +112,14 @@ node tests/ui/ui_smoke.mjs
 ```
 apps/desktop/            # server.py (stdlib HTTP, 127.0.0.1:8780) + static/{index.html,app.js,tracking.js,live.js,viewer.js,app.css}
 packages/
-  mapping/               # frame_source, frame_selection, shots(컷·정지 카메라 검출), sparse_pipeline(pycolmap, 전역/증분 매퍼), quality(판정·임계값), export(모델별 PLY/trajectory, 점 필터), diagnose(구간 진단), dense(CPU 평면 스윕 MVS + 검증), evaluate(ATE), replay, labels, cli(build / rate)
+  mapping/               # frame_source, frame_selection, shots(컷·정지 카메라 검출), sparse_pipeline(pycolmap, 전역/증분 매퍼), quality(판정·임계값), export(모델별 PLY/trajectory, 점 필터), diagnose(구간 진단), dense(CPU 평면 스윕 MVS + 검증, 기본 레이어), dense_cpu(커버리지 실험용 변형: `--sweep fronto+ground --verify multi --voxel-near-scale --neighbour-rule`), dense_eval(구간별 커버리지·오류 측정 하네스), regions/regions_sumida.json(고정 평가 폴리곤), evaluate(ATE), replay, labels, cli(build / rate)
   vision/                # person_detector(YoloxDetector), track_video(offline job), bbox_distance_eval(E1), vo(단안 VO), live_source(FileSource realtime|max, WebcamSource, 1칸 LatestFrameBuffer), live_run(한 시간축 워커: timeline.jsonl / status.json / run_report.json / tracks.json, control.json, --verify)
   tracking/              # tracker: Detection, MultiTracker(Kalman, 만료 우선, 게이트 그래프 성분 연관 + AMBIGUOUS, 잠정 트랙만 Hungarian), TargetSelector(sticky LOST)
   control/               # yaw_controller(PID, SafetyLimits, DroneCommand), virtual_replay, geofence(Geofence, GeofenceGuard)
   sim/                   # synthetic_scene, tracking_scenario(SIMULATED 폐루프), two_person_crossing(E2), geofence_scenario(E3)
 adapters/tello/          # protocol(SDK 2.0 텍스트), client(TelloClient + HardwareDisarmed 게이트), mock_tello(MockTello, 루프백 UDP)
 scripts/                 # run_demo.sh, build_sparse_map.sh, replay_map.sh, run_tracking.sh, run_tracking_sim.sh, fetch_models.sh, test_all.sh
-tests/                   # pytest 17개 모듈(124 tests; test_live_run 11, test_quality 8, test_export_geometry 3, test_vo 3 포함) + ui/ui_smoke.mjs(73 checks)
+tests/                   # pytest 18개 모듈(127 tests; test_live_run 11, test_quality 8, test_dense 3, test_export_geometry 3, test_vo 3 포함) + ui/ui_smoke.mjs(78 checks)
 data/public/<set>/SOURCE.md   # 데이터셋 출처·라이선스·SHA-256 (데이터 자체는 git 제외)
 data/models/yolox/SOURCE.md   # 가중치 출처·SHA-256 (가중치는 git 제외)
 assets/input/            # 사용자 본인 영상을 두는 곳 (git 제외)
@@ -172,9 +172,55 @@ docs/                    # 설계·계획·검증 기록
 | 수정 후 추적기, 실제 클립 재추적 (같은 검출 재사용) | TUM walking / `vtest.avi` / 몬트리올 거리 (REAL_MODEL / PUBLIC_DATASET) | PASS (실행; 정확도 지표 아님) | id 33→34 / 39→56 / 438→680, 프레임당 LOCKED 1.01→0.84 / 6.32→4.74 / 7.33→4.41, AMBIGUOUS 트랙이 있는 프레임 50/287 · 369/600 · 987/1,390, vtest 확정 지속 p50 13.0→3.65 s. 혼잡할수록 STOP이 늘고 트랙이 짧아지는 의도된 대가 |
 | E4 옷 색으로 두 사람을 구분할 수 있는가 (얼굴·생체 식별은 처음부터 제외; 머리 영역 미사용, 메모리 전용 HSV 히스토그램, Hellinger 거리) | fix_v3 재추적 3개 클립의 LOCKED 트랙 의사 라벨 (REAL_MODEL / PUBLIC_DATASET, 정답 신원 없음) | 실행 PASS, **판정 NO_GO** (vtest FAIL, 거리 FAIL, TUM BLOCKED) | 사전 기준 TPR ≥ 0.60 @ FPR ≤ 1 % 를 2개 클립 이상. vtest AUC 0.870, TPR@1 % 0.154(871/2,484쌍); 몬트리올 거리 AUC 0.874, TPR@1 % 0.493(5,083/5,756쌍); TUM AUC 0.963이나 음성 쌍 55개(< 200)로 BLOCKED. 1 % 오매칭에서 진짜 매칭의 15–49 %만 회수 → 추적기에 통합하지 않음, AMBIGUOUS → STOP 유지 — `outputs/evidence/e4_appearance/` |
 | E3 가상 경계에서 이동을 멈추는가 | MockTello 운동학 토이, 10 × 10 m, 여유 1 m (SIMULATED_FRAME_ONLY) | PASS (추적기 수정 후 재실행도 PASS) | 사전 6개 체크 모두 참. 보호 시 최소 거리 경계 안쪽 1.175 m(여유 구간 미진입), 비보호 대조군은 0.485 m 침범, 포즈 끊김 3–4 s 동안 `NO_POSE_FOR_GEOFENCE` 정지 10회·이동 0, 비루프백 패킷 0. 재실행 `outputs/evidence/e3_geofence_after_tracker_fix/`: 6개 체크·거리 수치 동일, 10 Hz 루프 지터로 차단 프레임 수만 1프레임 차이(42→43) |
-| 자동 테스트 | `scripts/test_all.sh` | PASS | **124 passed in 84.81 s** (`outputs/evidence/tests/pytest-20261109-043008.log`). 신규: `test_live_run.py` 11(버퍼 2, 안전 1, 시계 2, seek 1, 완료 검증 1, SIGKILL/SIGTERM 1, 무장치 1, 실제 모델 end-to-end + 재생 1, 느린 파이프라인 드롭 1), `test_server.py` +1(라이브 실행 수명주기·제어·무결성). 이전 단계: 112 passed(040916), 97 passed(024540), 94 passed(023923). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
-| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | **73/73 checks**, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 04:29 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 Dia 창에 탭 하나를 열어 실행하고 그 탭만 닫음). 신규 11개(Live 탭): 라이브 작업공간 표시, 처리 프레임 `LIVE`, 상태 줄 `3.0 fps · 16 ms · 0 of 6`, 지도 위치 NOT_AVAILABLE 표시, pause → `PAUSED`, resume → `LIVE`, LOCKED 박스 클릭 → `SELECT #1`, stop → "19 frames processed, 0 dropped (STOP_REQUESTED). Files verified", 끝난 실행이 재생 목록에 등재, `OPEN_LOOP_REPLAY`로 재생, 연결 끊김 시 Live start 비활성. 이전 62개도 유지. 브라우저에서 아직 확인하지 않은 Live 상태: `STALE_DATA`, `STALLED`, `FAILED`, `INCOMPLETE`, `CANCELLED`(NOT_RUN; 라벨은 `live.js`에 존재) |
+| 밀집 점군 바닥 커버리지 실험, 스미다 (3 프레임 고정 폴리곤) | GOOD 전역 지도의 포즈, 카메라 포즈 불변 | **기본 레이어 M0 유지; 최종 변형 ESVFN2x25 NOT_ADOPTED** (실험 레이어로만 설치) | 바닥 `cov1px`(640 px, 1 px 점) M0 0.0244 / 0.0024 / 0.2764 → ESVFN2x25 0.2789 / 0.119 / 0.6714(+25.4 / +11.7 / +39.5 pp), 구조물 모두 상승, `inconsist` 0.151 → 0.1165, `float_knn` 0.138 → 0.096, `float_fs` 0.485 → 0.369, 135.1 s(예산 176 s) — 전체 클립과 FSC(149/149 뷰, 6,520,886점, `inconsist` 0.0638 → 0.0444, 155 s)에서 2절 기준 전부 충족. 그러나 사전 등록된 선별 구간 t 26–34 s에서 `float_fs` 0.151 → 0.263(허용 +2 pp)으로 FAIL → 규칙대로 미채택. 상세는 아래 절과 `docs/PLAN_DENSE_COVERAGE.md` 10절 |
+| 자동 테스트 | `scripts/test_all.sh` | PASS | **127 passed in 84.96 s** (`outputs/evidence/tests/pytest-20261109-113035.log`). 신규: `test_dense.py` 3(지면 평면 스윕이 정면 스윕이 놓친 비스듬한 바닥을 복원, 다중 뷰 검증이 일치점은 유지·모순점과 미관측점은 제거, 희소점으로 지면 평면 적합). 이전 단계: 124 passed(043008; `test_live_run.py` 11, `test_server.py` +1), 112 passed(040916), 97 passed(024540), 94 passed(023923). `tests/test_tracker_ambiguity.py` 11개는 수정 전 추적기에서 8개 FAIL 후 수정으로 PASS(구현자 기록, 실패 로그 미보관) |
+| UI 테스트 (브라우저 연결 모드) | `node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222` | PASS | **78/78 checks**, 콘솔 오류 0 (`outputs/evidence/ui/ui_smoke.json`, 2026-11-09 11:33 KST, 사용자가 `--remote-debugging-port=9222`로 띄운 브라우저 창에 탭 하나를 열어 실행하고 그 탭만 닫음). 신규 5개(실험 밀집 레이어): 실험 레이어가 별도 옵션으로 제공, `NOT ADOPTED` 라벨과 사유 표시(`LAYER ▸ DENSE · EXPERIMENTAL · 2,087,132 pts in file`), 상태 줄에 실험 점 수 별도 표기(`dense verified 917,498 · dense experimental 2,087,132`), 패널 제목이 레이어를 따름(`Dense 3D map · experimental`), 뷰포트에 레이어 이름·점 수 표시; 기본 밀집 레이어는 여전히 `DENSE · VERIFIED · 917,498 pts in file`. 스크린샷 `outputs/evidence/ui/03e_dense_experimental_layer.png`. 이전 73개(Live 탭 11개 포함)도 유지. 브라우저에서 아직 확인하지 않은 Live 상태: `STALE_DATA`, `STALLED`, `FAILED`, `INCOMPLETE`, `CANCELLED`(NOT_RUN; 라벨은 `live.js`에 존재) |
 | 실기체 비행 | — | BLOCKED | 정책상 금지, 기체 없음 |
+
+## 밀집 점군 바닥 커버리지 실험 (dense coverage)
+
+**문제.** 기본 밀집 레이어(M0)는 나무·고가도로·건물은 촘촘하지만 카메라 바로 앞 보도는 거의 비어 있습니다(`outputs/evidence/dense/sumida_sameview_v2.jpg`). 목표는 *보이는* 바닥과 구조물을 더 복원하는 것이지, 이미 점이 있는 곳에 점을 더 찍는 것이 아닙니다. 그래서 점 총수·점 크기·중복 점·테스트 통과는 개선으로 세지 않고, 아래 측정만 셉니다. 계획과 기준은 첫 실행 전에 `docs/PLAN_DENSE_COVERAGE.md` 1–4절에 고정했고, 이후 변경은 수정이 아니라 날짜가 붙은 보완(A1–A5)으로만 추가했으며, 10절이 결과입니다.
+
+**측정 방법(고정).** 스미다 프레임 3개(`f000240` t≈8 s, `f000900` t≈30 s, `f001560` t≈52 s)에 `floor` / `floor_far` / `structure` 폴리곤을 손으로 한 번 그려 고정(`packages/mapping/regions/regions_sumida.json`, 오버레이 `outputs/evidence/dense_cov/regions_overlay_*.jpg`). 단계별 지표: 후보 깊이 `cand` → 신뢰 게이트 통과 `conf`(거부 사유 `cost` / `margin` / `texture` / `boundary` 분해) → 타 뷰 검증 통과 `verif` → 융합점 수 `fused_n` → **`cov1px`**(융합 점군을 640 px에 1 px 점으로 투영했을 때 영역 픽셀이 덮인 비율, 팽창 없음). 오류 지표: `inconsist`(독립 보류 뷰와 깊이가 10 % 넘게 다른 검증점 비율), `float_knn`(2 복셀 안 이웃 < 4인 점 비율), `float_fs`(어떤 뷰가 그 점 *너머*를 보는 자유공간 위반 비율), 뷰별 희소점 일치율, 실행 시간. 수용 기준(2절): 세 프레임 모두 바닥 `cov1px` +8 pp 이상이고 평균 ≥ 1.4배, 점 수도 함께 증가, 구조물 −2 pp 이내, `inconsist` ≤ 15 %·+2 pp 이내, `float_knn`·`float_fs` +2 pp 이내, 희소 일치율 ≥ 0.70, 스미다 ≤ 176 s, FSC 회귀 통과. 모든 변경은 짧은 구간(t 4–14 s)에서 먼저, 통과한 하나만 전체 클립과 FSC로. M0는 실험 전에 공개 레이어와 **바이트 단위로 동일**하게 재현했습니다.
+
+**바닥이 사라지는 지점(M0 측정).** (1) 신뢰 게이트 — 바닥 `conf` 0.089 / 0.072 / 0.231(구조물 0.390 / 0.501 / 0.287), 거부의 대부분이 `cost`(0.838 / 0.779 / 0.297): 정면 평행 창이 비스듬한 바닥에서 맞지 않음. (2) 단일 파트너 검증. (3) 융합 복셀 — 복셀 0.0302가 가까운 바닥에서 중앙값 16.4 × 5.7 px로 투영되어, 바닥 복셀을 전부 채워도 `cov1px`는 `f000240`에서 0.026, `f000900`에서 0.021을 넘을 수 없음(`fusion_ceiling.json`; 0.5× 복셀 0.105 / 0.084, 0.25× 0.328 / 0.292). (4) `f000900` 구간(t≈23–35 s)은 그 이전에 이웃 선택이 문제 — 탁 트인 공원이라 중앙 깊이가 커서 baseline/depth가 0.051–0.058로 하한 0.05에 걸리고, 가까운 바닥에 시차를 주는 인접 프레임이 이웃으로 뽑히지 않음.
+
+**실행 결과** (`outputs/evidence/dense_cov/summary.json`; 바닥 `cov1px`는 t 4–14 s 구간이면 `f000240`, t 26–34 s 구간이면 `f000900`, 전체 클립이면 세 프레임):
+
+| 실행 | 변경 | 바닥 `cov1px` (전 → 후) | 판정 — 결정한 기준 |
+|---|---|---|---|
+| E-R 깊이 범위, E-W 작업 폭 960 | — | — | **NOT_RUN** — M0에서 발동 조건 미충족(`boundary_near` ≤ 0.4 %, `texture` 비지배) |
+| EV / EV2 (t 4–14 s) | 다중 파트너 검증(일치 ≥ 1 / ≥ 2, 모순 0) | 0.0225 → 0.0453 / 0.0188 | **FAIL** — +8 pp 미달; EV는 `float_knn` +2.7 pp, EV2는 구조물 −5.9 pp |
+| ES (t 4–14 s) | 지면 평면 스윕 추가 | 0.0225 → 0.0337 | **FAIL** — +8 pp 미달, `inconsist` 0.157 > 0.15. 단 바닥 `conf` 0.089 → 0.234, 바닥 `inconsist` 0.315 → 0.078로 복원 자체는 개선 → 손실이 융합 복셀로 이동 |
+| ESV / EF / ESF (t 4–14 s) | ES+EV / 0.5× 근거리 복셀만 / ES+0.5× | 0.0508 / 0.0423 / 0.0898 | **FAIL** — +8 pp 미달(ESF +6.7 pp, `inconsist` 0.157) |
+| **ESVF** (t 4–14 s) | ES + EV + 0.5× 근거리 복셀 | 0.0225 → **0.1182 (+9.6 pp)** | **PASS(구간)** — 구조물 0.653, `inconsist` 0.1185, `float_fs` 0.226, 25.0 s → 전체 클립으로 |
+| ESVF 전체 클립 | 동일 | 0.0244 / 0.0024 / 0.2764 → 0.1266 / **0.0096** / 0.5862 | **FAIL** — `f000900` +0.7 pp(기준 +8 pp); 나머지 기준은 모두 충족(`inconsist` 0.1154, `float_fs` 0.352, 100.2 s). FSC 회귀는 PASS(145/145, 3,753,179점, 151.6 s) |
+| ESVFN (E-N, 두 구간) | 이웃 규칙 `median_or_near` | t 26–34 s 0.0002 → 0.0664; t 4–14 s 0.119 | **FAIL** — t 4–14 s 구조물 0.621 → 0.500(−12 pp); t 26–34 s `float_fs` 0.151 → 0.292(+14 pp). 원인: 스캔 순서상 가까운 프레임이 먼 구조물에 시차를 주는 이웃을 밀어냄 |
+| ESVFN2 0.5× (t 26–34 s) | `median_then_near`(중앙 깊이 기준 이웃 먼저, 부족분만 근거리 기준으로 채움) | 0.0002 → 0.0563 | **FAIL** — +5.6 pp(0.5× 복셀 상한이 0.084) |
+| **ESVFN2x25** 0.25× (t 26–34 s, 사전 등록 선별 구간) | 동일, 0.25× 근거리 복셀 | 0.0002 → 0.1105 (+11.0 pp) | **FAIL(선별)** — `float_fs` 0.151 → 0.263(+11.3 pp, 허용 +2 pp). 단, 전 클라우드는 깊이맵 6장, 후 클라우드는 21장으로 검사되는 편향이 있고(A5에 사전 기재), 같은 21장으로 둘 다 검사하면 0.359 → 0.263으로 감소. 고정된 정의가 판정을 결정 |
+| ESVFN2x25 전체 클립 | 동일 | 0.0244 / 0.0024 / 0.2764 → **0.2789 / 0.119 / 0.6714 (+25.4 / +11.7 / +39.5 pp)** | 2절 기준 **전부 충족** — 바닥 점 수 491 → 7,701, 794 → 6,574, `f000900` 투영 162 → 12,532; 구조물 0.877 / 0.877 / 0.664(모두 상승); `inconsist` 0.151 → 0.1165; `float_knn` 0.138 → 0.096; `float_fs` 0.485 → 0.369; 희소 일치율 최소 0.749; 참조 뷰 147(검증 141), 2,087,132점; 135.1 s(≤ 176). **그러나 선별 구간 FAIL로 규칙상 NOT_ADOPTED** |
+| ESVFN2x25 FSC 회귀 | 동일 | (영역 없음) | **PASS** — 149/149 뷰, 6,520,886점, `inconsist` 0.0638 → 0.0444, `float_knn` 0.183 → 0.055, `float_fs` 0.397 → 0.182, 155.1 s(≤ 230) |
+
+**결정.** 기본 밀집 레이어는 M0 그대로입니다(`outputs/maps/*/dense/`, 바이트 동일). ESVFN2x25는 사전 등록된 선별 구간을 통과하지 못했으므로 계획 4절 규칙대로 **미채택**이며, 전체 클립과 FSC에서 모든 기준을 충족했다는 사실도 그대로 기록합니다. 결과를 보고 나서 기준을 바꾸는 것은 이 계획이 금지하므로, 채택 여부는 두 표를 앞에 두고 **사용자가 결정**할 일입니다. 그동안 `outputs/maps/mqg_sumida_0025_0125/dense_experimental/`과 `outputs/maps/mqg_fsc_campus_aerial/dense_experimental/`에 `DENSE_EXPERIMENTAL (relative scale) - not adopted` 라벨(`experimental.status = NOT_ADOPTED`, `run`, `reason`, `evidence` 필드)로만 설치되어 있고, 콘솔에서는 `Dense · experimental (not adopted)` 옵션으로 따로 고를 수 있습니다. 메시는 손대지 않았고(여전히 실험 단계, 시각 검사 FAIL), 카메라 포즈·궤적·안전 정책·MOCK 정책도 변경이 없습니다. 관찰만 되고 측정되지 않은 것: 실험 점군의 `f000240` 바닥 오른쪽 가장자리에 가는 세로 줄무늬 점들(`sameview_f000240_ESVFN2x25_full.jpg`).
+
+**재현.** 각 실행의 플래그는 `outputs/experiments/dense_cov/<run>/dense_report.json`의 `config` 블록에 있습니다(실행별 셸 한 줄은 보관되지 않음). 최종 변형과 측정 하네스:
+
+```zsh
+# 1) 실험 변형 생성 (M0 = 플래그 없이 --sweep fronto --verify next --voxel-near-scale 1.0 --neighbour-rule median)
+PYTHONPATH=packages .venv/bin/python -m mapping.dense_cpu outputs/maps/mqg_sumida_0025_0125 \
+  --max-pairs 200 --sweep fronto+ground --verify multi --neighbour-rule median_then_near --voxel-near-scale 0.25 \
+  --out outputs/experiments/dense_cov/ESVFN2x25_full --diag-frames f000240.jpg f000900.jpg f001560.jpg
+#    짧은 구간: --t-range 4 14  (또는 26 34)
+
+# 2) 고정 폴리곤으로 단계 지표·오류 지표·sameview 렌더·coverage_table.csv 생성 (before = M0 실행 폴더)
+PYTHONPATH=packages .venv/bin/python -m mapping.dense_eval outputs/maps/mqg_sumida_0025_0125 \
+  outputs/experiments/dense_cov/ESVFN2x25_full --name ESVFN2x25_full \
+  --regions packages/mapping/regions/regions_sumida.json \
+  --before-dir outputs/experiments/dense_cov/M0_sumida_full --before-name M0_full \
+  --out outputs/evidence/dense_cov
+```
+
+**한계.** 밀집 점은 여전히 "검증된 상대 스케일 점"이지 표면이 아니며 미터 거리·충돌 회피를 보장하지 않습니다. `cov1px`는 뷰어가 1 px로 보여주는 것을 재는 지표라 복셀 크기에 상한이 걸립니다(위 (3)); 복원 자체는 `verif`로 따로 보고합니다. `float_knn`은 복셀이 작아지면 구조적으로 내려가므로 복셀 변경의 오류 판단에는 `float_fs`와 `inconsist`를 봐야 하고, `float_fs`는 참조 뷰 수가 바뀌면 검사하는 깊이맵 수도 바뀌는 편향이 있습니다(보조 지표 `float_fs_same_maps`로만 기록). 폴리곤은 스미다 3 프레임에만 있어 FSC는 회귀(뷰 수·점 수·오류·시간)만 확인했습니다. 모든 수치는 Apple M6 한 대의 CPU 측정입니다.
 
 ## 알려진 한계 / 다음 단계
 
@@ -188,7 +234,7 @@ docs/                    # 설계·계획·검증 기록
 7. **단일 환경.** 모든 수치는 Apple M6 / 16 GiB / macOS 27.2 한 대에서 측정했습니다.
 8. **품질 판정은 지도가 "맞다"는 뜻이 아닙니다.** GOOD은 등록률·커버리지·재투영·모델 수·점프 수의 고정 임계값을 통과했다는 뜻이며, 정답 궤적과 비교한 지도는 TUM fr1/desk뿐입니다(증분 2.05 cm, 전역 1.66 cm ATE RMSE, 스케일 차용). 스미다·FSC·위트레흐트 지도에는 정답이 없어 절대 정확도를 주장하지 않습니다. FSC 증분 지도의 후반부 드리프트는 전역 매퍼로 사라졌지만 원인은 확인되지 않았고(F-08), 위트레흐트는 두 매퍼 모두 PARTIAL로 남아 있습니다(F-11).
 9. **편집된 영상은 지도가 되지 않습니다.** 방콕 60 s 구간(컷 18개)은 컷을 넘는 매칭을 막은 뒤 커버리지 0.068–0.085의 POOR로 남았습니다. 한 테이크 영상(스미다·FSC)만 GOOD입니다.
-10. **밀집 점군은 "검증된 상대 스케일 점"이지 표면이 아닙니다.** 평면 스윕 결과 중 희소점 일치와 다중 뷰 일관성을 통과한 점만 남기며, 카메라 바로 앞 보도처럼 반복 질감이 가파른 각도로 보이는 영역은 비어 있습니다. Poisson 메시는 시각 검사 FAIL로 콘솔에 제공하지 않습니다(F-09). 합성 방에서는 밀집점의 97.8 %가 실제 표면 0.05 룸 단위 이내였지만 고정된 수용 정의로는 FAIL(3/8 뷰)입니다.
+10. **밀집 점군은 "검증된 상대 스케일 점"이지 표면이 아닙니다.** 평면 스윕 결과 중 희소점 일치와 다중 뷰 일관성을 통과한 점만 남기며, 기본 레이어(M0)에서는 카메라 바로 앞 보도처럼 반복 질감이 가파른 각도로 보이는 영역이 비어 있습니다. 바닥 커버리지 실험(위 절, F-12–F-15)에서 지면 평면 스윕 + 다중 뷰 검증 + 0.25× 근거리 복셀 + 이웃 규칙 변경(ESVFN2x25)이 전체 클립과 FSC의 모든 기준을 충족했지만 사전 등록된 선별 구간의 `float_fs` 기준을 넘지 못해 **미채택**이고, 실험 레이어로만 제공됩니다. 채택은 사용자 결정입니다. Poisson 메시는 시각 검사 FAIL로 콘솔에 제공하지 않습니다(F-09). 합성 방에서는 밀집점의 97.8 %가 실제 표면 0.05 룸 단위 이내였지만 고정된 수용 정의로는 FAIL(3/8 뷰)입니다.
 11. **VO는 보정된 카메라가 필요합니다.** 초점거리를 0.9 × 폭으로 추정한 스미다 VO는 SfM 궤적 대비 23.3 %로 기준(15 %)에 미달했고, SfM의 초점거리를 빌리면 2.56 %지만 독립 증거가 아닙니다(F-10).
 
 ## 데이터 · 모델 출처
@@ -214,6 +260,7 @@ Tello EDU 연동 근거: Ryze Tello SDK 2.0 사용자 가이드(UDP 8889 명령,
 - `docs/IMPLEMENTATION_PLAN.md`, `docs/PLAN_M4_DETECTOR_TRACKING_PANEL.md`, `docs/PLAN_E2_TRACKER_FIX.md` — 마일스톤 계획, 종료 테스트, E2 추적기 수정 계획과 구현 결과
 - `docs/PLAN_MAPPING_QUALITY.md`, `docs/PLAN_GEOMETRY_AND_DENSE.md` — 지도 품질 판정·샷 처리 계획, 기하 진단·매퍼 비교·CPU 밀집 경로 계획, 각각 끝에 "Result" 절(기준별 PASS/FAIL/BLOCKED/NOT_RUN)
 - `docs/PLAN_LIVE_RUN_TIMELINE.md` — 한 시간축 라이브 실행(파일 원속도/웹캠, 검출+추적+VO, control.json, 타임라인 재생) 계획과 끝의 "Result" 절(T1–T8 판정, 구현 편차)
+- `docs/PLAN_DENSE_COVERAGE.md` — 밀집 점군 바닥 커버리지 계획(고정 측정 설정, 수용 기준, 실험 순서, 보완 A1–A5)과 10절 "Result"(실행별 판정표, 미채택 결정, 증거 경로)
 - `docs/VERIFICATION_CONTRACT.md`, `docs/RECOVERY_MATRIX.md`, `docs/PHASES_AND_ACCEPTANCE.md` — 검증 기준, 복구 매트릭스, 품질 게이트
 - `docs/TELLO_SDK.md`, `docs/ENV_AUDIT.md`, `docs/DESIGN_ASSETS.md`, `docs/SOURCES_AND_ASSUMPTIONS.md`
 
