@@ -30,6 +30,67 @@
 - 연구로 키우기 → **X500급 PX4 + RPi5 + (깊이 카메라 또는 라이다)**.
 - **하드웨어 없이 먼저 할 수 있는 무료 단계:** PX4 SITL(Gazebo) 시뮬레이션에 우리 MOCK 제어를 연결. 이 단계는 기체 구매 없이 진행 가능합니다.
 
+### 가격과 판매처 (2026-11-09 웹 스냅샷, 구매 전 재확인)
+
+원화는 판매처 표시가 기준이며 배송비·재고·환율로 달라집니다. USD는 **해외가**(환산하지 않음). 어느 판매처도 추천·보증이 아니라 당일 확인된 가격 예시입니다.
+
+**1단계 · Tello EDU** — 신품은 단종(중고만).
+
+| 품목 | 가격 | 판매처 | 비고 |
+|---|---|---|---|
+| Tello EDU 중고(본체 + 배터리) | 매물 예 82,000원 | 번개장터(약 11개월 전 등록 매물) [20] | 시세는 번개장터·당근에서 "텔로 EDU" 검색; 여분 배터리 별도 |
+
+총예산 **약 10만 원 안팎**(여분 배터리 별도).
+
+**2단계 · DJI Mini 4 Pro** (249 g)
+
+| 품목 | 가격 | 판매처 | 비고 |
+|---|---|---|---|
+| Mini 4 Pro + RC-N2 기본 | 790,000원 | 엑스캅터 xcopter.com [21], 헬셀 helsel.co.kr(품절 표시), 다나와 17개 몰 [23] | 출시가 93만 원(RC-N2) [24] |
+| 플라이모어 콤보 | 1,097,000원 | 헬셀 [22] | |
+| 콤보 플러스 | 최저 1,165,000원 | 다나와 최저가(11번가) [23] | |
+
+Mini 5 Pro는 2025-09 출시이나 SDK 미지원(1절). 총예산 **약 80–120만 원**.
+
+**3단계 · PX4 연구 기체** (X500 V2 + Pixhawk + Raspberry Pi 5)
+
+| 품목 | 가격 | 판매처 | 비고 |
+|---|---|---|---|
+| Holybro X500 V2 + Pixhawk 6C 풀 키트 | 941,600원 | 엑스캅터(GPS M10 출고) [25] | |
+| 같은 키트 | 1,082,000원 | 픽스호크코리아 pixhawk.co.kr(433 / 915 MHz 선택) [26] | 프레임만 250,000원 |
+| 같은 키트 | 1,257,200원(Pixhawk 6X 옵션 1,584,300원) | 아크로잭스 acroxar.com [27] | |
+| 공식 해외가 | $609 (해외가) | holybro.com [13] | 확인 시 품절 |
+| Pixhawk 6C 단품 | 363,000원 | 드론위 dronewe.com(공식 수입원) [28] | |
+| Raspberry Pi 5 8 GB | 322,300원(VAT 포함, 가이드북 포함) | 디바이스마트 [29] | |
+| Raspberry Pi 5 16 GB | 671,000원(VAT 포함) | 디바이스마트 [30] | 2025-12 이후 메모리값 급등으로 출시가의 3배 이상(보도) [31] |
+| 조종기(RC 송수신기)·배터리(4S)·충전기 | 미확인 | — | 키트 포함 여부를 확인하고 별도 구매가 필요할 수 있음 |
+
+총예산 **키트 + RPi5 약 130–170만 원 + 조종기·배터리 + 센서**.
+
+**센서(선택, 3단계용)**
+
+| 품목 | 가격 | 판매처 | 비고 |
+|---|---|---|---|
+| Slamtec RPLIDAR C1 (2D 라이다) | $72–80 (해외가) | RobotShop [32], Waveshare | 국내가 미확인. 수평 한 줄만 재므로 드론에서 쓰임이 제한적 |
+| Luxonis OAK-D Lite (스테레오 깊이 카메라) | $149–269 (해외가; 공식 $269) | Luxonis 공식 [33] | 일부 판매처 단종·후속 모델 안내 |
+| Intel RealSense D435i (깊이 카메라) | 1,031,687원 | RS Online 한국 [34] | 2026-03 스냅샷, 일시 품절 |
+| Livox Mid-360 (3D 라이다) | $979 (해외가) | Livox 공식 [35] | |
+
+깊이 카메라 수십만~100만 원, 3D 라이다 $979~. 비교 기준은 `docs/SYSTEM_STATUS.md` "라이다 vs 카메라".
+
+**총예산 요약(대략)**
+
+| 단계 | 대략 |
+|---|---|
+| 1단계 Tello EDU 중고 | 약 10만 원 |
+| 2단계 Mini 4 Pro | 약 80–120만 원 |
+| 3단계 X500 키트 + RPi5 | 약 130–170만 원 + 조종기·배터리 + 센서(깊이 카메라 수십만~100만 원, 3D 라이다 $979~) |
+
+**행정 비용·기간**
+
+- 4종 조종자 증명: 한국교통안전공단 배움터(edu.kotsa.or.kr) 온라인 6시간 7과목, 시험 없음; 수수료는 미확인(학원 수강 필수 아님) [37].
+- 드론원스톱 표준 처리기간: 비행승인 3근무일, 항공촬영 4근무일, 특별비행승인 30근무일 [36].
+
 ---
 
 ## 2. 한국에서 해야 할 일
@@ -82,5 +143,23 @@
 17. https://www.thedronegirl.com/2023/12/29/tello-drone-discontinued/
 18. https://pilotinstitute.com/dji-tello-alternatives-top-3-best-educational-drones/
 19. https://drone.onestop.go.kr
+20. https://m.bunjang.co.kr/search/products?q=tello
+21. https://xcopter.com/product/dji-mini-4-pro-%EC%B9%B4%EB%A9%94%EB%9D%BC-%EB%93%9C%EB%A1%A0-rc-n2-%EC%A1%B0%EC%A2%85%EA%B8%B0-%EB%A7%A4%EB%B9%85-%EB%AF%B8%EB%8B%884-%ED%94%84%EB%A1%9C/35274/
+22. https://helsel.co.kr/product/dji-mini-4-pro-%ED%94%8C%EB%9D%BC%EC%9D%B4-%EB%AA%A8%EC%96%B4-%EC%BD%A4%EB%B3%B4-%EB%AF%B8%EB%8B%88-4-%ED%94%84%EB%A1%9C/32694/
+23. https://prod.danawa.com/info/?pcode=28513145
+24. https://www.digitaltoday.co.kr/news/articleView.html?idxno=489438
+25. https://m.xcopter.com/product/holybro-x500-v2-full-kit-pixhawk6c-%ED%94%BD%EC%8A%A4%ED%98%B8%ED%81%AC/33090/
+26. https://pixhawk.co.kr/product/holybro-x500-v2-full-kit-pixhawk6c%ED%94%BD%EC%8A%A4%ED%98%B8%ED%81%AC/358/
+27. https://acroxar.com/product/%ED%99%80%EB%A6%AC%EB%B8%8C%EB%A1%9C-holybro-x500-v2-pixhawk-full-kit-%ED%94%BD%EC%8A%A4%ED%98%B8%ED%81%AC-x500-%EC%98%AC%EC%9D%B8%EC%9B%90-%EB%93%9C%EB%A1%A0%ED%82%A4%ED%8A%B8/178/
+28. https://dronewe.com/product/holybro-pixhawk-6c-%ED%94%BD%EC%8A%A4%ED%98%B8%ED%81%AC/6330/
+29. https://www.devicemart.co.kr/goods/view?no=15215449
+30. https://www.devicemart.co.kr/goods/view?no=15666226
+31. https://www.digitaltoday.co.kr/news/articleView.html?idxno=712155
+32. https://www.robotshop.com/products/slamtec-rplidar-c1-360-dtof-laser-scanner
+33. https://shop.luxonis.com/products/oak-d-lite-1
+34. https://kr.rs-online.com/web/p/depth-cameras/2026352
+35. https://www.livoxtech.com/mid-360
+36. https://mediahub.seoul.go.kr/archives/2005610
+37. https://yellowit.co.kr/it-review/%eb%93%9c%eb%a1%a0-%ec%9e%90%ea%b2%a9%ec%a6%9d%c2%b7%eb%b9%84%ed%96%89%ed%97%88%ea%b0%80-%ec%8b%a0%ec%b2%ad%eb%b0%a9%eb%b2%95%ef%bd%9c%eb%af%b8%ec%8b%a0%ea%b3%a0-%ea%b3%bc%ed%83%9c%eb%a3%8c%ec%99%80/
 
-출처 중 7, 9, 10, 11은 법령 원문이 아닌 2차 자료(블로그·기사·커뮤니티)이므로 수치(처리 기간, 과태료, 벌금)는 1, 2, 6, 12와 드론원스톱에서 재확인하세요.
+출처 중 7, 9, 10, 11, 37은 법령 원문이 아닌 2차 자료(블로그·기사·커뮤니티)이므로 수치(처리 기간, 과태료, 벌금, 교육 시간)는 1, 2, 6, 12와 드론원스톱·한국교통안전공단에서 재확인하세요. 20–35는 판매처·제조사 페이지의 당일 가격 스냅샷이며 중고 매물(20)은 개별 거래 예시일 뿐 시세가 아닙니다.
