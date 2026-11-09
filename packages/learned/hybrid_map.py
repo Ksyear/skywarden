@@ -71,6 +71,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="learned.hybrid_map")
     ap.add_argument("session"); ap.add_argument("--chunks", nargs="+", required=True)
     ap.add_argument("--masks"); ap.add_argument("--mvs", required=True); ap.add_argument("--out", required=True)
+    ap.add_argument("--model-first", type=float, default=0.0, help="use the model for every frame up to this camera distance (no per-frame trust check), as in the demo")
     a = ap.parse_args(argv)
     sd, out = Path(a.session), Path(a.out)
     rec = pycolmap.Reconstruction(str(sd / "sparse" / "0"))
@@ -99,6 +100,8 @@ def main(argv=None) -> int:
         depth = depth * k
         tz = trust_depth(depth, K, R, t, [pts[i] for i in ids], W, H)
         trusts.append(tz)
+        if a.model_first > 0:
+            tz = a.model_first
         if tz <= 0:
             rows.append({"frame": n, "trust_depth": 0.0, "near_points": 0, "scale_fix": round(k, 4)}); continue
         keep = np.ones((H, W), bool)
@@ -116,7 +119,7 @@ def main(argv=None) -> int:
     M = read_ply(a.mvs); Xm = np.stack([M["x"], M["y"], M["z"]], 1).astype(np.float64)
     cams = np.array([-_pose(im)[0].T @ _pose(im)[1] for im in by.values()])
     dist, _ = cKDTree(cams).query(Xm)
-    t_near = float(np.median([x for x in trusts if x > 0]))
+    t_near = a.model_first if a.model_first > 0 else float(np.median([x for x in trusts if x > 0]))
     sp_ = np.array(list(pts.values())); nn_, _ = cKDTree(sp_).query(sp_, k=2); vox_ = float(np.median(nn_[:, 1]))
     # near MVS points are replaced only where learned near points actually exist; elsewhere they stay
     covered = np.zeros(len(Xm), bool)

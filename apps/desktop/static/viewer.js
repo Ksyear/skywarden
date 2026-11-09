@@ -68,6 +68,19 @@ export class PointViewer {
     let up = [0, 0, 0], fwd = [0, 0, 0];
     for (const p of poses) { const R = p.R; up = sub(up, [R[0][1], R[1][1], R[2][1]]); fwd = [fwd[0] + R[0][2], fwd[1] + R[1][2], fwd[2] + R[2][2]]; }
     up = poses.length ? norm(up) : [0, -1, 0];
+    // A tilted camera (a drone looking down) makes its own "up" a poor level reference. When the scene is flat
+    // (the thinnest spread of the points is well below the next one), level the map to that plane instead.
+    this.levelled = false;
+    if (n > 100) {
+      const st = Math.max(1, Math.floor(n / 6000)), m = [0, 0, 0]; let k = 0;
+      for (let i = 0; i < n; i += st) { m[0] += cloud.xyz[3 * i]; m[1] += cloud.xyz[3 * i + 1]; m[2] += cloud.xyz[3 * i + 2]; k++; }
+      m[0] /= k; m[1] /= k; m[2] /= k;
+      const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+      for (let i = 0; i < n; i += st) { const v = [cloud.xyz[3 * i] - m[0], cloud.xyz[3 * i + 1] - m[1], cloud.xyz[3 * i + 2] - m[2]]; for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) S[a][b] += v[a] * v[b] / k; }
+      const ev = jacobiEig(S);  // ascending variances
+      const e0 = ev.vecs[0];
+      if (ev.vals[0] < 0.25 * ev.vals[1] && Math.abs(dot(e0, up)) > Math.cos(70 * Math.PI / 180)) { up = dot(e0, up) > 0 ? e0 : e0.map((v) => -v); this.levelled = true; }
+    }
     let f = sub(fwd, up.map((u) => u * dot(fwd, up)));
     if (Math.hypot(...f) < 1e-6) f = Math.abs(up[2]) < 0.9 ? cross(up, [0, 0, 1]) : cross(up, [1, 0, 0]);
     const z = norm(f.map((v) => -v)), x = norm(cross(up, z));
@@ -103,6 +116,7 @@ export class PointViewer {
     if (this.cloud) { this.radius = mode === "full" ? this.radiusFull : this.radiusMain; this.resetView(); }
   }
   resetView() { Object.assign(this.view, { yaw: 0, pitch: 0.35, dist: this.radius ? this.radius * 2.6 : 3, panX: 0, panY: 0 }); this.request(); }
+  topView() { Object.assign(this.view, { pitch: 1.5, dist: this.radius ? this.radius * 2.4 : 3, panX: 0, panY: 0 }); this.request(); }
   setVisibleUpTo(k) { this.visibleUpTo = k; this.request(); }
   setCurrent(k) { this.current = k; if (this.roi?.on) this._frameRoi(false); this.request(); }
   // Area of interest: only points near the current camera are drawn and framed; the overview shows the whole map.
@@ -261,10 +275,26 @@ export class PointViewer {
     c.addEventListener("keydown", (e) => {
       const k = { ArrowLeft: () => (this.view.yaw -= 0.1), ArrowRight: () => (this.view.yaw += 0.1),
         ArrowUp: () => (this.view.pitch = Math.max(-1.5, this.view.pitch - 0.1)), ArrowDown: () => (this.view.pitch = Math.min(1.5, this.view.pitch + 0.1)),
-        "+": () => this.zoom(0.85), "=": () => this.zoom(0.85), "-": () => this.zoom(1.18), r: () => this.resetView(), R: () => this.resetView() }[e.key];
+        "+": () => this.zoom(0.85), "=": () => this.zoom(0.85), "-": () => this.zoom(1.18), r: () => this.resetView(), R: () => this.resetView(), t: () => this.topView(), T: () => this.topView() }[e.key];
       if (k && this.cloud) { e.preventDefault(); e.stopPropagation(); k(); this.request(); }
     });
   }
 
   zoom(factor) { this.view.dist = Math.max(this.radius * 0.1, Math.min(this.radius * 30, this.view.dist * factor)); this.request(); }
+}
+
+// eigen-decomposition of a symmetric 3x3 matrix (Jacobi); vals ascending, vecs[i] the unit vector of vals[i]
+function jacobiEig(A0) {
+  const A = A0.map((r) => r.slice()), V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let it = 0; it < 50; it++) {
+    let p = 0, q = 1;
+    for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) if (Math.abs(A[i][j]) > Math.abs(A[p][q])) { p = i; q = j; }
+    if (Math.abs(A[p][q]) < 1e-15) break;
+    const th = 0.5 * Math.atan2(2 * A[p][q], A[q][q] - A[p][p]), c = Math.cos(th), s = Math.sin(th);
+    for (let k = 0; k < 3; k++) { const akp = A[k][p], akq = A[k][q]; A[k][p] = c * akp - s * akq; A[k][q] = s * akp + c * akq; }
+    for (let k = 0; k < 3; k++) { const apk = A[p][k], aqk = A[q][k]; A[p][k] = c * apk - s * aqk; A[q][k] = s * apk + c * aqk; }
+    for (let k = 0; k < 3; k++) { const vkp = V[k][p], vkq = V[k][q]; V[k][p] = c * vkp - s * vkq; V[k][q] = s * vkp + c * vkq; }
+  }
+  const idx = [0, 1, 2].sort((a, b) => A[a][a] - A[b][b]);
+  return { vals: idx.map((i) => A[i][i]), vecs: idx.map((i) => [V[0][i], V[1][i], V[2][i]]) };
 }

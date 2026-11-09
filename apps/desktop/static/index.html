@@ -59,20 +59,16 @@
         <option value="sparse">Sparse · raw</option>
         <option value="filtered" disabled>Sparse · filtered</option>
         <option value="dense" disabled>Dense · verified</option>
-        <option value="dense_exp" disabled>Dense · experimental (not adopted)</option>
-        <option value="dense_static" disabled>Dense · static scene (trial)</option>
-        <option value="dense_static_v2" disabled>Dense · static scene v2 (trial)</option>
-        <option value="dense_static_v3" disabled>Dense · static scene v3 (trial)</option>
-        <option value="dense_zipstyle" disabled>Model output · all pixels (as in the demo)</option>
-        <option value="dense_hybrid" disabled>Hybrid · model near + MVS far</option>
-        <option value="dense_learned" disabled>Dense · with learned depth (trial)</option>
-        <option value="model_estimated" disabled>Model estimated (not verified)</option>
-        <option value="dense_static_local" disabled>Dense · nearby scene (comparison)</option>
+        <option value="dense_onpath" disabled>Model output · steady (on our camera path)</option>
+        <option value="dense_zipstyle" disabled>Model output · all pixels</option>
+        <option value="dense_hybrid" disabled>Hybrid · model near + multi-view far</option>
+        <option value="dense_learned" disabled>Dense · with learned depth</option>
       </select>
       <button class="btn" id="show-path" aria-pressed="true" disabled title="Show the camera trajectory (P)">Path</button>
       <button class="btn" id="show-cams" aria-pressed="true" disabled title="Show camera frustums (C)">Cameras</button>
       <button class="btn" id="roi" aria-pressed="false" disabled title="Area of interest: only the surroundings of the current camera, with an overview of the whole map (N)">Nearby</button>
       <button class="btn" id="framing" aria-pressed="false" disabled title="Frame every point (full extent) instead of the main observed region">Full extent</button>
+      <button class="btn" id="top-view" disabled title="Look straight down - for drone (aerial) maps (T)">Top</button>
       <button class="btn" id="reset-view" disabled title="Reset view (R)">Reset view</button>
     </div>
     <div class="map-stage">

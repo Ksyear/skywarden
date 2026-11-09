@@ -27,10 +27,12 @@ const check = (name, ok, detail = "") => { results.push({ name, status: ok ? "PA
 
 // ---------- server ----------
 const mapsRoot = mkdtempSync(join(tmpdir(), "sda-ui-maps-"));
-for (const s of [REAL, SIM, MQ_PARTIAL, MQ_DENSE]) if (existsSync(join(ROOT, "outputs/maps", s))) symlinkSync(join(ROOT, "outputs/maps", s), join(mapsRoot, s));
+// test fixtures may have been moved out of the app's list into outputs/archive (see outputs/archive/manifest.json)
+const fixture = (kind, name) => [join(ROOT, "outputs", kind, name), join(ROOT, "outputs/archive", kind, name)].find((p) => existsSync(p));
+for (const s of [REAL, SIM, MQ_PARTIAL, MQ_DENSE]) if (fixture("maps", s)) symlinkSync(fixture("maps", s), join(mapsRoot, s));
 const tracksRoot = mkdtempSync(join(tmpdir(), "sda-ui-tracks-"));
 const runsRoot = mkdtempSync(join(tmpdir(), "sda-ui-runs-"));
-for (const t of [TRACK, TRACK_AMB]) if (existsSync(join(ROOT, "outputs/tracks", t))) symlinkSync(join(ROOT, "outputs/tracks", t), join(tracksRoot, t));
+for (const t of [TRACK, TRACK_AMB]) if (fixture("tracks", t)) symlinkSync(fixture("tracks", t), join(tracksRoot, t));
 const port = await freePort();
 let server;
 const startServer = () => { server = spawn(join(ROOT, ".venv/bin/python"), [join(ROOT, "apps/desktop/server.py"), "--port", String(port), "--maps-root", mapsRoot, "--tracks-root", tracksRoot, "--runs-root", runsRoot], { stdio: "ignore" }); };

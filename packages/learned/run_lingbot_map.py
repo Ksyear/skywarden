@@ -56,6 +56,8 @@ def main() -> int:
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
     ap.add_argument("--image-size", type=int, default=518)
     ap.add_argument("--num-scale-frames", type=int, default=8)
+    ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"],
+                    help="trunk dtype on the Apple GPU; heads stay float32 (as the demo does on CUDA). bfloat16 is 10-40x faster here")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     names = sorted(p.name for p in Path(a.frames).glob("*.jpg"))
@@ -87,10 +89,18 @@ def main() -> int:
             if v is not None and v.dtype in (torch.float64, torch.complex128):
                 m._buffers[k] = v.to(torch.complex64 if v.is_complex() else torch.float32)
     model = model.to(dev).eval()
+    dtype = getattr(torch, a.dtype)
+    if dtype != torch.float32:
+        model.aggregator = model.aggregator.to(dtype=dtype)
+    if dev.type == "mps":  # the key/value cache grows by concatenation; return freed blocks after every frame
+        _fwd = model.forward
+        def _fwd_free(*x, **k):
+            o = _fwd(*x, **k); torch.mps.empty_cache(); return o
+        model.forward = _fwd_free
     _mem("model_on_device", mem)
     t_load = time.monotonic() - t0
     t1 = time.monotonic()
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast(dev.type, dtype=dtype, enabled=dtype != torch.float32):
         pred = model.inference_streaming(images.to(dev), num_scale_frames=a.num_scale_frames, keyframe_interval=1,
                                          output_device=torch.device("cpu"))
     t_inf = time.monotonic() - t1
