@@ -1,0 +1,12 @@
+{
+ "method": "ATE after Sim(3) Umeyama alignment of camera centres (scale taken from ground truth)",
+ "matched_poses": 8,
+ "registered_poses": 8,
+ "ate_rmse_m": 0.0005,
+ "ate_median_m": 0.0004,
+ "ate_max_m": 0.0008,
+ "gt_path_length_m": 2.275,
+ "sim3_scale": 0.22625,
+ "note": "Scale borrowed from ground truth for evaluation only; the map itself stays RELATIVE.",
+ "groundtruth": "outputs/synthetic/room_seed7/groundtruth.txt"
+}

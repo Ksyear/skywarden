@@ -27,6 +27,33 @@ REL_TOL = 0.10
 MIN_SUPPORT = 2
 
 
+def far_points(X: np.ndarray, centers: np.ndarray) -> tuple[np.ndarray, float]:
+    """(far mask, median point-to-nearest-camera distance)."""
+    dist, _ = cKDTree(centers).query(X)
+    med = float(np.median(dist))
+    return dist > FAR_X * med, med
+
+
+def votes(Xf: np.ndarray, views) -> tuple[np.ndarray, np.ndarray]:
+    """(support, conflict) per point over `views`: (Cam, confident depth map with nan elsewhere) pairs."""
+    support = np.zeros(len(Xf), np.int16)
+    conflict = np.zeros(len(Xf), np.int16)
+    for cam, depth in views:
+        uv, z = cam.pixels_undistorted(cam.cam_coords(Xf))
+        u, v = np.round(uv[:, 0]).astype(np.int64), np.round(uv[:, 1]).astype(np.int64)
+        ins = (z > 0) & (u >= 0) & (u < cam.w) & (v >= 0) & (v < cam.h)
+        d = np.full(len(Xf), np.nan)
+        d[ins] = depth[v[ins], u[ins]]
+        has = ~np.isnan(d)
+        support += (has & (np.abs(d - z) / np.maximum(z, 1e-9) <= REL_TOL)).astype(np.int16)
+        conflict += (has & (d > (1 + REL_TOL) * z)).astype(np.int16)
+    return support, conflict
+
+
+def removed(support: np.ndarray, conflict: np.ndarray) -> np.ndarray:
+    return (support < MIN_SUPPORT) | (conflict > support)
+
+
 def run(sd: Path, cloud: Path, maps_run: Path, out: Path) -> dict:
     rep = json.loads((maps_run / "dense_report.json").read_text())
     names = rep["diagnostics"]["image_names"]
@@ -37,24 +64,10 @@ def run(sd: Path, cloud: Path, maps_run: Path, out: Path) -> dict:
     P = read_ply(cloud)
     X = np.stack([P["x"], P["y"], P["z"]], 1).astype(np.float64)
     C = np.array([-np.asarray(by[n].cam_from_world().rotation.matrix()).T @ np.asarray(by[n].cam_from_world().translation) for n in names])
-    dist, _ = cKDTree(C).query(X)
-    med = float(np.median(dist))
-    far = dist > FAR_X * med
+    far, med = far_points(X, C)
     idx = np.nonzero(far)[0]
-    Xf = X[idx]
-    support = np.zeros(len(idx), np.int16)
-    conflict = np.zeros(len(idx), np.int16)
-    for r in Z["refs"]:
-        cam = Cam(rec, by[names[int(r)]], ww)
-        uv, z = cam.pixels_undistorted(cam.cam_coords(Xf))
-        u, v = np.round(uv[:, 0]).astype(np.int64), np.round(uv[:, 1]).astype(np.int64)
-        ins = (z > 0) & (u >= 0) & (u < cam.w) & (v >= 0) & (v < cam.h)
-        d = np.full(len(Xf), np.nan)
-        d[ins] = Z[f"d{int(r)}"][v[ins], u[ins]]
-        has = ~np.isnan(d)
-        support += (has & (np.abs(d - z) / np.maximum(z, 1e-9) <= REL_TOL)).astype(np.int16)
-        conflict += (has & (d > (1 + REL_TOL) * z)).astype(np.int16)
-    drop_far = (support < MIN_SUPPORT) | (conflict > support)
+    support, conflict = votes(X[idx], ((Cam(rec, by[names[int(r)]], ww), Z[f"d{int(r)}"]) for r in Z["refs"]))
+    drop_far = removed(support, conflict)
     drop = np.zeros(len(X), bool)
     drop[idx[drop_far]] = True
     out.mkdir(parents=True, exist_ok=True)

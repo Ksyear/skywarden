@@ -16,6 +16,8 @@
   --ambiguous: #f07ab8;   /* target evidence contested: control STOPs */
   --on-accent: #06131b;
   --focus: #ffffff;
+  --measure: #ffe14d;     /* measured points, segment and distance on the map */
+  --map-bg: #0b0e12;      /* map background (the renderers clear to the same colour) */
 
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -32,6 +34,8 @@
   --radius: 6px;
   --bw: 1px;
   --side-w: 320px;
+  --overview-w: 240px;
+  --overview-h: 180px;
   color-scheme: dark;
 }
 
@@ -63,8 +67,13 @@ h3 { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; le
   border-bottom: var(--bw) solid var(--border);
   background: var(--panel);
 }
-.topbar .session { color: var(--muted); font-family: var(--mono); font-size: var(--fs-xs); }
-.topbar .badges { display: flex; flex-wrap: wrap; gap: var(--s2); margin-left: auto; }
+.topbar h1 { white-space: nowrap; }
+.topbar #conn-badge { margin-left: auto; }   /* right edge in every workspace (the map labels are hidden in the others) */
+/* the session name takes what is left and is cut first, so a longer label (e.g. a scale that became measured) never
+   pushes the badges onto a second line and shifts the map under the pointer */
+.topbar .session { color: var(--muted); font-family: var(--mono); font-size: var(--fs-xs); min-width: 8ch; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar .badges { display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: var(--s2); min-width: 0; }
+@media (max-width: 1180px) { .topbar .badges { flex-wrap: wrap; } }
 
 /* ---- Badge: colour AND text always carry the state ---- */
 .badge {
@@ -84,6 +93,8 @@ h3 { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; le
 .badge[data-tone="real"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .badge[data-tone="offline"] { color: var(--offline); }
 .badge[data-tone="ambiguous"] { color: var(--ambiguous); border-color: color-mix(in srgb, var(--ambiguous) 45%, transparent); }
+.badge[data-tone="quiet"] { color: var(--muted); border-color: var(--border); font-weight: 500; }
+.badge[data-tone="quiet"]::before { display: none; }
 
 /* ---- Workspace: video + map in the centre, controls column always visible ---- */
 .workspace {
@@ -135,26 +146,38 @@ h3 { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; le
 .frame-meta { font: var(--fs-xs)/1.4 var(--mono); color: var(--muted); }
 .transport { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-top: var(--bw) solid var(--border); flex-wrap: wrap; }
 .transport input[type=range] { flex: 1; min-width: 120px; accent-color: var(--accent); }
-.filmstrip { display: flex; gap: var(--s1); padding: 0 var(--s3) var(--s3); overflow-x: auto; }
+.filmstrip { display: flex; gap: var(--s1); padding: 0 var(--s3) var(--s3); overflow-x: auto; scrollbar-width: thin; }
 .filmstrip button { padding: 0; border: 2px solid transparent; background: none; border-radius: var(--radius); flex: 0 0 auto; }
 .filmstrip button[aria-current="true"] { border-color: var(--accent); }
 .filmstrip img { width: 88px; height: 66px; object-fit: cover; display: block; border-radius: 4px; }
 
 /* ---- Map panel ---- */
-.map-stage { position: relative; flex: 1; min-height: 320px; }
-.map-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; border-radius: 0 0 var(--radius) var(--radius); }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); padding: var(--s2) var(--s3); border-bottom: var(--bw) solid var(--border); }
+.toolbar .spacer { flex: 1; }
+.tool-group { display: inline-flex; gap: var(--s1); }
+.map-stage { position: relative; flex: 1; min-height: 320px; background: var(--map-bg); border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
+.map-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
 .map-stage canvas:active { cursor: grabbing; }
+.map-stage #map-gl { pointer-events: none; }
+.map-stage #map-canvas:focus-visible { outline-offset: -3px; }
 .overlay { position: absolute; display: flex; gap: var(--s2); flex-wrap: wrap; pointer-events: none; }
-.overlay.bl { left: var(--s3); bottom: var(--s3); }
-.overlay.tl { left: var(--s3); top: var(--s3); flex-direction: column; }
+/* bottom-left chips stop short of the overview map in the bottom-right corner */
+.overlay.bl { left: var(--s3); bottom: var(--s3); right: calc(var(--overview-w) + 2 * var(--s3)); align-items: flex-end; }
+/* top row: map captions on the left, the Measure box on the right; they share the row and never overlap */
+.map-hud { position: absolute; top: var(--s3); left: var(--s3); right: var(--s3); display: flex; align-items: flex-start; gap: var(--s3); pointer-events: none; z-index: 4; }
+.map-hud .overlay.tl { position: static; flex: 1 1 auto; min-width: 0; flex-direction: column; align-items: flex-start; }
 .chip {
   font: var(--fs-xs)/1.4 var(--mono);
   padding: 2px var(--s2); border-radius: var(--radius);
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   border: var(--bw) solid var(--border-strong);
 }
-.chip.layer { color: var(--text, #fff); font-weight: 600; border-color: color-mix(in srgb, currentColor 60%, transparent); }
+.chip { max-width: 100%; overflow-wrap: anywhere; word-break: keep-all; }  /* keep-all: Korean words are not split */
+.chip.layer { color: var(--text); font-weight: 600; border-color: color-mix(in srgb, currentColor 60%, transparent); }
 .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+/* the long layer description: two lines, the whole text on hover or keyboard focus */
+.chip.caption { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; max-width: 72ch; pointer-events: auto; cursor: help; }
+.chip.caption:hover, .chip.caption:focus-visible { -webkit-line-clamp: unset; line-clamp: unset; background: color-mix(in srgb, var(--bg) 95%, transparent); }
 .legend { display: flex; gap: var(--s3); font-size: var(--fs-xs); color: var(--muted); }
 .legend i { display: inline-block; width: 14px; height: 2px; background: var(--accent); vertical-align: middle; margin-right: var(--s1); }
 .legend i.cur { background: var(--warn); }
@@ -167,6 +190,12 @@ h3 { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; le
 .empty p { margin: 0; max-width: 46ch; color: var(--muted); }
 .empty strong { color: var(--text); font-size: var(--fs-md); }
 .empty[data-tone="error"] strong { color: var(--error); }
+.empty .spinner { display: none; width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--border-strong); border-top-color: var(--accent); animation: spin .9s linear infinite; }
+.empty[data-tone="loading"] .spinner { display: block; }
+.empty[data-tone="loading"] img, .empty[data-tone="error"] img { display: none; }
+.empty[data-tone="loading"] { background: color-mix(in srgb, var(--panel) 88%, transparent); }
+.empty .load-progress { width: min(320px, 80%); }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---- Controls ---- */
 .field { display: flex; flex-direction: column; gap: var(--s1); }
@@ -194,6 +223,7 @@ select, input[type=number] {
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 55%, transparent); }
 .btn.icon { padding: 6px var(--s2); min-width: 34px; }
+.btn.sm { padding: 5px var(--s2); font-size: var(--fs-xs); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
@@ -213,14 +243,17 @@ select, input[type=number] {
 .notice[data-tone="ok"] b { color: var(--ok); }
 
 .sessions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); max-height: 260px; overflow-y: auto; }
+/* name on its own line (long names stay readable); the quality badge leads the second line */
 .sessions button {
-  width: 100%; text-align: left; display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s2);
+  width: 100%; text-align: left; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--s1) var(--s2);
   padding: var(--s2); background: var(--panel-2); color: var(--text);
   border: var(--bw) solid var(--border); border-radius: var(--radius); cursor: pointer; font: inherit;
 }
 .sessions button[aria-current="true"] { border-color: var(--accent); }
-.sessions .sid { font: var(--fs-xs)/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sessions .meta { grid-column: 1 / -1; font-size: var(--fs-xs); color: var(--muted); }
+.sessions button:hover:not(:disabled) { border-color: var(--border-strong); }
+.sessions button:disabled { cursor: not-allowed; opacity: .7; }
+.sessions .sid { grid-column: 1 / -1; font: 600 var(--fs-xs)/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions .meta { font-size: var(--fs-xs); color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .safety dl { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); margin: 0; font: var(--fs-xs)/1.5 var(--mono); }
 .safety dt { color: var(--muted); }
@@ -236,10 +269,11 @@ select, input[type=number] {
   color: var(--muted);
 }
 .statusbar b { color: var(--text); font-weight: 600; }
+.statusbar > span { min-width: 0; overflow-wrap: anywhere; }
 .statusbar .warn { color: var(--warn); }
 .statusbar .error { color: var(--error); }
 
-@media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } .empty .spinner { animation-duration: 3s; } }
 
 /* ---- Workspace switch ---- */
 .segmented { display: inline-flex; border: var(--bw) solid var(--border-strong); border-radius: var(--radius); overflow: hidden; }
@@ -304,9 +338,23 @@ select, input[type=number] {
 .cov-legend i.c-jump { background: var(--warn); }
 .cov-legend i.c-cut { background: var(--text); width: 2px; }
 #model-select { width: auto; max-width: 100%; }
+.panel-head select { width: auto; min-width: 0; max-width: 100%; padding-block: 4px; font-size: var(--fs-xs); }
 
 #l-vo { width: 100%; height: 150px; display: block; border-radius: var(--radius); background: var(--panel); }
 .badge[data-tone="stale"] { color: var(--warn); border-color: var(--warn); }
 
-.map-stage canvas.map-overview { position: absolute; inset: auto 10px 44px auto; width: 240px; height: 180px; z-index: 3; border: 1px solid var(--border, #2a3340); border-radius: var(--radius); cursor: pointer; }
+.map-stage canvas.map-overview { inset: auto var(--s3) var(--s3) auto; width: var(--overview-w); height: var(--overview-h); z-index: 3; border: var(--bw) solid var(--border-strong); border-radius: var(--radius); cursor: pointer; }
+@media (max-width: 760px) { :root { --overview-w: 160px; --overview-h: 120px; } }
 #state-lane { width: 100%; height: 16px; display: block; border-radius: var(--radius); background: var(--panel-2); margin-top: 4px; }
+/* Measure tool: two picked map points, their distance, and a tape length to set or check the scale */
+.map-hud .measure-box { flex: 0 1 300px; min-width: 220px; pointer-events: auto;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3);
+  background: color-mix(in srgb, var(--panel) 94%, transparent); border: var(--bw) solid var(--border-strong); border-radius: var(--radius); font-size: var(--fs-xs);
+  box-shadow: 0 4px 16px rgb(0 0 0 / .35); }
+.measure-box #measure-text { flex-basis: 100%; word-break: keep-all; font: 600 var(--fs-xs)/1.4 var(--mono); color: var(--measure); }
+.measure-box label { color: var(--muted); }
+.measure-box input { flex: 1; min-width: 6em; }
+.measure-box .measure-actions { flex-basis: 100%; display: flex; gap: var(--s2); }
+.measure-box .measure-actions .btn { flex: 1; }
+.measure-box .small { flex-basis: 100%; line-height: 1.4; }
+.map-stage canvas[data-pick="on"] { cursor: crosshair; }

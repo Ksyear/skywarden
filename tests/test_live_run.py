@@ -126,8 +126,9 @@ class ScriptedSource:
             self.eof = True
             time.sleep(0.005)
             return None
-        if self.media_now() < t:
-            time.sleep(min(0.005, t - self.media_now()))
+        wait = t - self.media_now()  # read the clock once: a second read can already be past t (negative sleep)
+        if wait > 0:
+            time.sleep(min(0.005, wait))
             return None
         self._i += 1
         while self.actions and self.actions[0][0] <= t:

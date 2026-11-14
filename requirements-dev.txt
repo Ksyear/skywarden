@@ -1,0 +1,4 @@
+# Development tools on top of requirements.txt (python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt).
+-r requirements.txt
+ruff==0.17.5
+yt-dlp==2026.10.21  # downloads the CC BY public clips listed in data/public/*/SOURCE.md

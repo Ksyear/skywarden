@@ -1,3 +1,5 @@
+> **초기 설계(2026-11-08); 현재 상태는 [docs/SYSTEM_STATUS.md](SYSTEM_STATUS.md)**
+
 # Implementation Plan — Skywarden, Iteration 1 (2026-11-08)
 
 Author: fable-planner (claude-fable-5-1). Implementer: Opus 5.5. Supersedes nothing; obeys `docs/CAMERA_ONLY_EXECUTION_PLAN.md`, `docs/VERIFICATION_CONTRACT.md`, `docs/RECOVERY_MATRIX.md`.

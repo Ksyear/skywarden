@@ -1,12 +1,14 @@
-# Skywarden 시스템 현황 — 2026-11-09 기준
+# Skywarden 시스템 현황 — 2026-11-15 기준
 
-작성: fable-documenter (claude-fable-5-1). 모든 수치는 이 Mac(Apple M6, 16 GiB, macOS 27.2) 한 대에서 Opus 5.5가 실제로 실행하고 `outputs/evidence/`, `outputs/maps/`, `outputs/tracks/`, `outputs/runs/`에 남긴 산출물에서 가져왔습니다. 행별 명령·버전·경로는 `docs/VALIDATION_LOG.md`, 마일스톤 표는 `docs/PROGRESS.md`, 실패 기록은 `docs/FAILURES.md`에 있습니다. 상태 어휘: **동작**(실행·검증됨) / **시험 단계**(실행되지만 고정 기준 미통과 또는 검증 없음) / **미완**(코드 없음 또는 실행 안 함) / **차단**(정책·환경상 불가).
+작성: fable-documenter (claude-fable-5-1), 2026-11-09. **2026-11-15 갱신: Opus (Fable 한도로 대체, 사용자 지시)** — 미터 스케일(2026-11-14)과 포트폴리오 품질 작업(2026-11-15) 결과를 1·2·5·9·10·11·12절에 더했습니다. 모든 수치는 이 Mac(Apple M6, 16 GiB, macOS 27.2) 한 대에서 Opus 5.5가 실제로 실행하고 `outputs/evidence/`, `outputs/maps/`, `outputs/tracks/`, `outputs/runs/`에 남긴 산출물에서 가져왔습니다. 행별 명령·버전·경로는 `docs/VALIDATION_LOG.md`, 마일스톤 표는 `docs/PROGRESS.md`, 실패 기록은 `docs/FAILURES.md`에 있습니다. 상태 어휘: **동작**(실행·검증됨) / **시험 단계**(실행되지만 고정 기준 미통과 또는 검증 없음) / **미완**(코드 없음 또는 실행 안 함) / **차단**(정책·환경상 불가).
 
 ---
 
 ## 1. 한눈에 보기
 
-Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D 지도(COLMAP/pycolmap SfM)와 그 위의 CPU 밀집 점군을 만들고, (2) YOLOX-nano + Kalman 다중 추적기로 사람을 따라가며, (3) 그 결과를 yaw 전용 PID와 Tello SDK 2.0 Mock에 연결해 **비행 없이** 검증하는 로컬 macOS 프로젝트입니다. 희소 지도·검증 밀집 점군·검출·추적·Mock 제어·라이브 실행·콘솔 UI는 모두 동작하며 자동 테스트(이번 세션 134 passed, UI 스모크 71 passed / 0 failed)로 회귀를 막고 있습니다. 한 테이크 영상(강변 산책 스미다 60 s, 캠퍼스 항공 FSC 71 s, 실내 복도 47 s)은 GOOD 지도가 나오고, 편집 영상(컷 18개)과 고정 카메라 영상은 지도가 되지 않습니다(의도된 거부). 2026-11-09 저녁에는 학습형 다중 뷰 깊이 모델(LingBot-Map, Apache-2.0, 별도 환경 외부 도구)의 Mac 실행을 안정화하고, 모델이 추정한 깊이를 **우리 SfM 카메라 경로 위에** 올린 "steady" 표시용 레이어를 추가했습니다(모델이 불확실한 스미다 28–38 s 구간은 근처 삼각측량점으로 픽셀 단위 보정해 채웠고, 항공 지도가 납작해 보이던 것은 측정 결과 기하가 아니라 기본 시점 문제라 뷰어 시작 시점을 바꿨습니다). 모든 지도는 **상대 스케일**이고 미터 거리·충돌 회피·항법 안전을 보장하지 않으며, 모델이 추정한 레이어는 **검증되지 않은 추정**으로 따로 표시됩니다. 실기체 이륙·모터 명령·자동 추격은 정책상 없고(`HARDWARE_ARMED=false`), 유료 API·클라우드 추론도 없습니다. 아직 열려 있는 가장 큰 게이트는 **사용자 본인 영상(`assets/input/`, `REAL_VIDEO`)으로의 실행**과 **미터 스케일 앵커링**입니다.
+Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D 지도(COLMAP/pycolmap SfM)와 그 위의 CPU 밀집 점군을 만들고, (2) YOLOX-nano + Kalman 다중 추적기로 사람을 따라가며, (3) 그 결과를 yaw 전용 PID와 Tello SDK 2.0 Mock에 연결해 **비행 없이** 검증하는 로컬 macOS 프로젝트입니다. 희소 지도·검증 밀집 점군·검출·추적·Mock 제어·라이브 실행·콘솔 UI는 모두 동작하며 자동 테스트(이번 세션 134 passed, UI 스모크 71 passed / 0 failed)로 회귀를 막고 있습니다. 한 테이크 영상(강변 산책 스미다 60 s, 캠퍼스 항공 FSC 71 s, 실내 복도 47 s)은 GOOD 지도가 나오고, 편집 영상(컷 18개)과 고정 카메라 영상은 지도가 되지 않습니다(의도된 거부). 2026-11-09 저녁에는 학습형 다중 뷰 깊이 모델(LingBot-Map, Apache-2.0, 별도 환경 외부 도구)의 Mac 실행을 안정화하고, 모델이 추정한 깊이를 **우리 SfM 카메라 경로 위에** 올린 "steady" 표시용 레이어를 추가했습니다(모델이 불확실한 스미다 28–38 s 구간은 근처 삼각측량점으로 픽셀 단위 보정해 채웠고, 항공 지도가 납작해 보이던 것은 측정 결과 기하가 아니라 기본 시점 문제라 뷰어 시작 시점을 바꿨습니다). 모든 지도는 **상대 스케일**이고 미터 거리·충돌 회피·항법 안전을 보장하지 않으며, 모델이 추정한 레이어는 **검증되지 않은 추정**으로 따로 표시됩니다. 실기체 이륙·모터 명령·자동 추격은 정책상 없고(`HARDWARE_ARMED=false`), 유료 API·클라우드 추론도 없습니다. 아직 열려 있는 가장 큰 게이트는 **사용자 본인 영상(`assets/input/`, `REAL_VIDEO`)으로의 실행**입니다.
+
+**2026-11-14 – 15 추가.** (1) **라이다 없는 미터 스케일**: 지도 파일은 상대 스케일 그대로 두고, 인쇄 마커·두 점 실측·(MOCK) 텔레메트리 높이로 "지도 1단위 = 몇 m"를 별도 `scale.json`에 측정하는 경로와 뷰어 거리 재기 도구(Measure)를 만들었습니다. 정답이 있는 공개 실제 녹화 TUM fr1/desk에서 1차(전체 점) −11.8 %로 FAIL, 책상 점만 쓴 2차는 −1.24 %로 검증 PASS였지만 2차 점 기준은 1차 결과를 본 뒤 정했습니다. 테니스장 항공 영상은 검증 오차 4.906 / 0.477 / 4.925 %로 수치상 5 % 이내지만 규정 치수라 `MEASURED_UNVERIFIED`이고, 폭 방향 4–5 % 체계 오차의 원인은 확인하지 않았습니다. 미터 깊이 모델 4종(MapAnything, DA3METRIC, DA3NESTED, Pi3X)은 이 Mac(MPS)에서 모두 돌았지만 기본 레이어를 대체할 후보는 없었고, 항공 영상에서 모델 간 미터 스케일이 최대 10.96배 달랐습니다. (2) **품질 작업**: 간헐 실패 테스트의 원인 3건(빌드·라이브 자식 프로세스가 최종 상태 기록 후 5–23 ms 살아 있어 409/202 오판, 테스트 보조 클래스의 음수 sleep)을 고쳐 pytest 175개가 5회 연속 통과, 서버에 Host/Origin(403)·JSON Content-Type(415) 검사, PLY 스트리밍(`Range`, `?max_points=`), WebGL 뷰어(3.2M점 p50 61.4 → 7.6 ms), ruff·GitHub Actions 워크플로(작성만, GitHub에서는 NOT_RUN), UI 스모크 117 passed / 0 failed / 4 skipped.
 
 ---
 
@@ -24,9 +26,11 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 | yaw PID · 안전 게이트 · Tello EDU Mock | **동작 (MOCK 전용)** | `YawController`(클램프·anti-windup·STOP 사유), SDK 2.0 파서, 루프백 UDP `MockTello`, `GeofenceGuard`(E3 PASS). `HARDWARE_ARMED=true` **그리고** `DRY_RUN=false`가 아니면 소켓을 열기 전에 예외. 비루프백 송신 0회를 4가지 env 조합으로 테스트 | `adapters/tello/`, `tests/test_tello.py`, `outputs/evidence/m3/`, `e3_geofence/` |
 | 라이브 실행 (한 시간축: 파일 원속도/최대 속도/`webcam:N`) | **동작 (파일) / NOT_RUN (실제 웹캠)** | 위트레흐트 1080p 30 s 원속도: 29.96 fps 처리, 지연 p95 24.2 ms, 버림 1, `SUCCEEDED`. 대상 LOCKED는 프레임의 17 %(모션 전용 추적기 한계). 이 Mac에 카메라가 없어 `webcam:0`은 `NO_DEVICE`로 올바르게 FAILED | `outputs/evidence/live/` |
 | 단안 VO (오프라인·라이브 내) | **시험 단계** | 상대 스케일, 루프 클로저 없음, `relocalization=NOT_IMPLEMENTED`. 합성 ATE 1.82 % PASS, 스미다 vs SfM 23.3 %(기준 15 %) **FAIL**(초점거리 추정) | `outputs/evidence/vo/`, F-10 |
-| 지도 콘솔 (stdlib HTTP `127.0.0.1:8780` + 캔버스 뷰어) | **동작** | Mapping / Tracking / Live 탭, 품질 배지, 레이어 선택(폴더가 있을 때만 활성), Nearby 뷰, 학습 깊이 상태 레인, **Top 버튼/`T` 키 위에서 보기**, 평평한 장면의 PCA 지면 수평 맞춤, 수평 맞춘 장면은 카메라 진행 방향으로 43° 피치·1.7× 반경에서 시작(이전 20°·2.6×는 평평한 항공 지도를 얇은 원반처럼 보이게 했음). 지도가 로드되면 3D 패널 우하단에 **overview 지도**(240×180: 위에서 본 지도·카메라 경로·현재 카메라 점과 시야 방향 쐐기; 클릭하면 가장 가까운 카메라 시점으로 재생 이동)가 항상 표시되고, **Follow**(기본 ON, `F`로 토글)는 영상 재생 중 3D 뷰가 현재 카메라 바로 뒤에서 카메라가 본 방향을 보며 프레임 사이를 약 180 ms로 부드럽게 이동하고, 일시정지하거나 재생 중 뷰를 잡으면 바로 그 카메라 자세에서 사용자에게 조작이 넘어가며(카메라가 보던 점을 중심으로 회전), Play로 다시 따라감(Top/Reset은 Follow 해제). UI 스모크 이번 세션 75 passed / 0 failed | `apps/desktop/`, `outputs/evidence/ui/ui_smoke.json` |
+| 지도 콘솔 (stdlib HTTP `127.0.0.1:8780` + 캔버스 뷰어) | **동작** | Mapping / Tracking / Live 탭, 품질 배지, 레이어 선택(폴더가 있을 때만 활성), Nearby 뷰, 학습 깊이 상태 레인, **Top 버튼/`T` 키 위에서 보기**, 평평한 장면의 PCA 지면 수평 맞춤, 수평 맞춘 장면은 카메라 진행 방향으로 43° 피치·1.7× 반경에서 시작(이전 20°·2.6×는 평평한 항공 지도를 얇은 원반처럼 보이게 했음). 지도가 로드되면 3D 패널 우하단에 **overview 지도**(240×180: 위에서 본 지도·카메라 경로·현재 카메라 점과 시야 방향 쐐기; 클릭하면 가장 가까운 카메라 시점으로 재생 이동)가 항상 표시되고, **Follow**(기본 ON, `F`로 토글)는 영상 재생 중 3D 뷰가 현재 카메라 바로 뒤에서 카메라가 본 방향을 보며 프레임 사이를 약 180 ms로 부드럽게 이동하고, 일시정지하거나 재생 중 뷰를 잡으면 바로 그 카메라 자세에서 사용자에게 조작이 넘어가며(카메라가 보던 점을 중심으로 회전), Play로 다시 따라감(Top/Reset은 Follow 해제). **2026-11-15**: WebGL 점 렌더(FSC 3,226,170점 p50 61.4 → 7.6 ms)와 2D 대체 경로 LOD, PLY 스트리밍(서버 메모리 +149 MB → +3 MB), Host/Origin 403·JSON 415 검사, Measure 도구. UI 스모크 117 passed / 0 failed / 4 skipped | `apps/desktop/`, `outputs/evidence/portfolio/{render_bench.json,p02_bench.jsonl,ui_smoke_final_opus.log}` |
 | 재측위 · 지도 위 현재 위치 | **미완** | `map_position=NOT_AVAILABLE`. 라이브 VO 경로는 세그먼트별 상대 경로일 뿐 지도 위치가 아님 | README "알려진 한계" 6 |
-| 미터 스케일 앵커링 (AprilTag/체커보드) | **미완** | 어떤 지도에도 미터 거리 없음. ATE의 cm 값은 정답 궤적에서 스케일을 빌린 평가 전용 | `docs/PROGRESS.md` TODO 7 |
+| 미터 스케일 (`scale.json`, 마커·두 점·텔레메트리; 지도 파일은 RELATIVE 유지) | **동작 (공개 데이터) / NOT_RUN (본인 촬영 마커 영상)** | 합성 마커 같은 벽 +0.39 % PASS(다른 벽 배치 FAIL). TUM fr1/desk 두 점: 1차 −11.8 % FAIL, 2차(책상 점, 사후 기준) −1.24 % `MEASURED_VERIFIED`. 테니스장 항공: 검증 4.906 / 0.477 / 4.925 %, 규정 치수라 `MEASURED_UNVERIFIED`. MockTello 높이 0.0025 %(교차 확인 전용). 뷰어 Measure 도구와 상태 칩. 확인돼도 `NOT_NAVIGATION_SAFE` | `outputs/evidence/metric_scale/`, `docs/PLAN_METRIC_SCALE.md` 10절 |
+| 미터 깊이 모델 시험 (MapAnything, DA3METRIC, DA3NESTED, Pi3X; 별도 venv, MPS) | **시험 단계 (참고용)** | 4종 모두 MPS 완주, TUM 깊이 스케일 오차 −2.27 / −4.53 / +48.19 / +1.73 %. 사전 기준으로 대체 후보 없음(떠 있는 점 증가 또는 커버리지 하락). DA3NESTED·Pi3X 가중치는 CC BY-NC 4.0이라 로컬 연구 실행만, 저장소에 없음 | `outputs/evidence/metric_scale/metric_models_summary.json` |
+| 자동 테스트 · 린트 · CI | **동작 (로컬) / NOT_RUN (GitHub)** | pytest 175 passed 5회 연속, ruff 통과, UI 스모크 117 / 0 / 4 skipped. `.github/workflows/ci.yml` 작성, GitHub에서 미실행 | `outputs/evidence/portfolio/` |
 | 본인 영상 게이트 (`assets/input/`, `REAL_VIDEO`) | **NOT_RUN** | 공개 CC BY 클립과 사용자가 제공한 복도 영상(origin 라벨 `UNSPECIFIED`)으로만 실행. `REAL_VIDEO` 라벨이 붙은 세션은 아직 없음 | `docs/PROGRESS.md` "Next single command" |
 | 실기체 비행 | **차단** | 기체 없음, 정책상 금지. Mock만 | `CLAUDE.md` |
 
@@ -65,7 +69,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 
 ## 5. 단점·한계 (솔직하게)
 
-- **지도는 상대 스케일이고 항법용이 아닙니다.** 미터 거리·장애물 회피·충돌 안전을 보장하지 않습니다. 박스 크기로 거리 추정도 측정 결과(E1 p95 61–90 %) 때문에 금지입니다.
+- **지도는 상대 스케일이고 항법용이 아닙니다.** 미터 거리·장애물 회피·충돌 안전을 보장하지 않습니다. 미터 스케일은 별도 측정으로만 붙고(2026-11-14), 실제 녹화에서 검증까지 간 것은 TUM fr1/desk 한 건이며 그 점 기준은 사후에 정했습니다. 테니스장 항공은 미검증이고 폭 방향으로 4–5 % 체계 오차가 있습니다(원인 미확인). 박스 크기로 거리 추정도 측정 결과(E1 p95 61–90 %) 때문에 금지입니다.
 - **밀집 지도의 "채택된" 개선이 없습니다.** 바닥 커버리지·정적 장면·적응형 선별·학습 깊이 융합의 모든 변형이 사전 조항 중 하나에서 FAIL이라 trial로만 남아 있고, 기본 레이어(M0)는 카메라 앞 보도가 대부분 비어 있습니다.
 - **모델 출력 레이어는 검증이 아닙니다.** `Model output`·`Hybrid` 가까운 부분은 단일 모델의 추정이며 다른 독립 증거로 확인된 점이 아닙니다. 모델은 항공 영상에서 **먼 지면을 카메라 쪽으로 눌러**(우리 점 대비 1.5–5배 차이) 멀리 갈수록 깊이가 어긋나므로 우리 점이 지지하지 않는 거리의 픽셀은 버립니다. 항공 지도가 "호떡"처럼 납작해 보이던 것은 측정 결과 기하 문제가 아니었습니다(지면 휨은 범위의 3 %로 희소·검증 밀집 지도와 같고 지면 아래 점 0 %) — 20° 피치 기본 시점이 평평한 지도를 옆에서 보여 준 탓이라 시작 시점을 43°로 바꿨습니다. 그래도 평평한 항공 지도는 높이 정보가 적어 위에서 볼 때 가장 잘 읽힙니다.
 - **우리 검증 지도에도 약점이 있습니다.** 스미다 강물에 비친 건물 반사가 수면 아래 가짜 점으로 삼각측량됩니다(모델 깊이 ~2에서 우리 점 절반이 깊이 14–17). 반사면은 SfM 희소 지도에서도 가짜 점이 됩니다.
@@ -73,7 +77,8 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 - **추적은 모션만 봅니다.** Re-ID가 없어 가림·교차 후 같은 id 재획득을 보장하지 않고, 혼잡하면 STOP이 늘고 트랙이 짧아집니다(옷 색 재식별 E4는 NO_GO). MOTA/IDF1은 정답 박스가 없어 미정의입니다.
 - **VO는 보정 카메라가 필요**하고(F-10), 재측위·지도 위 위치는 미구현입니다.
 - **편집 영상·고정 카메라·사람이 화면을 채우는 영상**은 지도가 안 되거나 PARTIAL입니다(방콕 POOR, 몬트리올 거부, 위트레흐트 점프 19–43회).
-- **한 대의 Mac에서만 측정**했고, 실제 웹캠·실기체·다른 OS는 NOT_RUN/차단입니다. 본인 영상(`REAL_VIDEO`) 게이트도 아직 열려 있습니다.
+- **한 대의 Mac에서만 측정**했고, 실제 웹캠·실기체·다른 OS는 NOT_RUN/차단입니다. 본인 영상(`REAL_VIDEO`) 게이트도 아직 열려 있습니다. GitHub Actions 워크플로는 작성했지만 GitHub에서 한 번도 돌지 않았습니다(NOT_RUN).
+- **미터 깊이 모델은 장면에 따라 크게 틀립니다.** 항공 영상에서 모델 4종의 미터 스케일이 최대 10.96배 달랐고, DA3NESTED는 TUM에서 +48 % 어긋났습니다. 그래서 모델 값은 교차 확인으로만 씁니다.
 - **일부 실행 인자 미보관.** `learned_fuse`/`far_cleanup`/`static_eval`의 정확한 셸 한 줄과 "우리 쪽" 융합 시간은 보관되지 않았습니다(모듈 docstring의 사용법이 기준).
 - 코드 라이선스 파일이 아직 없습니다(`LICENSE` 미정).
 
@@ -131,26 +136,30 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 | 학습형 깊이 (LingBot-Map) | Apple GPU 메모리 ~11 GB, 체크포인트 4.6 GB, ~2 fps | GPU 없음; CPU만으로는 프레임당 수십 초 이상, 메모리 부족 가능성 큼 | **불가** |
 | 앱 뷰어 (Pi 브라우저) | 3.2 M점 렌더 p50 ~80 ms | 3 M점에서 다시 그리기 ~0.4–0.6 s; Follow를 부드럽게 하려면 점 솎아내기 필요 | 동작하나 끊김 |
 
+2026-11-15 메모: 위 표의 "Mac 측정 3.2 M점 p50 ~80 ms"는 이전 2D 캔버스 뷰어 값입니다. 이후 WebGL 뷰어는 같은 3,226,170점을 이 Mac에서 p50 7.6 ms로 그리고, WebGL이 없을 때의 2D 경로는 LOD로 그리는 점 수를 줄입니다(`outputs/evidence/portfolio/render_bench.json`). Pi 추정치는 다시 계산하지 않았습니다.
+
 휠 확인(aarch64): numpy / scipy 12개, torch 7개, onnxruntime 6개, opencv-python-headless 2개, **pycolmap 0개**. **권장 구성:** Pi는 기체 쪽에서 촬영·스트리밍·사람 검출/추적(MOCK 제어만), 지도(SfM·밀집·학습 깊이)는 녹화 영상으로 Mac/PC에서. 실제 Pi에서의 fps·메모리 실측이 다음 테스트입니다.
 
 ## 10. 테스트 상태
 
+- **최신(2026-11-15):** 수정 전 기준선 1 failed / 158 passed(`test_build_then_second_build_conflicts_then_cancel` 409 ≠ 202) → 경쟁 상태 수정 후 pytest **175 passed / 0 failed / 0 skipped를 5회 연속**(`outputs/evidence/portfolio/pytest-5x-summary.txt`), 빠른 실행 170 passed / 5 deselected, ruff 통과. UI 스모크 **117 passed / 0 failed / 4 skipped**(`ui_smoke_final_opus.log`; 직전 실행의 Measure 6개 실패는 길어진 스케일 배지가 상단 바를 두 줄로 만들어 지도 캔버스가 내려간 탓, 수정). 4 skip은 아카이브된 레이어를 이유와 함께 기록한 것. UI 체크 수 88 → 71 변동의 원인은 `outputs/evidence/portfolio/u01_check_count.json`에 확인됨(아카이브로 옮긴 세션을 보던 블록이 기록 없이 건너뜀). GitHub Actions는 NOT_RUN.
 - 최신(overview 지도·Follow 기본 ON 후, 22:23 KST): UI 스모크 **75 passed, 0 failed**(신규: 로드된 지도에 overview 표시, Follow 기본 ON, 재생 중 지도가 카메라를 따라감, 일시정지하면 사용자에게 조작이 넘어감, Reset이 Follow 해제) — `outputs/evidence/tests/ui-20261109-follow.log`, `outputs/evidence/ui/ui_smoke.json`. pytest **134 passed in 88.39 s**(재실행; 첫 실행은 `test_live_run_lifecycle_control_and_integrity` 등 2개가 일회성으로 실패 — 이 테스트는 전에도 간헐적으로 실패한 적이 있음) — `outputs/evidence/tests/pytest-20261109-follow.log`.
 - 그 직전(steady 레이어 v3/v4·아카이브·뷰어 시점 변경 후, 22:11 KST): pytest **134 passed in 87.33 s**, UI **71 passed, 0 failed** — `outputs/evidence/tests/pytest_ui-20261109-steady-v4.log`. 모두 사용자가 `--remote-debugging-port=9222`로 열어 둔 브라우저 창에 붙여 실행했고 픽스처 탐색은 `outputs/archive/`도 봅니다.
 - 더 이전 보관 로그: 134 passed(`pytest-20261109-183645.log`), UI 88/88(18:36 KST). UI 체크 수가 88 → 71 → 74로 바뀐 이유 중 88 → 71 구간은 이 문서에서 확인하지 않았습니다.
 
 ## 11. 다음 할 일 (우선순위)
 
+0. (2026-11-15) GitHub에 올린 뒤 `.github/workflows/ci.yml`을 처음 실행해 결과 기록(현재 NOT_RUN).
 1. `assets/input/`에 본인 영상을 두고 `scripts/build_sparse_map.sh … --origin REAL_VIDEO`, `scripts/run_tracking.sh … --origin REAL_VIDEO` 실행 → `REAL_VIDEO` 게이트 닫기.
 2. (완료 2026-11-09 22:11) 이번 세션 pytest·UI 스모크 로그 기록 — `docs/VALIDATION_LOG.md` SL 블록. 남은 것: UI 체크 수 88 → 71 차이의 원인 확인.
 3. 모델 출력 steady 레이어의 다음 검사: (a) 국소 보정된 28–38 s 구간의 점이 다른 뷰와 얼마나 일치하는지 별도 측정(지금은 근처 희소점 일치만 조건), (b) 검증 융합 레이어 쪽에서 그 구간을 채우려면 더 짧은 청크를 회전 안쪽에 앵커링(기존 R8 항목), (c) 반사면 점을 희소 지도 단계에서 거를 규칙(현재 없음), (d) 항공 영상에서 모델이 먼 지면을 누르는 정도를 거리대별로 기록.
 4. 미채택 trial 레이어(학습 깊이 포함)의 채택 여부를 사용자가 결정; 조항을 바꾸려면 새 날짜 절과 새 기준선.
-5. AprilTag/체커보드 미터 앵커링 → 그때까지 미터 거리 주장 없음.
-6. 실제 웹캠 라이브 실행, Live 탭의 STALE_DATA/STALLED/FAILED/INCOMPLETE/CANCELLED 브라우저 검증, 보정 카메라로 VO 재측정(F-10).
+5. 미터 스케일: 사용자가 `docs/PLAN_METRIC_SCALE.md` 7절대로 마커 2장과 줄자 길이 2개를 넣어 찍은 영상으로 S4 실행(첫 `REAL_VIDEO` 결과가 됨); 테니스장 폭 방향 4–5 % 오차 원인 확인(초점거리 고정 재빌드 또는 보정 카메라). 그때까지 "확인됨"은 TUM 한 건뿐.
+6. 실제 웹캠 라이브 실행, 보정 카메라로 VO 재측정(F-10). (Live 탭 STALE_DATA/STALLED/FAILED/INCOMPLETE/CANCELLED 브라우저 검증은 2026-11-15 완료.)
 7. `LICENSE` 결정.
 8. Raspberry Pi 실측(9절): 검출+추적 fps·메모리, pycolmap 소스 빌드 가능 여부, 브라우저 뷰어 프레임 시간 — 추정치를 측정값으로 교체.
 9. 기체 선택과 한국 비행 규정 확인 — `docs/DRONE_PURCHASE_AND_KOREA_RULES.md`(3단계 구매안, 조종자 증명·기체신고·비행승인·촬영허가·개인정보 규칙, 순서 체크리스트). 구매·이륙은 사용자 승인 전 금지(`HARDWARE_ARMED=false` 유지); 하드웨어 없이 먼저 할 수 있는 무료 단계는 PX4 SITL 시뮬레이션에 MOCK 제어 연결.
 
 ## 12. 근거 파일 (이 문서가 참조한 것)
 
-`docs/PROGRESS.md`, `docs/VALIDATION_LOG.md`, `docs/FAILURES.md`, `docs/PLAN_LEARNED_DEPTH.md`, `README.md`, `outputs/evidence/learned_depth/{steady_layer_v2.json(runs fsc_v3_fused·sumida_v4_local_fix, findings gap_28_38s·pancake_view 포함),static_metrics_onpath*_*.json(최신 onpath3_fsc·onpath4_sumida),static_metrics_zipdemo_*.json,static_metrics_zipstyle_fsc.json,static_metrics_dense_hybrid_sumida.json,zip_demo_mac_compare.json(포즈 규약 수정 전, 수치 대체됨)}`, `outputs/maps/{mqg_fsc_campus_aerial,mqg_sumida_0025_0125,mqg_corridor}/*/dense_report.json`, `outputs/archive/manifest.json`, `outputs/evidence/ui/{fsc_onpath3.png,sumida_onpath4.png,fsc_follow_playing.png,fsc_paused_dragged.png,ui_smoke.json}`, `outputs/evidence/tests/{ui-20261109-follow.log,pytest-20261109-follow.log,pytest_ui-20261109-steady-v4.log,pytest-20261109-183645.log}`, `outputs/evidence/rpi/rpi_feasibility.json`.
+`docs/PROGRESS.md`, `docs/VALIDATION_LOG.md`, `docs/FAILURES.md`, `docs/PLAN_LEARNED_DEPTH.md`, `README.md`, `outputs/evidence/learned_depth/{steady_layer_v2.json(runs fsc_v3_fused·sumida_v4_local_fix, findings gap_28_38s·pancake_view 포함),static_metrics_onpath*_*.json(최신 onpath3_fsc·onpath4_sumida),static_metrics_zipdemo_*.json,static_metrics_zipstyle_fsc.json,static_metrics_dense_hybrid_sumida.json,zip_demo_mac_compare.json(포즈 규약 수정 전, 수치 대체됨)}`, `outputs/maps/{mqg_fsc_campus_aerial,mqg_sumida_0025_0125,mqg_corridor}/*/dense_report.json`, `outputs/archive/manifest.json`, `outputs/evidence/ui/{fsc_onpath3.png,sumida_onpath4.png,fsc_follow_playing.png,fsc_paused_dragged.png,ui_smoke.json}`, `outputs/evidence/tests/{ui-20261109-follow.log,pytest-20261109-follow.log,pytest_ui-20261109-steady-v4.log,pytest-20261109-183645.log}`, `outputs/evidence/rpi/rpi_feasibility.json`. 2026-11-15 갱신분: `docs/PLAN_METRIC_SCALE.md` 10절, `outputs/evidence/metric_scale/{synthetic_marker.json,real_tum_fr1_desk.json,real_yt_tennis_complex.json,tello_mock_height.json,metric_models_summary.json,opencv_aruco_check.txt}`, `outputs/evidence/portfolio/{pytest-5x-summary.txt,pytest_baseline_before.log,ruff.log,p02_bench.jsonl,c01_equivalence.json,render_bench.json,u01_check_count.json,ui_smoke_final_opus.log,q02_race_probe_*.jsonl}`.

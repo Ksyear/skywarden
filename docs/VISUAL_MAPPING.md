@@ -1,3 +1,5 @@
+> **초기 설계(2026-11-08); 현재 상태는 [docs/SYSTEM_STATUS.md](SYSTEM_STATUS.md)**
+
 # LiDAR 없는 카메라 지도 생성: 검증 가능한 설계 (2026-11-08)
 
 ## 결론

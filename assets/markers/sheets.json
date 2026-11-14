@@ -1,0 +1,40 @@
+{
+ "schema": "skywarden/marker_sheets@1",
+ "dictionary": "4X4_50",
+ "dpi": 300,
+ "page_mm": [
+  210.0,
+  297.0
+ ],
+ "page_px": [
+  2480,
+  3508
+ ],
+ "opencv": "5.0.0",
+ "sheets": [
+  {
+   "file": "aruco_4x4_50_id0.png",
+   "id": 0,
+   "side_mm_design": 160.0,
+   "side_px": 1890,
+   "sha256": "f96e7e755ce05103048fea01faa93efe894b6c1d82e76b7e9df43b2875c4830e",
+   "readback_ids": [
+    0
+   ],
+   "readback_ok": true
+  },
+  {
+   "file": "aruco_4x4_50_id1.png",
+   "id": 1,
+   "side_mm_design": 160.0,
+   "side_px": 1890,
+   "sha256": "c2e6f29c8816182a3c94b8953be212454f79aed59d3f797df26e0d9ddef0c553",
+   "readback_ids": [
+    1
+   ],
+   "readback_ok": true
+  }
+ ],
+ "note": "side_mm_design is not a measurement; measure the printed side",
+ "command": "python -m mapping.markers make --dict 4X4_50 --ids 0 1 --side-mm 160 --out assets/markers/"
+}

@@ -1,0 +1,134 @@
+{
+ "schema": "security-drone-a/map_report@1",
+ "session_id": "fixture_synthetic_room",
+ "created_at": "2026-11-08T12:02:34.339+00:00",
+ "status": "SUCCEEDED",
+ "labels": {
+  "map_source": "SIMULATED",
+  "geometry": "SPARSE_SFM",
+  "scale": "RELATIVE",
+  "nav_safety": "NOT_NAVIGATION_SAFE",
+  "data_origin": "SYNTHETIC",
+  "completeness": "COMPLETE"
+ },
+ "input": {
+  "path": "outputs/synthetic/room_seed7",
+  "source_note": "",
+  "kind": "image_folder",
+  "sha256": "673321689635cae35ff7898abb163d8682bc2152857354eeff0f327f0c81974c",
+  "source_frames": 24,
+  "nominal_fps": 10.000000000000197
+ },
+ "tools": {
+  "pycolmap": "4.2.1",
+  "opencv": "5.0.0",
+  "numpy": "2.5.4",
+  "python": "3.13.16",
+  "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "device": "cpu"
+ },
+ "commands": [
+  "packages/mapping/cli.py build outputs/synthetic/room_seed7 --session synthetic_room_seed7 --origin SYNTHETIC --camera-json outputs/synthetic/room_seed7/camera.json"
+ ],
+ "timings_s": {
+  "SELECT_FRAMES": 0.08,
+  "EXTRACT_FEATURES": 0.34,
+  "MATCH_FEATURES": 0.29,
+  "MAP": 0.3,
+  "EXPORT": 0.02
+ },
+ "frames": {
+  "step": 3,
+  "candidates": 8,
+  "rejected_blur": 0,
+  "rejected_low_texture": 0,
+  "rejected_duplicate": 0,
+  "dropped_by_cap": 0,
+  "resize_scale": 1.0,
+  "selected": 8
+ },
+ "calibration": {
+  "status": "PROVIDED",
+  "model": "PINHOLE",
+  "params_input": "400,400,240,180",
+  "source": "synthetic renderer (exact)"
+ },
+ "reconstruction": {
+  "num_models": 1,
+  "model_sizes": [
+   8
+  ],
+  "chosen_model_dir": "sparse/0",
+  "registered_images": 8,
+  "selected_frames": 8,
+  "registered_ratio": 1.0,
+  "points3D": 3845,
+  "mean_reprojection_error_px": 0.0843,
+  "mean_track_length": 4.835,
+  "mean_observations_per_image": 2323.8
+ },
+ "quality_gate": {
+  "points3D_gt_0": true,
+  "registered_gt_2": true,
+  "ply_nonempty": true,
+  "formal_minimum": true,
+  "registered_ratio_ge_0.5": true
+ },
+ "outputs": {
+  "ply": "sparse.ply",
+  "trajectory": "trajectory.json",
+  "frames_dir": "frames",
+  "frames_manifest": "frames.json",
+  "log": "log.txt"
+ },
+ "finished_at": "2026-11-08T12:02:35.375+00:00",
+ "quality": {
+  "verdict": "GOOD",
+  "failed_checks": [],
+  "checks": {
+   "registered_ratio": {
+    "value": 1.0,
+    "pass": true
+   },
+   "time_coverage": {
+    "value": 1.0,
+    "pass": true
+   },
+   "max_internal_gap_s": {
+    "value": 0.3,
+    "pass": true
+   },
+   "mean_reprojection_px": {
+    "value": 0.084,
+    "pass": true
+   },
+   "models_ge_10pct": {
+    "value": 1,
+    "pass": true
+   },
+   "trajectory_jumps": {
+    "value": 0,
+    "pass": true
+   },
+   "points3D": {
+    "value": 3845,
+    "pass": true
+   }
+  },
+  "jumps": [],
+  "thresholds": {
+   "min_registered_ratio": 0.6,
+   "min_time_coverage": 0.7,
+   "max_internal_gap_s": 2.0,
+   "max_mean_reprojection_px": 1.5,
+   "models_ge_10pct_exactly": 1,
+   "max_trajectory_jumps": 0,
+   "jump_factor": 5.0,
+   "min_points3D": 2000,
+   "partial_min_ratio": 0.3
+  },
+  "evaluated_on": "largest model vs all selected frames of the input",
+  "rated_offline": true
+ }
+}

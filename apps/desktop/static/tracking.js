@@ -171,6 +171,7 @@ export function initTracking(ctx) {
       ctx.badge(R.labels.data_origin, R.labels.data_origin === "SYNTHETIC" ? "sim" : "real"),
       ctx.badge(T.run.kind === "runs" ? "LIVE RUN · OPEN_LOOP_REPLAY" : "RECORDED CLIP", "warn",
         T.run.kind === "runs" ? "Replay of a recorded live run; commands are recomputed open-loop (the video did not react)" : "Replay of a recorded run, not a live camera"),
+      ...(R.intrinsics?.source === "ESTIMATED" ? [ctx.badge("VO UNCALIBRATED", "warn", `UNCALIBRATED — VO path not reliable: ${R.intrinsics.note || "focal length estimated"}`)] : []),
     );
     const chip = (t, cls = "") => Object.assign(document.createElement("span"), { className: `chip ${cls}`, textContent: t });
     ov.append(chip(`Replay of recorded clip · ${d.name} on CPU · no identity re-ID`));
