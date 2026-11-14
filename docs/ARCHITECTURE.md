@@ -1,3 +1,5 @@
+> **초기 설계(2026-11-08); 현재 상태는 [docs/SYSTEM_STATUS.md](SYSTEM_STATUS.md)**
+
 # 시스템 전체 설계 — PC 우선, 나중에 Tello EDU
 
 ## 요구사항 우선순위

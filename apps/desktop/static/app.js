@@ -33,11 +33,14 @@ const state = {
 
 let tracking = null;
 let live = null;  // tracking workspace (tracking.js), created once the helpers below exist
-const viewer = new PointViewer($("map-canvas"), {
+// ?renderer=2d forces the 2D canvas renderer (the fallback when WebGL is missing); used for comparisons
+const viewer = new PointViewer($("map-canvas"), { glCanvas: $("map-gl"), renderer: new URLSearchParams(location.search).get("renderer"),
   onRender: (ms) => { state.renderMs.push(ms); if (state.renderMs.length > 120) state.renderMs.shift(); },
   onPick: (k) => { stopPlay(); setIndex(k); },  // click on the overview map
   onFollowOff: () => {},  // dragging during playback frees the view; Follow resumes on the next Play
+  onPoint: (p) => addMeasurePoint(p),  // click on the 3D map while Measure is on
 });
+window.__skywarden = { viewer };  // read-only handle for the UI smoke test and the render benchmark
 
 function pct(arr, p) { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; }
 function announce(text) { $("announcer").textContent = text; }
@@ -48,7 +51,9 @@ async function api(path, opts = {}) {
   const t0 = performance.now();
   const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), opts.timeout ?? 5000);
   try {
-    const res = await fetch(path, { ...opts, signal: ctrl.signal, headers: opts.body ? { "Content-Type": "application/json" } : {} });
+    // every request that changes something is JSON (the server rejects other content types on POST)
+    const json = opts.body !== undefined || (opts.method && opts.method !== "GET");
+    const res = await fetch(path, { ...opts, signal: ctrl.signal, headers: json ? { "Content-Type": "application/json" } : {} });
     state.apiMs.push(performance.now() - t0); if (state.apiMs.length > 60) state.apiMs.shift();
     markOnline();
     if (!res.ok) { let msg = res.statusText; try { msg = (await res.json()).error || msg; } catch {} throw Object.assign(new Error(msg), { status: res.status }); }
@@ -109,13 +114,14 @@ async function refreshSessions() {
   for (const s of state.sessions) {
     const li = document.createElement("li"); const b = document.createElement("button");
     b.type = "button"; b.setAttribute("aria-current", String(state.loaded?.sid === s.id));
-    const sid = document.createElement("span"); sid.className = "sid"; sid.textContent = s.id;
+    const sid = document.createElement("span"); sid.className = "sid"; sid.textContent = s.id; sid.title = s.id;
     // A finished build is labelled by its MAP QUALITY, never just "ready": PARTIAL / POOR / UNRATED are not normal completions.
     const ok = s.state === "SUCCEEDED", sim = s.labels?.map_source === "SIMULATED";
     const tone = ok ? QUALITY_TONE[s.quality] ?? "offline" : s.state === "RUNNING" || s.state === "STARTING" ? "warn" : "error";
     const st = badge(ok ? `${sim ? "SIM · " : ""}${s.quality}` : s.state, tone, ok ? QUALITY_HINT[s.quality] ?? "" : "");
     const meta = document.createElement("span"); meta.className = "meta";
     meta.textContent = s.state === "SUCCEEDED" ? `${s.registered} frames · ${s.points3D.toLocaleString()} pts${s.num_models > 1 ? ` · ${s.num_models} separate models` : ""} · ${s.labels?.data_origin}` : (s.created_at || "").slice(0, 19).replace("T", " ");
+    b.setAttribute("aria-label", `${s.id}: ${st.textContent}, ${meta.textContent}`);
     b.append(sid, st, meta);
     b.disabled = s.state !== "SUCCEEDED";
     b.title = b.disabled ? "Only finished builds can be opened" : "Open this stored map";
@@ -204,7 +210,7 @@ async function cancelJob() {
 async function loadSession(sid, modelRank = 0) {
   const token = ++state.loadToken;
   stopPlay();
-  setEmpty("Loading map…", `Reading ${sid} (PLY + trajectory).`, "");
+  setEmpty("Loading map…", `Reading ${sid}: report, trajectory and points.`, "loading");
   try {
     const base = `/api/sessions/${encodeURIComponent(sid)}`;
     const info = await api(base);
@@ -222,14 +228,19 @@ async function loadSession(sid, modelRank = 0) {
     const [traj, plyRes, coverage] = await Promise.all([api(`${base}/files/${prefix}trajectory.json`),
       api(`${base}/files/${plyPath}`, { raw: true, timeout: 60000 }),
       api(`${base}/files/coverage.json`).catch(() => null)]);
-    const cloud = parsePly(await plyRes.arrayBuffer());
+    const plyBuf = await readWithProgress(plyRes, (got, total) => {
+      if (token !== state.loadToken) return;
+      $("empty-text").textContent = `Reading ${sid} · ${$("layer").selectedOptions[0]?.textContent ?? layer} points: ${fmtMB(got)}${total ? ` of ${fmtMB(total)}` : ""}`;
+      $("map-load-progress").hidden = !total; if (total) $("map-load-bar").style.width = `${Math.round(100 * got / total)}%`;
+    });
     if (token !== state.loadToken) return;  // a newer load started meanwhile
+    const cloud = parsePly(plyBuf);
     const report = info.report;
     const expected = denseReports[layer]?.dense_verified_points
       ?? (useFiltered ? pf.filtered : models ? models[modelRank].points3D : report.reconstruction.points3D);
     if (cloud.count !== expected) throw new Error(`PLY has ${cloud.count} points, report says ${expected}`);
     const poses = traj.poses.map((p) => ({ ...p, R: p.T_world_camera.slice(0, 3).map((r) => r.slice(0, 3)), C: p.T_world_camera.slice(0, 3).map((r) => r[3]) }));
-    state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now(), modelRank, models, coverage,
+    state.loaded = { sid, report, poses, evaluation: info.evaluation, loadedAt: Date.now(), modelRank, models, coverage, scale: info.metric_scale ?? null,
       pointFilter: pf, filtered: !!useFiltered, layer, dense: denseReports.dense,
       denseExp: denseReports.dense_exp, denseStatic: denseReports.dense_static, denseStaticV2: denseReports.dense_static_v2, denseStaticV3: denseReports.dense_static_v3, denseLearned: denseReports.dense_learned, modelEstimated: denseReports.model_estimated, denseStaticLocal: denseReports.dense_static_local, denseZip: denseReports.dense_zipstyle, denseHybrid: denseReports.dense_hybrid, denseZipDemo: denseReports.dense_zipdemo, denseOnPath: denseReports.dense_onpath };
     $("layer").value = layer;
@@ -247,6 +258,7 @@ async function loadSession(sid, modelRank = 0) {
     viewer.setFollow(false);
     viewer.setBreaks(modelRank === 0 && coverage ? (coverage.jumps_in_largest_model || []).map((j) => j.t_to) : []);
     $("map-empty").hidden = true;
+    setMeasureMode(false);
     renderLabels(); renderMetrics(); refreshSessions();
     setIndex(0, true);
     renderControls();
@@ -260,22 +272,46 @@ async function loadSession(sid, modelRank = 0) {
 function setEmpty(title, text, tone) {
   const el = $("map-empty"); el.hidden = false; el.dataset.tone = tone;
   $("empty-title").textContent = title; $("empty-text").textContent = text;
+  $("map-load-progress").hidden = true; $("map-load-bar").style.width = "0";
+}
+const fmtMB = (b) => `${(b / 1048576).toFixed(b < 10485760 ? 1 : 0)} MB`;
+// Read a response body while reporting progress (large dense layers are tens of MB).
+async function readWithProgress(res, onProgress) {
+  const total = Number(res.headers.get("Content-Length")) || 0;
+  if (!res.body?.getReader) return res.arrayBuffer();
+  const reader = res.body.getReader(), parts = []; let got = 0, last = 0;
+  for (;;) {
+    const { done, value } = await reader.read(); if (done) break;
+    parts.push(value); got += value.length;
+    if (performance.now() - last > 100) { last = performance.now(); onProgress(got, total); }
+  }
+  onProgress(got, total);
+  const out = new Uint8Array(got); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+  return out.buffer;
 }
 
 function renderLabels() {
   const L = state.loaded?.report.labels, el = $("badges"); el.replaceChildren();
-  $("session-label").textContent = state.loaded ? state.loaded.sid : "no map loaded";
+  $("session-label").textContent = state.loaded ? state.loaded.sid : "no map loaded"; $("session-label").title = state.loaded?.sid ?? "";
   const tl = $("map-overlay-tl"), bl = $("map-overlay-bl"); tl.replaceChildren(); bl.replaceChildren();
   if (!L) return;
   const sim = L.map_source === "SIMULATED";
   const q = state.loaded.report.quality?.verdict ?? "UNRATED";
+  // Coloured badges only for what changes how the map may be read (quality, simulated, scale, safety, calibration);
+  // provenance stays visible but quiet.
+  const sc = state.loaded.modelRank === 0 ? state.loaded.scale?.status : null, cal = state.loaded.report.calibration?.status ?? "UNKNOWN";
+  const scaleSuffix = { MEASURED_VERIFIED: " → m (verified)", MEASURED_UNVERIFIED: " → m (unverified)", MODEL_ESTIMATED: " → m (model estimate)" }[sc] ?? "";
   el.append(
     badge(`QUALITY ${q}`, QUALITY_TONE[q] ?? "offline", `${QUALITY_HINT[q] ?? ""}${state.loaded.report.quality?.failed_checks?.length ? ` · failed: ${state.loaded.report.quality.failed_checks.join(", ")}` : ""}`),
-    badge(L.map_source, sim ? "sim" : "real", sim ? "Generated from a synthetic render with known ground truth" : "Loaded from a finished reconstruction on disk"),
-    badge(`${L.data_origin}`, sim ? "sim" : "real"),
-    badge(`SCALE ${L.scale}`, "warn", "Monocular reconstruction: distances have no metric unit"),
+    ...(sim ? [badge(L.map_source, "sim", "Generated from a synthetic render with known ground truth")] : []),
+    badge(`${L.data_origin}`, sim ? "sim" : "quiet", sim ? "Synthetic input" : `${L.map_source}: loaded from a finished reconstruction on disk · input origin ${L.data_origin}`),
+    badge(`SCALE ${L.scale}${scaleSuffix}`, sc === "MEASURED_VERIFIED" ? "ok" : "warn",
+      sc === "MEASURED_VERIFIED" ? "The map files stay relative; scale.json holds a measured and verified metres-per-unit"
+        : sc ? "A metres-per-unit is stored but not verified by independent lengths" : "Monocular reconstruction: distances have no metric unit"),
     badge(L.nav_safety, "error", "Never use this map for obstacle avoidance or flight decisions"),
-    badge(`CALIB ${state.loaded.report.calibration?.status ?? "?"}`, state.loaded.report.calibration?.status === "PROVIDED" ? "ok" : "warn"),
+    cal.startsWith("UNCALIBRATED")
+      ? badge("UNCALIBRATED", "warn", `${cal}: no calibration file, so the focal length and distortion were estimated from the images. Shapes and the camera path carry that extra uncertainty.`)
+      : badge(`CALIB ${cal}`, cal === "PROVIDED" ? "quiet" : "warn", cal === "PROVIDED" ? "Camera calibration file used for this build" : "Calibration status not recorded"),
   );
   const chip = (t, cls = "") => Object.assign(document.createElement("span"), { className: `chip ${cls}`, textContent: t });
   tl.append(chip(sim ? "SIMULATED data — not a measurement" : "Replay of stored reconstruction — not live mapping", sim ? "" : ""));
@@ -296,7 +332,7 @@ function renderLabels() {
     dense_static_local: `NEARBY SCENE (COMPARISON ONLY) — ${state.loaded.denseStaticLocal?.hidden_points?.toLocaleString() ?? "?"} points farther than ${state.loaded.denseStaticLocal?.radius?.toFixed?.(2) ?? "?"} from the camera path omitted from ${state.loaded.denseStaticLocal?.source_layer ?? "?"}; a distance cut also removes real far structures` }[layer];
   const shown = viewer.cloud?.count;
   const trial = layer === "dense_exp" || layer.startsWith("dense_static") || layer === "dense_learned" || layer === "model_estimated" || layer === "dense_zipstyle" || layer === "dense_hybrid" || layer === "dense_zipdemo" || layer === "dense_onpath";  // dense_static_local included
-  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL", dense_static: "DENSE · STATIC SCENE", dense_static_v2: "DENSE · STATIC SCENE v2", dense_static_v3: "DENSE · STATIC SCENE v3", dense_learned: "DENSE + LEARNED DEPTH", model_estimated: "MODEL ESTIMATED (NOT VERIFIED)", dense_static_local: "DENSE · NEARBY SCENE (COMPARISON)", dense_zipstyle: "MODEL OUTPUT · ALL PIXELS", dense_hybrid: "HYBRID · MODEL NEAR + MVS FAR", dense_zipdemo: "DEMO AS SHIPPED · ONE PASS", dense_onpath: "MODEL OUTPUT · STEADY" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, trial ? "layer warn" : "layer"), chip(layerChip, trial ? "warn" : ""));
+  tl.append(chip(`LAYER ▸ ${({ sparse: "SPARSE · RAW", filtered: "SPARSE · FILTERED", dense: "DENSE · VERIFIED", dense_exp: "DENSE · EXPERIMENTAL", dense_static: "DENSE · STATIC SCENE", dense_static_v2: "DENSE · STATIC SCENE v2", dense_static_v3: "DENSE · STATIC SCENE v3", dense_learned: "DENSE + LEARNED DEPTH", model_estimated: "MODEL ESTIMATED (NOT VERIFIED)", dense_static_local: "DENSE · NEARBY SCENE (COMPARISON)", dense_zipstyle: "MODEL OUTPUT · ALL PIXELS", dense_hybrid: "HYBRID · MODEL NEAR + MVS FAR", dense_zipdemo: "DEMO AS SHIPPED · ONE PASS", dense_onpath: "MODEL OUTPUT · STEADY" })[layer]}${shown != null ? ` · ${shown.toLocaleString()} pts in file` : ""}`, trial ? "layer warn" : "layer"), Object.assign(chip(layerChip, trial ? "warn caption" : "caption"), { tabIndex: 0, title: layerChip }));
   const M = state.loaded.models;
   if (q !== "GOOD" || (M && M.length > 1)) {
     const m = M ? M[state.loaded.modelRank] : null, n = state.loaded.report.reconstruction.selected_frames;
@@ -304,8 +340,62 @@ function renderLabels() {
                                     : `PARTIAL RECONSTRUCTION — quality ${q}`, "warn"));
   }
   const geom = { sparse: L.geometry, filtered: `${L.geometry} · FILTERED`, dense: "DENSE_VERIFIED_MVS", dense_exp: "DENSE_EXPERIMENTAL_MVS", dense_static: "DENSE_STATIC_MVS_TRIAL", dense_static_v2: "DENSE_STATIC_MVS_TRIAL_V2", dense_static_v3: "DENSE_STATIC_MVS_TRIAL_V3", dense_learned: "MVS + LEARNED_DEPTH_VERIFIED", model_estimated: "MODEL_ESTIMATED", dense_static_local: "DENSE_STATIC_LOCAL_COMPARISON", dense_zipstyle: "LEARNED_POINTMAP_UNVERIFIED", dense_hybrid: "LEARNED_NEAR + MVS_FAR", dense_zipdemo: "LEARNED_POINTMAP_UNVERIFIED", dense_onpath: "LEARNED_DEPTH_ON_SFM_PATH" }[layer] ?? L.geometry;
-  bl.append(chip("Relative units · scale unknown", "warn"), chip(`${geom} · ${state.loaded.poses.length} cameras`));
+  bl.append(chip(scaleChip(state.loaded.scale, state.loaded.modelRank), state.loaded.scale?.status === "MEASURED_VERIFIED" ? "" : "warn"), chip(`${geom} · ${state.loaded.poses.length} cameras`));
   $("map-title").textContent = { sparse: "Sparse 3D map", filtered: "Sparse 3D map · filtered", dense: "Dense 3D map · verified", dense_exp: "Dense 3D map · experimental", dense_static: "Dense 3D map · static scene trial", dense_static_v2: "Dense 3D map · static scene v2 trial", dense_static_v3: "Dense 3D map · static scene v3 trial", dense_learned: "Dense 3D map · with learned depth", model_estimated: "Model estimate (not a map)", dense_static_local: "Dense 3D map · nearby scene (comparison)", dense_zipstyle: "3D map · model output (all pixels)", dense_hybrid: "3D map · hybrid (model near, MVS far)", dense_zipdemo: "3D map · demo as shipped (one pass)", dense_onpath: "3D map · model output, steady" }[layer] ?? "3D map";
+}
+
+// ---------------- metric scale (status is judged by the server, mapping/metric_scale.py) ----------------
+const METHOD = { ARUCO_MARKER: "마커", TWO_POINT_TAPE: "줄자 두 점", METRIC_DEPTH_MODEL: "모델" };
+function scaleChip(s, rank) {
+  if (rank > 0) return "미터 스케일 없음 · 상대 단위 (스케일은 가장 큰 모델에만)";
+  switch (s?.status) {
+    case "MODEL_ESTIMATED": return "미터 스케일: 모델 추정 (검증 아님)";
+    case "MEASURED_UNVERIFIED": return `미터 스케일: 측정됨 · 미검증 (검증 길이 ${Math.min(s.checks_passed, s.checks_required)}/${s.checks_required} 통과)${s.flags.includes("SCALE_DIFFERS_BETWEEN_MARKERS") ? " · 구간별 스케일 다름" : ""}${s.flags.includes("REGULATION_DIMENSIONS") ? " · 출처: 규정 치수(실측 아님)" : ""}`;
+    case "MEASURED_VERIFIED": return `미터 스케일: 측정으로 확인됨 (${METHOD[s.primary_method] ?? s.primary_method}, 관측 ${s.n_observations}개, 최대 오차 ${s.max_error_pct?.toFixed(1)} %)`;
+    default: return "미터 스케일 없음 · 상대 단위";
+  }
+}
+const measure = { on: false, pts: [] };
+function setMeasureMode(on) {
+  measure.on = on; measure.pts = [];
+  $("measure").setAttribute("aria-pressed", String(on)); $("measure-box").hidden = !on;
+  viewer.pickMode = on; $("map-canvas").dataset.pick = on ? "on" : "off"; viewer.setMeasure(null); renderMeasure();
+}
+function addMeasurePoint(p) {
+  if (!measure.on) return;
+  if (!p) { $("measure-text").textContent = "그 위치에 점이 없습니다 · 점 위를 클릭하세요"; return; }
+  if (measure.pts.length >= 2) measure.pts = [];
+  measure.pts.push(p); renderMeasure();
+}
+function renderMeasure() {
+  const P = measure.pts, s = state.loaded?.scale, two = P.length === 2;
+  let text = P.length === 0 ? "점 2개를 클릭하세요" : P.length === 1 ? "두 번째 점을 클릭하세요" : "";
+  if (two) {
+    const d = Math.hypot(...[0, 1, 2].map((k) => P[1].xyz[k] - P[0].xyz[k]));
+    text = `${d.toFixed(4)} 지도 단위`;
+    if (s && s.status !== "NONE" && s.metres_per_unit && state.loaded.modelRank === 0) {
+      const tag = { MEASURED_VERIFIED: "측정으로 확인됨", MEASURED_UNVERIFIED: "미검증", MODEL_ESTIMATED: "모델 추정, 검증 아님" }[s.status];
+      text += ` ≈ ${(d * s.metres_per_unit).toFixed(3)} m (${tag})`;
+    }
+    measure.dist = d;
+  }
+  $("measure-text").textContent = text;
+  viewer.setMeasure(P.length ? { pts: P.map((p) => p.xyz), text: two ? text : "" } : null);
+  const v = parseFloat($("measure-true").value), ok = two && v > 0 && v <= 10000 && state.loaded?.modelRank === 0 && state.conn === "ONLINE";
+  $("measure-fit").disabled = !ok; $("measure-verify").disabled = !ok;
+}
+async function saveMeasure(role) {
+  const P = measure.pts; if (P.length !== 2 || !state.loaded) return;
+  const sid = state.loaded.sid;
+  try {
+    const s = await api(`/api/sessions/${encodeURIComponent(sid)}/scale`, { method: "POST", body: JSON.stringify({ method: "TWO_POINT_TAPE",
+      p1: P[0].xyz, p2: P[1].xyz, true_m: parseFloat($("measure-true").value), role, note: "", model_rank: 0,
+      pick_tolerance_units: Math.max(P[0].tol_units, P[1].tol_units) }) });
+    if (state.loaded?.sid !== sid) return;
+    state.loaded.scale = s; measure.pts = []; $("measure-true").value = "";
+    renderLabels(); renderMeasure(); $("measure-text").textContent = role === "fit" ? "스케일 관측으로 저장됨" : "검증 길이로 저장됨";
+    announce(scaleChip(s, 0));
+  } catch (e) { $("measure-text").textContent = `저장 실패: ${e.message}`; }
 }
 
 function renderMetrics() {
@@ -447,7 +537,7 @@ function renderControls() {
   $("build").title = trackRunning ? "A tracking run is in progress; one job at a time" : "";
   $("cancel").disabled = !online || !running;
   if (!running) $("cancel-confirm").hidden = true;
-  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "top-view", "follow", "framing", "show-path", "show-cams", "roi"]) $(id).disabled = !has;
+  for (const id of ["prev", "play", "next", "scrub", "growth", "reset-view", "top-view", "follow", "framing", "show-path", "show-cams", "roi", "measure"]) $(id).disabled = !has;
   $("layer").disabled = !has;
   $("input-select").disabled = running; $("fps").disabled = running; $("max-frames").disabled = running; $("use-calib").disabled = running;
 }
@@ -455,11 +545,13 @@ function renderControls() {
 function statusTick() {
   const p50 = pct(state.renderMs, 0.5), p95 = pct(state.renderMs, 0.95);
   const pf = state.loaded?.pointFilter, dn = state.loaded?.dense;
-  const counts = (pf ? ` · sparse raw ${pf.raw.toLocaleString()} / filtered ${pf.filtered.toLocaleString()}` : "")
-    + (dn && dn.dense_verified_points ? ` · dense verified ${dn.dense_verified_points.toLocaleString()}` : "")
-    + (state.loaded?.denseExp?.dense_verified_points ? ` · dense experimental ${state.loaded.denseExp.dense_verified_points.toLocaleString()}` : "")
-    + (state.loaded ? ` · showing ${state.loaded.layer}` : "");
-  $("m-render").textContent = p50 == null ? "—" : `${p50.toFixed(1)}/${p95.toFixed(1)} ms (${viewer.lastDrawn?.toLocaleString() ?? 0} of ${viewer.cloud?.count?.toLocaleString() ?? 0} pts drawn${counts})`;
+  const counts = [pf ? `sparse raw ${pf.raw.toLocaleString()} / filtered ${pf.filtered.toLocaleString()}` : "",
+    dn && dn.dense_verified_points ? `dense verified ${dn.dense_verified_points.toLocaleString()}` : "",
+    state.loaded?.denseExp?.dense_verified_points ? `dense experimental ${state.loaded.denseExp.dense_verified_points.toLocaleString()}` : "",
+    state.loaded ? `showing ${state.loaded.layer}` : ""].filter(Boolean).join(" · ");
+  // "drawn" = points that pass the growth / Nearby filters within the level-of-detail sample on screen
+  $("m-render").textContent = p50 == null ? "—" : `${p50.toFixed(1)}/${p95.toFixed(1)} ms · ${viewer.renderer === "webgl" ? "WebGL" : "2D canvas"} (${viewer.visibleCount().toLocaleString()} of ${viewer.cloud?.count?.toLocaleString() ?? 0} pts drawn)`;
+  $("m-layers-wrap").hidden = !counts; $("m-layers").textContent = counts;
   const a50 = pct(state.apiMs, 0.5), a95 = pct(state.apiMs, 0.95);
   $("m-api").textContent = a50 == null ? "—" : `${a50.toFixed(0)}/${a95.toFixed(0)} ms`;
   const age = $("m-age");
@@ -521,6 +613,10 @@ $("framing").addEventListener("click", () => {
   const full = $("framing").getAttribute("aria-pressed") !== "true";
   $("framing").setAttribute("aria-pressed", String(full)); viewer.setFraming(full ? "full" : "main");
 });
+$("measure").addEventListener("click", () => setMeasureMode($("measure").getAttribute("aria-pressed") !== "true"));
+$("measure-true").addEventListener("input", renderMeasure);
+$("measure-fit").addEventListener("click", () => saveMeasure("fit"));
+$("measure-verify").addEventListener("click", () => saveMeasure("verify"));
 $("model-select").addEventListener("change", (e) => { if (state.loaded) loadSession(state.loaded.sid, parseInt(e.target.value, 10)); });
 window.addEventListener("resize", () => drawCoverage());
 $("growth").addEventListener("click", () => {

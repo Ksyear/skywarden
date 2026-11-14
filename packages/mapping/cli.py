@@ -1,4 +1,4 @@
-"""python -m mapping.cli build|replay ... (see scripts/build_sparse_map.sh, scripts/replay_map.sh)."""
+"""python -m mapping.cli build|replay|rate|scale ... (see scripts/build_sparse_map.sh, scripts/replay_map.sh)."""
 from __future__ import annotations
 
 import argparse
@@ -35,7 +35,33 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("session_dir")
     q = sub.add_parser("rate", help="evaluate map quality of an existing session (built before quality checks)")
     q.add_argument("session_dir")
+    sc = sub.add_parser("scale", help="metric scale beside a finished map (scale.json; the map itself stays RELATIVE)")
+    ssub = sc.add_subparsers(dest="scale_cmd", required=True)
+    sm = ssub.add_parser("markers", help="detect printed markers in the session frames and measure the scale")
+    sm.add_argument("session_dir")
+    sm.add_argument("--measurements", required=True, help='{"markers": {"0": {"side_m": 0.159}}, "checks": [...]}')
+    sm.add_argument("--model", type=int, default=0, help="model rank (only 0 is supported)")
+    sm.add_argument("--dict", default="4X4_50")
+    ss = ssub.add_parser("status", help="print the judged scale of a session")
+    ss.add_argument("session_dir")
     a = ap.parse_args(argv)
+
+    if a.cmd == "scale":
+        from . import metric_scale
+        sd = Path(a.session_dir)
+        if a.scale_cmd == "markers":
+            try:
+                s = metric_scale.observe_markers(sd, json.loads(Path(a.measurements).read_text()), a.model, a.dict,
+                                                 command=" ".join(["python -m mapping.cli", *sys.argv[1:]]))
+            except (ValueError, FileNotFoundError) as e:
+                print(f"scale failed: {e}", file=sys.stderr)
+                return 2
+        else:
+            s = metric_scale.current_scale(sd)
+        print(json.dumps({**metric_scale.summary(s), "observations": [
+            {k: o.get(k) for k in ("method", "marker_id", "metres_per_unit", "accepted", "reject_reason")}
+            for o in s["observations"]]}, indent=1, ensure_ascii=False))
+        return 0
 
     if a.cmd == "rate":
         from .rate import rate_session

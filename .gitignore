@@ -24,3 +24,7 @@ data/public/*/*
 !data/public/*/camera*.json
 
 data/models/**/*.onnx
+
+# large media at the repository root (inputs belong in assets/input/, tools in outputs/tools/)
+/*.mp4
+/*.zip

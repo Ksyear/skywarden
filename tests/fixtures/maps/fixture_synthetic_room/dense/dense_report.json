@@ -1,0 +1,225 @@
+{
+ "session": "synthetic_room_seed7",
+ "model_rank": 0,
+ "method": "plane-sweep MVS (ZNCC, best-2-of-4 neighbours), CPU",
+ "deviation_from_plan": "rectified two-view SGBM degenerates for forward camera motion (baseline along the optical axis, epipole inside the image); replaced by plane sweep, verification criteria unchanged",
+ "work_width": 480,
+ "reference_views": 8,
+ "views": [
+  {
+   "ref": 0,
+   "frame": "f000000.jpg",
+   "neighbours": [
+    1,
+    2,
+    3
+   ],
+   "baseline_over_depth": [
+    0.083,
+    0.165,
+    0.249
+   ],
+   "confident_px": 48651,
+   "confident_share": 0.282,
+   "sparse_checked": 1084,
+   "sparse_agreement": 1.0,
+   "status": "VERIFIED",
+   "consistency_partner": 1,
+   "consistency_checked": 16515,
+   "consistency_kept": 16471,
+   "consistency_kept_share": 0.339
+  },
+  {
+   "ref": 1,
+   "frame": "f000003.jpg",
+   "neighbours": [
+    2,
+    0,
+    3,
+    4
+   ],
+   "baseline_over_depth": [
+    0.083,
+    0.083,
+    0.167,
+    0.252
+   ],
+   "confident_px": 29526,
+   "confident_share": 0.171,
+   "sparse_checked": 730,
+   "sparse_agreement": 1.0,
+   "status": "VERIFIED",
+   "consistency_partner": 2,
+   "consistency_checked": 14635,
+   "consistency_kept": 14602,
+   "consistency_kept_share": 0.495
+  },
+  {
+   "ref": 2,
+   "frame": "f000006.jpg",
+   "neighbours": [
+    3,
+    1,
+    4,
+    0
+   ],
+   "baseline_over_depth": [
+    0.084,
+    0.084,
+    0.17,
+    0.167
+   ],
+   "confident_px": 37811,
+   "confident_share": 0.219,
+   "sparse_checked": 899,
+   "sparse_agreement": 1.0,
+   "status": "REJECTED",
+   "consistency_partner": 3,
+   "consistency_checked": 8277,
+   "consistency_kept": 8276,
+   "consistency_kept_share": 0.219,
+   "reason": "multi-view consistency kept 0.22 < 0.3"
+  },
+  {
+   "ref": 3,
+   "frame": "f000009.jpg",
+   "neighbours": [
+    4,
+    2,
+    5,
+    1
+   ],
+   "baseline_over_depth": [
+    0.086,
+    0.085,
+    0.173,
+    0.171
+   ],
+   "confident_px": 20873,
+   "confident_share": 0.121,
+   "sparse_checked": 617,
+   "sparse_agreement": 1.0,
+   "status": "REJECTED",
+   "consistency_partner": 4,
+   "consistency_checked": 4608,
+   "consistency_kept": 4603,
+   "consistency_kept_share": 0.221,
+   "reason": "multi-view consistency kept 0.22 < 0.3"
+  },
+  {
+   "ref": 4,
+   "frame": "f000012.jpg",
+   "neighbours": [
+    5,
+    3,
+    6,
+    2
+   ],
+   "baseline_over_depth": [
+    0.088,
+    0.088,
+    0.176,
+    0.175
+   ],
+   "confident_px": 15376,
+   "confident_share": 0.089,
+   "sparse_checked": 485,
+   "sparse_agreement": 1.0,
+   "status": "REJECTED",
+   "consistency_partner": 5,
+   "consistency_checked": 3473,
+   "consistency_kept": 3473,
+   "consistency_kept_share": 0.226,
+   "reason": "multi-view consistency kept 0.23 < 0.3"
+  },
+  {
+   "ref": 5,
+   "frame": "f000015.jpg",
+   "neighbours": [
+    6,
+    4,
+    7,
+    3
+   ],
+   "baseline_over_depth": [
+    0.09,
+    0.09,
+    0.178,
+    0.18
+   ],
+   "confident_px": 14943,
+   "confident_share": 0.086,
+   "sparse_checked": 424,
+   "sparse_agreement": 1.0,
+   "status": "REJECTED",
+   "consistency_partner": 6,
+   "consistency_checked": 3140,
+   "consistency_kept": 3139,
+   "consistency_kept_share": 0.21,
+   "reason": "multi-view consistency kept 0.21 < 0.3"
+  },
+  {
+   "ref": 6,
+   "frame": "f000018.jpg",
+   "neighbours": [
+    7,
+    5,
+    4,
+    3
+   ],
+   "baseline_over_depth": [
+    0.091,
+    0.092,
+    0.186,
+    0.28
+   ],
+   "confident_px": 12277,
+   "confident_share": 0.071,
+   "sparse_checked": 362,
+   "sparse_agreement": 1.0,
+   "status": "VERIFIED",
+   "consistency_partner": 7,
+   "consistency_checked": 4799,
+   "consistency_kept": 4798,
+   "consistency_kept_share": 0.391
+  },
+  {
+   "ref": 7,
+   "frame": "f000021.jpg",
+   "neighbours": [
+    6,
+    5,
+    4
+   ],
+   "baseline_over_depth": [
+    0.095,
+    0.189,
+    0.287
+   ],
+   "confident_px": 26793,
+   "confident_share": 0.155,
+   "sparse_checked": 697,
+   "sparse_agreement": 1.0,
+   "status": "REJECTED",
+   "consistency_partner": 6,
+   "consistency_checked": 5307,
+   "consistency_kept": 5306,
+   "consistency_kept_share": 0.198,
+   "reason": "multi-view consistency kept 0.20 < 0.3"
+  }
+ ],
+ "voxel": 0.21274789700282667,
+ "low_confidence_windows_excluded": [],
+ "views_verified": 3,
+ "dense_verified_points": 5337,
+ "dense_raw_kept_points": 35871,
+ "sparse_points_of_covered_views": 3669,
+ "label": "DENSE_VERIFIED (relative scale)",
+ "seconds": 3.6,
+ "acceptance": {
+  "reference_views_ge_20": false,
+  "verified_share_ge_0.5": false,
+  "dense_ge_10x_sparse_of_covered_views": false,
+  "result": "FAIL"
+ }
+}

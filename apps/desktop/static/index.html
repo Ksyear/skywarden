@@ -53,7 +53,6 @@
       <h2 id="map-title">Sparse 3D map</h2>
       <div class="legend" aria-hidden="true"><span><i></i>trajectory</span><span><i class="cur"></i>current camera</span></div>
       <span class="spacer"></span>
-      <button class="btn" id="growth" aria-pressed="false" disabled title="Show only points observed up to the current frame">Map growth</button>
       <select id="model-select" hidden aria-label="Separate reconstructed models (never merged)"></select>
       <select id="layer" disabled aria-label="Geometry layer" title="Sparse SfM points (raw), sparse points that pass the triangulation/track/reprojection filter, or verified dense points (plane-sweep MVS, checked against the sparse points and a second view)">
         <option value="sparse">Sparse · raw</option>
@@ -64,23 +63,49 @@
         <option value="dense_hybrid" disabled>Hybrid · model near + multi-view far</option>
         <option value="dense_learned" disabled>Dense · with learned depth</option>
       </select>
-      <button class="btn" id="show-path" aria-pressed="true" disabled title="Show the camera trajectory (P)">Path</button>
-      <button class="btn" id="show-cams" aria-pressed="true" disabled title="Show camera frustums (C)">Cameras</button>
-      <button class="btn" id="roi" aria-pressed="false" disabled title="Area of interest: only the surroundings of the current camera, with an overview of the whole map (N)">Nearby</button>
-      <button class="btn" id="framing" aria-pressed="false" disabled title="Frame every point (full extent) instead of the main observed region">Full extent</button>
-      <button class="btn" id="top-view" disabled title="Look straight down - for drone (aerial) maps (T)">Top</button>
-      <button class="btn" id="follow" aria-pressed="true" disabled title="Follow the camera: while the video plays the map moves with it; pause to move the map freely (F)">Follow</button>
-      <button class="btn" id="reset-view" disabled title="Reset view (R)">Reset view</button>
+    </div>
+    <div class="toolbar" role="toolbar" aria-label="Map view">
+      <div class="tool-group" role="group" aria-label="Replay">
+        <button class="btn sm" id="follow" aria-pressed="true" disabled aria-keyshortcuts="F" title="Follow the camera: while the video plays the map moves with it; pause to move the map freely (F)">Follow</button>
+        <button class="btn sm" id="growth" aria-pressed="false" disabled aria-keyshortcuts="G" title="Show only points observed up to the current frame (G)">Map growth</button>
+      </div>
+      <div class="tool-group" role="group" aria-label="Overlays">
+        <button class="btn sm" id="show-path" aria-pressed="true" disabled aria-keyshortcuts="P" title="Show the camera trajectory (P)">Path</button>
+        <button class="btn sm" id="show-cams" aria-pressed="true" disabled aria-keyshortcuts="C" title="Show camera frustums (C)">Cameras</button>
+        <button class="btn sm" id="roi" aria-pressed="false" disabled aria-keyshortcuts="N" title="Area of interest: only the surroundings of the current camera, with an overview of the whole map (N)">Nearby</button>
+      </div>
+      <div class="tool-group" role="group" aria-label="View">
+        <button class="btn sm" id="top-view" disabled title="Look straight down - for drone (aerial) maps (T while the map has focus)">Top</button>
+        <button class="btn sm" id="framing" aria-pressed="false" disabled title="Frame every point (full extent) instead of the main observed region">Full extent</button>
+        <button class="btn sm" id="reset-view" disabled aria-keyshortcuts="R" title="Reset view (R)">Reset</button>
+      </div>
+      <span class="spacer"></span>
+      <button class="btn sm" id="measure" aria-pressed="false" disabled aria-controls="measure-box" title="Measure: click two map points for their distance; a tape-measured length can set or check the metric scale">Measure</button>
     </div>
     <div class="map-stage">
+      <canvas id="map-gl" aria-hidden="true"></canvas>
+      <canvas id="map-canvas" tabindex="0" aria-label="3D point map. Drag to orbit, Shift+drag to pan, scroll or +/- to zoom, arrow keys to rotate, R to reset, T for the top view."></canvas>
       <canvas id="map-overview" class="map-overview" hidden aria-label="Map from above: camera path, current camera and its view direction; click to jump there" title="Click to jump to that point of the video"></canvas>
-      <canvas id="map-canvas" tabindex="0" aria-label="3D point map. Drag to orbit, Shift+drag to pan, scroll or +/- to zoom, arrow keys to rotate, R to reset."></canvas>
-      <div class="overlay tl" id="map-overlay-tl"></div>
+      <div class="map-hud">
+        <div class="overlay tl" id="map-overlay-tl"></div>
+        <div class="measure-box" id="measure-box" role="group" aria-label="Measure" hidden>
+          <span id="measure-text" aria-live="polite">점 2개를 클릭하세요</span>
+          <label for="measure-true">실제 거리 (m)</label>
+          <input id="measure-true" type="number" min="0.001" max="10000" step="0.001" inputmode="decimal">
+          <div class="measure-actions">
+            <button class="btn sm" id="measure-fit" type="button" disabled>스케일에 사용</button>
+            <button class="btn sm" id="measure-verify" type="button" disabled>검증으로 사용</button>
+          </div>
+          <span class="muted small" id="measure-hint">긴 거리(실제 ≥ 2 m)를 재면 불확실성이 작아집니다. 검증 길이는 스케일에 쓴 것과 다른 물체로.</span>
+        </div>
+      </div>
       <div class="overlay bl" id="map-overlay-bl"></div>
-      <div class="empty" id="map-empty">
+      <div class="empty" id="map-empty" role="status">
         <img src="/static/empty_state_mapping_flow.jpg" alt="Illustration: move a camera sideways past a static scene, frames are matched, and a sparse 3D map with camera positions is reconstructed.">
+        <span class="spinner" aria-hidden="true"></span>
         <strong id="empty-title">No map loaded</strong>
         <p id="empty-text">Choose an input on the right and press <b>Build map</b>, or open a stored map. Good input: a static scene filmed while moving the camera sideways (not just turning), slowly, with textured surfaces.</p>
+        <div class="progress load-progress" id="map-load-progress" hidden><div id="map-load-bar"></div></div>
       </div>
     </div>
   </section>
@@ -270,7 +295,7 @@
         <p class="muted small">MOCK yaw from the live pipeline; never transmitted. lateral / forward / vertical are always 0.</p>
       </div>
       <div class="readout">
-        <h3>Camera pose (VO) <span class="badge" id="l-vostate" data-tone="offline">—</span></h3>
+        <h3>Camera pose (VO) <span class="badge" id="l-vostate" data-tone="offline">—</span> <span class="badge" id="l-vocalib" data-tone="warn" hidden>UNCALIBRATED</span></h3>
         <canvas id="l-vo" height="150" aria-label="Top view of the visual-odometry path of the current segment"></canvas>
         <p class="muted small" id="l-vometa">VO path of the current segment only: relative scale, no loop closure. Map position: NOT_AVAILABLE (relocalisation in a stored map is not implemented).</p>
       </div>
@@ -329,6 +354,7 @@
   <span>reproj. error <b id="m-err">—</b></span>
   <span id="m-ate-wrap">ATE <b id="m-ate">—</b></span>
   <span>render p50/p95 <b id="m-render">—</b></span>
+  <span id="m-layers-wrap" hidden>layers <b id="m-layers">—</b></span>
   <span>API latency <b id="m-api">—</b></span>
   <span id="m-age">data —</span>
 </footer>

@@ -55,7 +55,6 @@ def _rates(pos: np.ndarray, neg: np.ndarray) -> dict:
     """Lower distance = same person. AUC = P(d_pos < d_neg)."""
     if len(pos) == 0 or len(neg) == 0:
         return {"n_pos": int(len(pos)), "n_neg": int(len(neg))}
-    allv = np.sort(np.concatenate([pos, neg]))
     auc = float(np.mean([np.mean(p < neg) + 0.5 * np.mean(p == neg) for p in pos]))
     out = {"n_pos": int(len(pos)), "n_neg": int(len(neg)), "auc": round(auc, 3),
            "pos_dist_p50": round(float(np.median(pos)), 3), "neg_dist_p50": round(float(np.median(neg)), 3)}

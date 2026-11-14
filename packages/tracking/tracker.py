@@ -115,8 +115,8 @@ class TrackerStats:
 
 
 class MultiTracker:
-    def __init__(self, cfg: TrackerConfig = TrackerConfig()):
-        self.cfg = cfg
+    def __init__(self, cfg: TrackerConfig | None = None):
+        self.cfg = cfg or TrackerConfig()
         self.tracks: list[Track] = []
         self.t: float | None = None
         self._next_id = 1

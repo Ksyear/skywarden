@@ -40,6 +40,16 @@ _PLY_TYPES = {"float": "<f4", "float32": "<f4", "double": "<f8", "uchar": "u1", 
 def read_ply(path: Path) -> np.ndarray:
     """Strict reader for binary little-endian vertex-only PLY files (what this project writes)."""
     data = Path(path).read_bytes()
+    count, dtype, body_at = parse_ply_header(data, path)
+    body = data[body_at:]
+    if len(body) != count * dtype.itemsize:
+        raise PlyError(f"{path}: expected {count * dtype.itemsize} bytes of vertex data, found {len(body)}")
+    return np.frombuffer(body, dtype=dtype, count=count)
+
+
+def parse_ply_header(data: bytes, path: Path | str = "PLY") -> tuple[int, np.dtype, int]:
+    """(vertex count, vertex dtype, offset of the vertex data) from the start of a file; `data` needs only to
+    reach past end_header."""
     end = data.find(b"end_header\n")
     if not data.startswith(b"ply\n") or end < 0:
         raise PlyError(f"{path}: not a PLY file")
@@ -59,11 +69,7 @@ def read_ply(path: Path) -> np.ndarray:
             fields.append((parts[2], _PLY_TYPES[parts[1]]))
     if count is None or not fields:
         raise PlyError(f"{path}: missing vertex element")
-    dtype = np.dtype(fields)
-    body = data[end + len(b"end_header\n"):]
-    if len(body) != count * dtype.itemsize:
-        raise PlyError(f"{path}: expected {count * dtype.itemsize} bytes of vertex data, found {len(body)}")
-    return np.frombuffer(body, dtype=dtype, count=count)
+    return count, np.dtype(fields), end + len(b"end_header\n")
 
 
 def export_reconstruction(rec, out_dir: Path, frames_by_name: dict[str, dict]) -> dict:

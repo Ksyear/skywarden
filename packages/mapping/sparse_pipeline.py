@@ -241,12 +241,9 @@ def build_sparse_map(req: BuildRequest, cancel_event: threading.Event | None = N
         report["frames"]["gap_guard"] = {"max_gap_s": report["frames"]["max_gap_s"], "limit_s": MAX_KEPT_GAP_S,
                                          "fatal_only_when_caused_by_cap": True, "cap_dropped": sel.dropped_by_cap}
         if max_gap is not None and max_gap > MAX_KEPT_GAP_S and sel.dropped_by_cap:
-            cause = (f"the cap of {req.selection.max_frames} frames dropped {sel.dropped_by_cap} frames; use a shorter "
-                     f"section or a higher --max-frames") if sel.dropped_by_cap else (
-                     f"blur/low-texture/duplicate rejections ({sel.rejected_blur}/{sel.rejected_low_texture}/"
-                     f"{sel.rejected_duplicate}) left the gap; sample more densely with a higher --fps")
             raise SelectionError(f"selected frames are up to {max_gap:.3f} s apart (> {MAX_KEPT_GAP_S} s), which breaks "
-                                 f"overlap: {cause}.")
+                                 f"overlap: the cap of {req.selection.max_frames} frames dropped {sel.dropped_by_cap} "
+                                 f"frames; use a shorter section or a higher --max-frames.")
         (sd / "frames.json").write_text(json.dumps([{**vars(k), "shot": shot_of[k.file]} for k in sel.kept], indent=1))
         timings[stage] = round(time.monotonic() - t0, 2)
         say(f"selected {len(sel.kept)} frames: {sel.summary()}")

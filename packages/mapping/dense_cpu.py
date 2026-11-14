@@ -1,16 +1,22 @@
 """CPU dense reconstruction from SfM poses (docs/PLAN_GEOMETRY_AND_DENSE.md, section D). No CUDA needed.
 
-D1 pairs: consecutive / skip-1 registered frames with baseline / median co-visible depth in [0.05, 0.30] and
-   >= 100 shared tracks.
-D2 rectified stereo: undistort (refined shared camera), cv2.stereoRectify from the SfM relative pose, SGBM
-   (block 5, 128 disparities at 960 px width, uniqueness 10) with a left-right check <= 1 px.
-D3 verification: (i) >= 70 % of the pair's sparse points agree with the SGBM depth within 10 %, else the pair is
-   REJECTED; (ii) third view: points are projected into the next pair's left image and kept only where that
-   frame's own SGBM depth agrees within 10 %; a pair keeping < 30 % of its valid pixels is REJECTED.
+D1 views: each registered frame becomes a reference view when 2-4 nearby frames (both directions in time) have
+   baseline / median co-visible depth in [0.05, 0.30] and >= 100 shared tracks.
+D2 depth: plane sweep per reference view (planes uniform in inverse depth between the 2nd and 98th percentile of its
+   sparse depths; cost 1 - ZNCC over a 7x7 window, averaged over the best two neighbours). A pixel keeps a depth only
+   when its minimum is interior, cheap, distinct from the second best and textured. The plan's rectified two-view
+   SGBM was replaced because it degenerates for forward camera motion (epipole inside the image); every report
+   records this as `deviation_from_plan`.
+D3 verification: (i) >= 70 % of the view's sparse points agree with its depth within 10 %, else the view is
+   REJECTED; (ii) consistency: points are projected into another accepted view (the next one by default, or every
+   view within a window) and kept only where that view's own depth agrees within 10 %; a view keeping < 30 % of
+   its confident pixels is REJECTED.
 D4 fusion of kept points only (voxel = median nearest-neighbour spacing of the sparse points) -> dense_verified.ply
-   labelled DENSE_VERIFIED. Unverified SGBM points of accepted-but-unchecked pixels are never fused.
+   labelled DENSE_VERIFIED. Depth that no second view confirmed is never fused.
 Mesh: Poisson on dense_verified.ply only, trimmed to vertices within 2 voxels of a fused point
    (MESH_FROM_VERIFIED_DENSE). Unobserved areas stay holes. Scale stays RELATIVE.
+
+Experiments of docs/PLAN_DENSE_COVERAGE.md switch single DenseConfig fields; the defaults are the M0 baseline.
 
 python -m mapping.dense_cpu <session_dir> [--model 0] [--max-pairs 60]
 """
@@ -76,7 +82,7 @@ class View:
         self.im = im
         self.obs = {p2.point3D_id for p2 in im.points2D if p2.has_point3D()}
         self.obs_all = self.obs  # before any keep-mask filtering (S2n uses it for neighbour selection)
-        self.depth = None  # filled by its own pair: (u, v) -> depth in this undistorted view
+        self.depth = None  # filled by its own sweep: (u, v) -> depth in this undistorted view
         if mask_dir is not None:
             path = mask_dir / (im.name + ".png")
             keep = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
@@ -98,45 +104,8 @@ class View:
             self.static_keep = (keep >= 0.999).astype(np.float32)
 
 
-def _sgbm(a, b, ndisp):
-    m = cv2.StereoSGBM_create(minDisparity=0, numDisparities=ndisp, blockSize=5, P1=8 * 3 * 25, P2=32 * 3 * 25,
-                              uniquenessRatio=10, speckleWindowSize=100, speckleRange=2, disp12MaxDiff=-1,
-                              mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY)
-    return m.compute(a, b).astype(np.float32) / 16.0
-
-
-def stereo_pair(v1: View, v2: View, ndisp: int = 128):
-    """Returns world points, colours and source pixels (undistorted view-1 coordinates) of LR-consistent pixels."""
-    h, w = v1.img.shape[:2]
-    R = v2.R @ v1.R.T
-    t = v2.t - R @ v1.t
-    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(v1.K, v1.dist, v2.K, v2.dist, (w, h), R.astype(np.float64),
-                                                t.reshape(3, 1).astype(np.float64), alpha=0)
-    if abs(P2[1, 3]) > abs(P2[0, 3]):  # mostly vertical baseline: not handled by this horizontal SGBM path
-        return None
-    m1 = cv2.initUndistortRectifyMap(v1.K, v1.dist, R1, P1, (w, h), cv2.CV_32FC1)
-    m2 = cv2.initUndistortRectifyMap(v2.K, v2.dist, R2, P2, (w, h), cv2.CV_32FC1)
-    a = cv2.remap(v1.img, *m1, cv2.INTER_LINEAR)
-    b = cv2.remap(v2.img, *m2, cv2.INTER_LINEAR)
-    ga, gb = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY), cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
-    dl = _sgbm(ga, gb, ndisp)
-    dr = cv2.flip(_sgbm(cv2.flip(gb, 1), cv2.flip(ga, 1), ndisp), 1)
-    H, W = dl.shape
-    xs = np.arange(W)[None, :].repeat(H, 0)
-    xr = np.clip(np.round(xs - dl).astype(int), 0, W - 1)
-    ok = (dl > 0.5) & (np.abs(dl - dr[np.arange(H)[:, None], xr]) <= 1.0)
-    X = cv2.reprojectImageTo3D(dl, Q)[ok]  # rectified view-1 frame
-    col = a[ok]
-    Xc1 = (R1.T @ X.T).T  # undistorted view-1 camera frame
-    keep = Xc1[:, 2] > 0
-    Xc1, col = Xc1[keep], col[keep]
-    Xw = (v1.R.T @ (Xc1 - v1.t).T).T
-    uv = (v1.K @ (Xc1 / Xc1[:, 2:3]).T).T[:, :2]
-    return {"Xw": Xw, "rgb": col[:, ::-1], "uv": uv, "z": Xc1[:, 2], "valid_px": int(ok.sum())}
-
-
 def _depth_lookup(v: View, Xw: np.ndarray):
-    """Depth of world points in view v and the stored SGBM depth at their pixel (nan where unknown)."""
+    """Depth of world points in view v and the view's own stored depth at their pixel (nan where unknown)."""
     Xc = (v.R @ Xw.T).T + v.t
     z = Xc[:, 2]
     uv = (v.K @ (Xc / np.maximum(z[:, None], 1e-9)).T).T[:, :2]
@@ -816,7 +785,8 @@ def mesh(sd: Path, rank: int = 0, depth: int = 10, max_points: int = 400_000) ->
     raw = out / "mesh_poisson_raw.ply"
     # COLMAP's bundled Poisson aborts the whole process ("Failed to close loop") with multiple threads on this
     # machine; it runs single-threaded in a child process so a crash cannot take the caller down.
-    import subprocess, sys
+    import subprocess
+    import sys
     code = ("import pycolmap,sys; o=pycolmap.PoissonMeshingOptions(); o.depth=int(sys.argv[3]); o.num_threads=1; "
             "pycolmap.poisson_meshing(sys.argv[1], sys.argv[2], o)")
     r = subprocess.run([sys.executable, "-c", code, str(out / "mesh_input_oriented.ply"), str(raw), str(depth)],

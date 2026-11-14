@@ -15,12 +15,14 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = Path(__file__).resolve().parent / "static"
@@ -28,6 +30,8 @@ sys.path.insert(0, str(ROOT / "packages"))
 
 from mapping.frame_source import IMAGE_SUFFIXES, VIDEO_SUFFIXES  # noqa: E402
 from mapping.labels import DataOrigin, is_synthetic_input  # noqa: E402
+from mapping import metric_scale  # noqa: E402
+from mapping.export import PlyError, parse_ply_header  # noqa: E402
 from control.virtual_replay import replay_control  # noqa: E402
 from vision.person_detector import MODELS  # noqa: E402
 from vision.live_run import verify_run  # noqa: E402
@@ -48,13 +52,21 @@ SESSION_FILES = {"sparse.ply", "trajectory.json", "frames.json", "map_report.jso
                  "dense_zipstyle/dense_verified.ply", "dense_zipstyle/dense_report.json",
                  "dense_hybrid/dense_verified.ply", "dense_hybrid/dense_report.json",
                  "dense_zipdemo/dense_verified.ply", "dense_zipdemo/dense_report.json",
-                 "dense_onpath/dense_verified.ply", "dense_onpath/dense_report.json"}
+                 "dense_onpath/dense_verified.ply", "dense_onpath/dense_report.json", "scale.json"}
 MODEL_FILE = re.compile(r"^models/\d{1,3}/(sparse\.ply|sparse_filtered\.ply|trajectory\.json|model_report\.json)$")
 TRACK_FILES = {"tracks.json", "tracking_report.json"}
 RUN_FILES = {"tracks.json", "run_report.json", "timeline.jsonl", "frames/latest.jpg"}
 RUN_OPS = {"pause", "resume", "seek", "stop", "select", "clear"}
 FRAME_FILE = re.compile(r"^frames/f\d{6}\.jpg$")
+MAX_BODY = 65536
+COORD_LIMIT = 1e6  # map coordinates beyond this are not points of a stored map
 STALE_AFTER_S = 20.0  # a running build that has not updated status.json for this long is shown as stale
+FINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "INCOMPLETE"}
+FINISH_GRACE_S = 5.0  # a child that already wrote its final state gets this long to exit before it still counts as busy
+CHUNK = 1 << 20  # file responses are streamed in 1 MiB pieces, never read whole into memory
+MAX_POINTS_LIMIT = 20_000_000
+DECIMATED_CACHE = 4  # decimated PLY bodies kept in memory (a few layers x one size each)
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -102,8 +114,10 @@ class Console:
         self._verify_cache: dict[str, tuple[float, dict]] = {}
         self._control_seq: dict[str, int] = {}
         self._procs: dict[tuple[str, str], subprocess.Popen] = {}
+        self._ply_cache: OrderedDict[tuple, tuple[bytes, int, int]] = OrderedDict()
         self._lock = threading.Lock()
         self._start_lock = threading.Lock()  # serialises check-then-spawn so two requests cannot both start
+        self._scale_lock = threading.Lock()  # scale.json is read-modify-write; one update at a time
 
     # ---------- inputs ----------
     def inputs(self) -> list[dict]:
@@ -171,6 +185,8 @@ class Console:
         info = {"id": sid, "state": state, "status": status}
         if kind == "maps":
             info["evaluation"] = _read_json(sd / "evaluation.json")
+            if state == "SUCCEEDED":
+                info["metric_scale"] = metric_scale.summary(metric_scale.current_scale(sd))
         if state == "RUNNING":
             with self._lock:
                 proc = self._procs.get((kind, sid))
@@ -221,12 +237,32 @@ class Console:
     # ---------- jobs ----------
     def running_job(self, kind: str = "maps") -> str | None:
         with self._lock:
+            live = []
             for (k, sid), p in list(self._procs.items()):
                 if p.poll() is not None:
                     del self._procs[(k, sid)]  # reap finished children
                 elif k == kind:
-                    return sid
+                    live.append((sid, p))
+        for sid, p in live:
+            if not self._finishing(kind, sid, p):
+                return sid
         return None
+
+    def _finishing(self, kind: str, sid: str, p: subprocess.Popen) -> bool:
+        """True when a child has already published its final state and exits within FINISH_GRACE_S.
+
+        A child writes its last status.json and then still closes files and tears down the interpreter; without this
+        the UI shows SUCCEEDED while a new job is refused with 409 for that moment."""
+        state = (_read_json(self.kinds[kind].root / sid / "status.json") or {}).get("state")
+        if state not in FINAL_STATES:
+            return False
+        try:
+            p.wait(timeout=FINISH_GRACE_S)
+        except subprocess.TimeoutExpired:
+            return False  # wrote a final state but hangs: still holds the machine, keep refusing
+        with self._lock:
+            self._procs.pop((kind, sid), None)
+        return True
 
     def _input(self, body: dict) -> dict:
         item = next((i for i in self.inputs() if i["id"] == body.get("input_id")), None)
@@ -322,6 +358,40 @@ class Console:
             self._control_seq[sid] = 0
             return sid
 
+    def add_scale(self, sid: str, body: dict) -> dict:
+        """A two-point tape length picked in the viewer: becomes a scale observation (role fit) or an independent
+        check (role verify). Judgement happens in mapping.metric_scale; this only validates the request."""
+        sd = self.session_dir(sid)
+        if not sd.is_dir():
+            raise KeyError(sid)
+        if self.session_state(sid)["state"] != "SUCCEEDED" or not (sd / "trajectory.json").is_file():
+            raise RuntimeError("Only a finished map can get a scale")
+        if body.get("method", "TWO_POINT_TAPE") != "TWO_POINT_TAPE":
+            raise ValueError("method must be TWO_POINT_TAPE")
+        if body.get("model_rank", 0) != 0:
+            raise ValueError("only model rank 0 (the largest model) can get a scale")
+        role, note = body.get("role"), body.get("note", "")
+        if role not in ("fit", "verify"):
+            raise ValueError("role must be fit or verify")
+        if not isinstance(note, str) or len(note) > 80:
+            raise ValueError("note must be a string of at most 80 characters")
+
+        def num(v, lo, hi, what):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v <= hi):
+                raise ValueError(f"{what} must be a number in [{lo:g}, {hi:g}]")
+            return float(v)
+        pts = []
+        for k in ("p1", "p2"):
+            v = body.get(k)
+            if not isinstance(v, list) or len(v) != 3:
+                raise ValueError(f"{k} must be [x, y, z]")
+            pts.append([num(x, -COORD_LIMIT, COORD_LIMIT, k) for x in v])
+        true_m = num(body.get("true_m"), 1e-3, 1e4, "true_m")
+        tol = num(body.get("pick_tolerance_units", 0.0), 0.0, COORD_LIMIT, "pick_tolerance_units")
+        with self._scale_lock:
+            s = metric_scale.add_two_point(sd, pts[0], pts[1], true_m, role, note, tol, command=f"POST /api/sessions/{sid}/scale")
+        return metric_scale.summary(s)
+
     def run_control(self, sid: str, body: dict) -> dict:
         """Queue a control command for a running live run (atomic control.json with increasing seq)."""
         op = body.get("op")
@@ -332,9 +402,9 @@ class Console:
             raise KeyError(sid)
         with self._lock:
             proc = self._procs.get(("runs", sid))
-        if proc is None or proc.poll() is not None:
-            raise RuntimeError("This run is not running (controls only apply to a live run)")
         status = _read_json(sd / "status.json") or {}
+        if proc is None or proc.poll() is not None or status.get("state") in FINAL_STATES:
+            raise RuntimeError("This run is not running (controls only apply to a live run)")
         applied = int(status.get("control_seq_applied") or 0)
         seq = max(self._control_seq.get(sid, 0), applied) + 1
         self._control_seq[sid] = seq
@@ -414,10 +484,47 @@ class Console:
     def cancel_job(self, sid: str, kind: str = "maps") -> bool:
         with self._lock:
             p = self._procs.get((kind, sid))
-        if p is None or p.poll() is not None:
-            return False
+        if p is None or p.poll() is not None or self._finishing(kind, sid, p):
+            return False  # nothing to cancel: never started, exited, or already wrote its final state
         p.send_signal(signal.SIGTERM)  # pipeline turns this into a COLMAP cancellation + CANCELLED status
         return True
+
+    def decimated_ply(self, path: Path, max_points: int) -> tuple[bytes, int, int] | None:
+        """At most `max_points` vertices of a PLY: every (n / max_points)-th point in file order (deterministic, so
+        the same request always returns the same points). None when the file already fits (serve it as is).
+        Returns (body, points served, points in the file). Only the sampled rows are read from disk."""
+        st = path.stat()
+        with open(path, "rb") as fh:
+            head = fh.read(65536)
+        count, dtype, body_at = parse_ply_header(head, path.name)
+        if st.st_size - body_at != count * dtype.itemsize:
+            raise PlyError(f"{path.name}: vertex data size does not match the header")
+        if count <= max_points:
+            return None
+        key = (str(path), st.st_mtime_ns, st.st_size, max_points)
+        with self._lock:
+            if key in self._ply_cache:
+                self._ply_cache.move_to_end(key)
+                return self._ply_cache[key]
+        idx = (np.arange(max_points, dtype=np.int64) * count) // max_points
+        rows = np.empty(max_points, dtype)
+        block = max(1, 16 * CHUNK // dtype.itemsize)  # read ~16 MiB at a time: memory stays near the output size
+        with open(path, "rb") as fh:
+            fh.seek(body_at)
+            for b0 in range(0, count, block):
+                b1 = min(count, b0 + block)
+                part = np.frombuffer(fh.read((b1 - b0) * dtype.itemsize), dtype)
+                lo, hi = np.searchsorted(idx, [b0, b1])
+                rows[lo:hi] = part[idx[lo:hi] - b0]
+        lines = head[:body_at].decode("ascii").splitlines()
+        lines = [f"element vertex {max_points}" if ln.startswith("element vertex ") else ln for ln in lines]
+        lines.insert(2, f"comment decimated: {max_points} of {count} points, every {count / max_points:.3g}-th in file order")
+        out = ("\n".join(lines) + "\n").encode("ascii") + rows.tobytes()
+        with self._lock:
+            self._ply_cache[key] = (out, max_points, count)
+            while len(self._ply_cache) > DECIMATED_CACHE:
+                self._ply_cache.popitem(last=False)
+        return out, max_points, count
 
     def shutdown(self) -> None:
         with self._lock:
@@ -444,13 +551,19 @@ class Handler(BaseHTTPRequestHandler):
         if failed:
             super().log_request(code, size)
 
-    def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store") -> None:
+    def _headers(self, code: int, ctype: str, length: int, cache: str, extra: dict | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
+        self._headers_sent = True
+
+    def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store", extra: dict | None = None) -> None:
+        self._headers(code, ctype, len(body), cache, extra)
         self.wfile.write(body)
 
     def _json(self, obj, code: int = 200) -> None:
@@ -460,25 +573,100 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": message}, code)
 
     def _file(self, path: Path, cache: str = "no-store") -> None:
+        """Streams a file in CHUNK pieces. Supports one `Range: bytes=a-b` and, for PLY files, `?max_points=N`
+        (a deterministic subsample, see Console.decimated_ply)."""
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if path.suffix == ".ply":
             ctype = "application/octet-stream"
+            q = parse_qs(urlparse(self.path).query).get("max_points")
+            if q:
+                if not re.fullmatch(r"\d{1,9}", q[0]) or not 1 <= int(q[0]) <= MAX_POINTS_LIMIT:
+                    return self._error(400, f"max_points must be an integer in [1, {MAX_POINTS_LIMIT}]")
+                try:
+                    dec = self.console.decimated_ply(path, int(q[0]))
+                except FileNotFoundError:
+                    return self._error(404, f"{path.name} not found")
+                except PlyError as e:
+                    return self._error(422, str(e))
+                if dec is not None:
+                    body, served, total = dec
+                    return self._send(200, body, ctype, cache, {"X-Points-Total": str(total), "X-Points-Served": str(served)})
         try:
-            self._send(200, path.read_bytes(), ctype, cache)
-        except FileNotFoundError:
-            self._error(404, f"{path.name} not found")
+            fh = open(path, "rb")
+        except (FileNotFoundError, IsADirectoryError):
+            return self._error(404, f"{path.name} not found")
+        with fh:
+            size = os.fstat(fh.fileno()).st_size
+            start, end, code = 0, size - 1, 200
+            extra = {"Accept-Ranges": "bytes"}
+            rng = self.headers.get("Range")
+            if rng:
+                m = re.fullmatch(r"bytes=(\d*)-(\d*)", rng.strip())
+                if not m or m.groups() == ("", ""):
+                    return self._error(416, "only a single bytes=a-b range is supported")
+                a, b = m.groups()
+                if a == "":  # suffix range: the last b bytes
+                    start, end = max(0, size - int(b)), size - 1
+                else:
+                    start, end = int(a), min(int(b), size - 1) if b else size - 1
+                if start >= size or start > end:
+                    return self._send(416, b"", ctype, cache, {"Content-Range": f"bytes */{size}"})
+                code = 206
+                extra["Content-Range"] = f"bytes {start}-{end}/{size}"
+            if path.suffix == ".ply":
+                extra["X-Points-Served"] = "all"
+            self._headers(code, ctype, end - start + 1, cache, extra)
+            fh.seek(start)
+            left = end - start + 1
+            try:
+                while left > 0:
+                    buf = fh.read(min(CHUNK, left))
+                    if not buf:
+                        break  # file shrank while sending; the client sees a short body
+                    self.wfile.write(buf)
+                    left -= len(buf)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True  # the browser dropped the request (switched layer); nothing to report
+
+    def _local_request(self, post: bool) -> str | None:
+        """None if the request may proceed, else the reason for a 403/415.
+
+        Host must name this console (127.0.0.1 / localhost / [::1] on our port): blocks DNS rebinding, where another
+        site's name resolves to 127.0.0.1. POSTs also need a local Origin (when a browser sends one) and a JSON body:
+        a cross-site page cannot send application/json without a preflight, which this server never grants."""
+        port = self.server.server_address[1]
+        allowed = {f"{h}:{port}" for h in LOCAL_HOSTS}
+        if (self.headers.get("Host") or "").lower() not in allowed:
+            return "host"
+        if post:
+            origin = self.headers.get("Origin")
+            if origin is not None and origin.lower() not in {f"http://{h}" for h in allowed}:
+                return "origin"
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                return "content-type"
+        return None
 
     def do_GET(self):
-        self._guarded(self._get)
+        self._guarded(self._get, post=False)
 
     def do_POST(self):
-        self._guarded(self._post)
+        self._guarded(self._post, post=True)
 
-    def _guarded(self, fn):
+    def _guarded(self, fn, post: bool):
+        self._headers_sent = False
+        why = self._local_request(post)
+        if why == "content-type":
+            return self._error(415, "POST bodies must be sent as Content-Type: application/json")
+        if why:
+            return self._error(403, f"request refused: {why} is not this local console")
         try:
             fn()
         except Exception as e:  # never drop the connection silently; the UI shows the message
             self.log_error("unhandled %s: %s", type(e).__name__, e)
+            if self._headers_sent:
+                self.close_connection = True  # a status line is already out; the client sees a short body
+                return
             self._error(500, f"internal error: {type(e).__name__}: {e}")
 
     def _get(self):
@@ -549,7 +737,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(n) or b"{}") if n <= 65536 else None
+            if n < 0 or n > MAX_BODY:  # a negative length would make read() wait for the client to close
+                return self._error(400, "expected a small JSON object")
+            body = json.loads(self.rfile.read(n) or b"{}")
             if body is None or not isinstance(body, dict):
                 return self._error(400, "expected a small JSON object")
             if path == "/api/jobs":
@@ -559,6 +749,9 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 ok = self.console.cancel_job(m.group(1))
                 return self._json({"cancelled": ok}, 202 if ok else 409)
+            m = re.match(r"^/api/sessions/([^/]+)/scale$", path)
+            if m:
+                return self._json(self.console.add_scale(m.group(1), body))
             if path == "/api/track-jobs":
                 return self._json({"session": self.console.start_track_job(body)}, 202)
             m = re.match(r"^/api/track-jobs/([^/]+)/cancel$", path)

@@ -1,0 +1,18 @@
+{
+ "state": "SUCCEEDED",
+ "stage": "EXPORT",
+ "stage_index": 4,
+ "stages": [
+  "SELECT_FRAMES",
+  "EXTRACT_FEATURES",
+  "MATCH_FEATURES",
+  "MAP",
+  "EXPORT"
+ ],
+ "progress": null,
+ "message": "done",
+ "pid": null,
+ "map_source": "SIMULATED",
+ "started_at": "2026-11-08T12:02:34.336+00:00",
+ "updated_at": "2026-11-08T12:02:35.378+00:00"
+}

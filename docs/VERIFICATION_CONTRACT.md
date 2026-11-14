@@ -1,3 +1,5 @@
+> **초기 설계(2026-11-08); 현재 상태는 [docs/SYSTEM_STATUS.md](SYSTEM_STATUS.md)**
+
 # 최종 결과물과 체크리스트
 
 ## Must-pass (구매 전)

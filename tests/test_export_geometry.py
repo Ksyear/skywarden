@@ -3,7 +3,6 @@ import json
 from types import SimpleNamespace as NS
 
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 
 from mapping.export import export_reconstruction, read_ply

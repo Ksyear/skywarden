@@ -41,11 +41,11 @@ import cv2
 import numpy as np
 
 from mapping.frame_source import InputError
-from tracking.tracker import Detection, MultiTracker, TargetSelector, TargetState, TrackerConfig, TrackState
+from tracking.tracker import MultiTracker, TargetSelector, TargetState, TrackerConfig, TrackState
 from control.yaw_controller import YawController
 
 from . import vo as vo_mod
-from .live_source import FileSource, LatestFrameBuffer, LiveSource, NoDevice, SourceFrame, open_live
+from .live_source import LatestFrameBuffer, LiveSource, NoDevice, SourceFrame, open_live
 from .person_detector import ModelUnavailable, make_detector, sha256_file
 
 HARDWARE_ARMED = False
@@ -274,492 +274,534 @@ def run_live(req: RunRequest, source: LiveSource | None = None, pipeline: Pipeli
     """Test seam: `source` and `pipeline` (image -> detections) may be injected; otherwise they are opened from
     `req`. Returns the run report (also written to run_report.json)."""
     assert not HARDWARE_ARMED and DRY_RUN
-    cancel = cancel or threading.Event()
-    sd = req.session_dir
-    (sd / "frames").mkdir(parents=True, exist_ok=True)
-    for old in list((sd / "frames").glob("f*.jpg")) + [sd / "run_report.json", sd / "tracks.json", sd / "control.json"]:
-        old.unlink(missing_ok=True)  # a rerun into the same folder must not mix old files in
-    status = StatusWriter(sd)
-    tl = Timeline(sd / "timeline.jsonl", req.fsync_every)
-    labels = dict(LABELS)
-    report: dict = {"session_id": sd.name, "kind": "runs", "schema": SCHEMA, "status": "RUNNING",
-                    "created_at": _now(), "labels": labels}
-    frames_out: list[dict] = []
-    manifest: list[dict] = []
-    events: list[dict] = []
-    counts = {"heartbeat_rows": 0, "stall_rows": 0, "event_rows": 0, "discarded_old_epoch": 0}
-    proc_ms: list[float] = []
-    lat_ms: list[float] = []
-    det_ms: list[float] = []
-    vo_ms: list[float] = []
-    stop_cap = threading.Event()
-    cap_thread: _Capture | None = None
-    buf = LatestFrameBuffer()
-    end_reason, msg = None, ""
-    t0 = time.monotonic()
-    epoch = 0
-    vo = None
-    try:
-        # ---- open source first so a missing webcam fails fast (NO_DEVICE within 5 s)
+    return _LiveRun(req, source, pipeline, cancel or threading.Event(), detector_info).run()
+
+
+class _LiveRun:
+    """State of one run_live call, split by stage: _open (source, model, VO, header row), _loop (control, status,
+    stall / pause rows, _process per frame), _finalize (end row, tracks.json, report, completeness check)."""
+
+    def __init__(self, req: RunRequest, source: LiveSource | None, pipeline: Pipeline | None,
+                 cancel: threading.Event, detector_info: dict | None):
+        self.req, self.source, self.pipeline, self.cancel, self.detector_info = req, source, pipeline, cancel, detector_info
+        sd = self.sd = req.session_dir
+        (sd / "frames").mkdir(parents=True, exist_ok=True)
+        for old in list((sd / "frames").glob("f*.jpg")) + [sd / "run_report.json", sd / "tracks.json", sd / "control.json"]:
+            old.unlink(missing_ok=True)  # a rerun into the same folder must not mix old files in
+        self.status = StatusWriter(sd)
+        self.tl = Timeline(sd / "timeline.jsonl", req.fsync_every)
+        self.labels = dict(LABELS)
+        self.report: dict = {"session_id": sd.name, "kind": "runs", "schema": SCHEMA, "status": "RUNNING",
+                             "created_at": _now(), "labels": self.labels}
+        self.frames_out: list[dict] = []
+        self.manifest: list[dict] = []
+        self.events: list[dict] = []
+        self.counts = {"heartbeat_rows": 0, "stall_rows": 0, "event_rows": 0, "discarded_old_epoch": 0}
+        self.proc_ms: list[float] = []
+        self.lat_ms: list[float] = []
+        self.det_ms: list[float] = []
+        self.vo_ms: list[float] = []
+        self.stop_cap = threading.Event()
+        self.cap_thread: _Capture | None = None
+        self.buf = LatestFrameBuffer()
+        self.end_reason, self.msg = None, ""
+        self.t0 = time.monotonic()
+        self.epoch = 0
+        self.vo = None
+
+    def run(self) -> dict:
+        report, status = self.report, self.status
+        try:
+            self._open()
+            self._loop()
+        except Cancelled:
+            self.end_reason = "CANCELLED"
+        except NoDevice as e:
+            self.end_reason, self.msg = "FAILED", str(e)
+            report["failure"] = {"stage": status.state["stage"], "reason": "NO_DEVICE", "message": self.msg}
+        except (InputError, ModelUnavailable) as e:
+            self.end_reason, self.msg = "FAILED", str(e)
+            report["failure"] = {"stage": status.state["stage"], "reason": type(e).__name__, "message": self.msg}
+        except Exception as e:  # every failure is reported; the traceback goes to process.log
+            traceback.print_exc()
+            self.end_reason, self.msg = "FAILED", f"{type(e).__name__}: {e}"
+            report["failure"] = {"stage": status.state["stage"], "reason": "EXCEPTION", "message": self.msg}
+        return self._finalize()  # also for cancel / failure: partial files stay readable
+
+    # ------------------------------------------------------------------------------------------------ open
+    def _open(self) -> None:
+        req, report, status, labels = self.req, self.report, self.status, self.labels
+        # open source first so a missing webcam fails fast (NO_DEVICE within 5 s)
         status.stage("OPEN_SOURCE", f"opening {req.source}")
-        if source is None:
-            source = open_live(req.source, req.rate)
-        smeta = source.meta()
+        if self.source is None:
+            self.source = open_live(req.source, req.rate)
+        source = self.source
+        smeta = self.smeta = source.meta()
         if smeta.get("kind") == "file" and smeta.get("path"):
             smeta["sha256"] = sha256_file(Path(smeta["path"]))
         report["source"] = smeta
-        native_w, native_h = smeta["size"]
+        self.native_w, native_h = smeta["size"]
 
-        status.stage("LOAD_MODEL", f"loading {req.model}" if pipeline is None else "using injected pipeline")
-        if pipeline is None:
+        status.stage("LOAD_MODEL", f"loading {req.model}" if self.pipeline is None else "using injected pipeline")
+        if self.pipeline is None:
             det = make_detector(req.model, score_thr=req.score_thr)
-            pipeline = lambda img, _f: det.detect(img)  # noqa: E731
+            self.pipeline = lambda img, _f: det.detect(img)  # noqa: E731
             report["detector"] = det.info()
-            last_ms = lambda: det.last_ms  # noqa: E731
+            self.last_ms = lambda: det.last_ms  # noqa: E731
         else:
-            report["detector"] = detector_info or {"name": "injected", "source": "STUB (test pipeline)"}
+            report["detector"] = self.detector_info or {"name": "injected", "source": "STUB (test pipeline)"}
             labels["detector"] = report["detector"].get("source", "STUB")
-            last_ms = None
+            self.last_ms = None
 
-        vo = K = None
         intr = None
         if req.vo:
-            ww = min(req.vo_width, native_w)
-            wh = int(round(native_h * ww / native_w))
-            K, intr = vo_mod.intrinsics((ww, wh), (native_w, native_h), fx=req.fx, calib=req.calib)
-            vo = vo_mod.VisualOdometry(K, ww, wh)
+            ww = min(req.vo_width, self.native_w)
+            wh = int(round(native_h * ww / self.native_w))
+            K, intr = vo_mod.intrinsics((ww, wh), (self.native_w, native_h), fx=req.fx, calib=req.calib)
+            self.vo = vo_mod.VisualOdometry(K, ww, wh)
         report["intrinsics"] = intr
         settings = {k: (str(v) if isinstance(v, Path) else v) for k, v in req.__dict__.items() if k != "tracker"}
         settings["tracker"] = req.tracker.__dict__
         report["settings"] = settings
 
-        tracker = MultiTracker(req.tracker)
-        selector = TargetSelector()
-        ctl = YawController(native_w)
+        self.tracker = MultiTracker(req.tracker)
+        self.selector = TargetSelector()
+        self.ctl = YawController(self.native_w)
 
-        # ---- header row, then the clock starts
-        t0 = time.monotonic()
-        tl.append({"type": "header", "schema": SCHEMA, "run_t": 0.0, "wall_t": round(time.time(), 3),
-                   "source": smeta, "intrinsics": intr, "intrinsics_provenance": (intr or {}).get("source"),
-                   "labels": labels, "detector": report["detector"], "settings": settings,
-                   "image_wh": [native_w, native_h],
-                   "clocks": {"run_t": "monotonic s since run start (pauses included); the timeline axis",
-                              "media_t": smeta.get("media_clock"),
-                              "media_now": "source clock when the row was written (frozen while paused)"},
-                   "vo": vo_mod.header() if req.vo else None,
-                   "map_position": "NOT_AVAILABLE", "relocalization": "NOT_IMPLEMENTED"}, sync=True)
+        # header row, then the clock starts
+        self.t0 = time.monotonic()
+        self.tl.append({"type": "header", "schema": SCHEMA, "run_t": 0.0, "wall_t": round(time.time(), 3),
+                        "source": smeta, "intrinsics": intr, "intrinsics_provenance": (intr or {}).get("source"),
+                        "labels": labels, "detector": report["detector"], "settings": settings,
+                        "image_wh": [self.native_w, native_h],
+                        "clocks": {"run_t": "monotonic s since run start (pauses included); the timeline axis",
+                                   "media_t": smeta.get("media_clock"),
+                                   "media_now": "source clock when the row was written (frozen while paused)"},
+                        "vo": vo_mod.header() if req.vo else None,
+                        "map_position": "NOT_AVAILABLE", "relocalization": "NOT_IMPLEMENTED"}, sync=True)
         source.start_clock()
-        cap_thread = _Capture(source, buf, stop_cap)
-        cap_thread.start()
+        self.cap_thread = _Capture(source, self.buf, self.stop_cap)
+        self.cap_thread.start()
         status.stage("LIVE", "running")
 
-        # ---- loop state
-        paused = False
-        stop_requested = False
-        applied_seq = 0
-        ctl_sig = None
-        last_hb = -1e9
-        last_take_wall = time.monotonic()
-        last_frame_media_t: float | None = None
-        media_t0 = source.media_now()  # media time at which the current epoch started playing
-        played_before = 0.0  # media seconds played in earlier epochs
-        last_dropped = 0
-        last_status = 0.0
+    # ------------------------------------------------------------------------------------------------ helpers
+    def run_t(self) -> float:
+        return round(time.monotonic() - self.t0, 4)
+
+    def mnow(self) -> float | None:
+        m = self.source.media_now()
+        return None if m is None else round(m, 4)
+
+    def base_row(self, kind: str, istate: str, reasons: list[str], ev: list | None = None) -> dict:
+        return {"type": kind, "epoch": self.epoch, "run_t": self.run_t(), "media_t": None, "media_now": self.mnow(),
+                "wall_t": round(time.time(), 3), "proc_ms": None, "latency_ms": None, "dropped_since_last": 0,
+                "input_state": istate, "image": None, "detections": [], "tracks": [],
+                "target_id": self.selector.target_id, "target_state": self.target_state.value, "yaw": 0,
+                "stop_reasons": reasons, "command_source": "MOCK", "vo_state": None, "vo_segment": None,
+                "T_world_camera": None, "vo_reason": None, "shot_change": False,
+                "map_position": "NOT_AVAILABLE", "events": ev or []}
+
+    def event(self, kind: str, **data) -> dict:
+        e = {"type": kind, "run_t": self.run_t(), "media_now": self.mnow(), "epoch": self.epoch, **data}
+        self.events.append(e)
+        return e
+
+    # ------------------------------------------------------------------------------------------------ control
+    def apply(self, cmd: dict) -> dict:
+        source, event = self.source, self.event
+        op, args, seq = cmd.get("op"), cmd.get("args") or {}, cmd.get("seq")
+        if op not in CONTROL_OPS:
+            return event("CONTROL_IGNORED", seq=seq, op=op, reason="unknown op")
+        if op == "pause":
+            source.pause()
+            self.paused = True
+            return event("PAUSE", seq=seq)
+        if op == "resume":
+            source.resume()
+            self.paused = False
+            self.last_take_wall = time.monotonic()
+            return event("RESUME", seq=seq)
+        if op == "stop":
+            self.stop_requested = True
+            return event("STOP", seq=seq)
+        if op == "clear":
+            self.selector.select(None)
+            self.target_state = TargetState.SEARCHING
+            self.ctl = YawController(self.native_w)
+            return event("CLEAR", seq=seq)
+        if op == "select":
+            tid = args.get("track_id")
+            tr = self.tracker.get(tid) if isinstance(tid, int) else None
+            if tr is None or tr.state == TrackState.TENTATIVE:
+                return event("SELECT_REJECTED", seq=seq, track_id=tid,
+                             reason="no confirmed track with that id in the current frame")
+            self.selector.select(tid)
+            self.target_state, _ = self.selector.evaluate(self.tracker)
+            return event("SELECT", seq=seq, track_id=tid, track_state=tr.state.value)
+        # seek
+        to = args.get("media_t")
+        if not isinstance(to, (int, float)) or not np.isfinite(to):
+            return event("CONTROL_IGNORED", seq=seq, op=op, reason="seek needs a finite args.media_t")
+        frm = self.mnow()
+        if not source.seek(float(to)):
+            return event("SEEK_REJECTED", seq=seq, reason="source cannot seek (webcam)")
+        if frm is not None and self.media_t0 is not None:
+            self.played_before += max(0.0, frm - self.media_t0)
+        self.media_t0 = source.media_now()  # None for rate=max until the first frame of the new epoch
+        self.epoch = getattr(source, "epoch", self.epoch + 1)
+        self.buf.drain()
+        nxt = self.tracker._next_id
+        self.tracker = MultiTracker(self.req.tracker)
+        self.tracker._next_id = nxt  # ids stay unique within the run, so a replay can never confuse two epochs
+        self.selector = TargetSelector()
+        self.target_state = TargetState.SEARCHING
+        self.ctl = YawController(self.native_w)
+        if self.vo is not None:
+            self.vo.need_reset, self.vo.prev_hist = True, None  # next frame starts a new segment (identity origin)
+        self.last_frame_media_t = None
+        self.last_take_wall = time.monotonic()
+        return event("SEEK", seq=seq, **{"from": frm, "to": round(float(to), 4)})
+
+    def poll_control(self) -> None:
+        p = self.sd / "control.json"
+        try:
+            st = p.stat()
+        except FileNotFoundError:
+            return
+        sig = (st.st_mtime_ns, st.st_size)
+        if sig == self.ctl_sig:
+            return
+        try:
+            obj = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            return  # torn write; the server writes atomically, so retry on the next poll
+        self.ctl_sig = sig
+        cmds = obj.get("queue") if isinstance(obj, dict) and "queue" in obj else [obj]
+        cmds = [c for c in cmds if isinstance(c, dict) and isinstance(c.get("seq"), int) and c["seq"] > self.applied_seq]
+        for c in sorted(cmds, key=lambda c: c["seq"]):
+            try:
+                e = self.apply(c)
+            except Exception as ex:  # a bad command never crashes the run
+                e = self.event("CONTROL_ERROR", seq=c["seq"], op=c.get("op"), reason=f"{type(ex).__name__}: {ex}")
+            self.applied_seq = c["seq"]
+            self.counts["event_rows"] += 1
+            istate = "PAUSED" if self.paused else self.input_state
+            self.tl.append(self.base_row("event", istate, [str(e["type"])], [e]), sync=True)
+            self.status.write(control_seq_applied=self.applied_seq, epoch=self.epoch, input_state=istate,
+                              last_row=self.tl.rows - 1, last_run_t=self.run_t(), target_id=self.selector.target_id,
+                              target_state=self.target_state.value, last_event=e)
+
+    def end_check(self) -> str | None:
+        if self.cancel.is_set():
+            return "CANCELLED"
+        if self.stop_requested:
+            return "STOP_REQUESTED"
+        if self.cap_thread.error:
+            return "SOURCE_ERROR"
+        m = self.source.media_now()
+        if (self.req.max_seconds is not None and m is not None and self.media_t0 is not None
+                and self.played_before + m - self.media_t0 >= self.req.max_seconds):
+            return "MAX_SECONDS"
+        return None
+
+    # ------------------------------------------------------------------------------------------------ loop
+    def _loop(self) -> None:
+        req, buf = self.req, self.buf
+        self.paused = False
+        self.stop_requested = False
+        self.applied_seq = 0
+        self.ctl_sig = None
+        self.last_hb = -1e9
+        self.last_take_wall = time.monotonic()
+        self.last_frame_media_t: float | None = None
+        self.media_t0 = self.source.media_now()  # media time at which the current epoch started playing
+        self.played_before = 0.0  # media seconds played in earlier epochs
+        self.last_dropped = 0
+        self.last_status = 0.0
         last_ctl_poll = 0.0
-        recent: list[float] = []
-        target_state = TargetState.SEARCHING
-        input_state = "LIVE"
-        prev_vo_seg = None
-
-        def run_t() -> float:
-            return round(time.monotonic() - t0, 4)
-
-        def mnow() -> float | None:
-            m = source.media_now()
-            return None if m is None else round(m, 4)
-
-        def base_row(kind: str, istate: str, reasons: list[str], ev: list | None = None) -> dict:
-            return {"type": kind, "epoch": epoch, "run_t": run_t(), "media_t": None, "media_now": mnow(),
-                    "wall_t": round(time.time(), 3), "proc_ms": None, "latency_ms": None, "dropped_since_last": 0,
-                    "input_state": istate, "image": None, "detections": [], "tracks": [],
-                    "target_id": selector.target_id, "target_state": target_state.value, "yaw": 0,
-                    "stop_reasons": reasons, "command_source": "MOCK", "vo_state": None, "vo_segment": None,
-                    "T_world_camera": None, "vo_reason": None, "shot_change": False,
-                    "map_position": "NOT_AVAILABLE", "events": ev or []}
-
-        def event(kind: str, **data) -> dict:
-            e = {"type": kind, "run_t": run_t(), "media_now": mnow(), "epoch": epoch, **data}
-            events.append(e)
-            return e
-
-        def apply(cmd: dict) -> dict:
-            nonlocal paused, stop_requested, epoch, tracker, selector, ctl, target_state, last_frame_media_t
-            nonlocal last_take_wall, prev_vo_seg, played_before, media_t0
-            op, args, seq = cmd.get("op"), cmd.get("args") or {}, cmd.get("seq")
-            if op not in CONTROL_OPS:
-                return event("CONTROL_IGNORED", seq=seq, op=op, reason="unknown op")
-            if op == "pause":
-                source.pause()
-                paused = True
-                return event("PAUSE", seq=seq)
-            if op == "resume":
-                source.resume()
-                paused = False
-                last_take_wall = time.monotonic()
-                return event("RESUME", seq=seq)
-            if op == "stop":
-                stop_requested = True
-                return event("STOP", seq=seq)
-            if op == "clear":
-                selector.select(None)
-                target_state = TargetState.SEARCHING
-                ctl = YawController(native_w)
-                return event("CLEAR", seq=seq)
-            if op == "select":
-                tid = args.get("track_id")
-                tr = tracker.get(tid) if isinstance(tid, int) else None
-                if tr is None or tr.state == TrackState.TENTATIVE:
-                    return event("SELECT_REJECTED", seq=seq, track_id=tid,
-                                 reason="no confirmed track with that id in the current frame")
-                selector.select(tid)
-                target_state, _ = selector.evaluate(tracker)
-                return event("SELECT", seq=seq, track_id=tid, track_state=tr.state.value)
-            # seek
-            to = args.get("media_t")
-            if not isinstance(to, (int, float)) or not np.isfinite(to):
-                return event("CONTROL_IGNORED", seq=seq, op=op, reason="seek needs a finite args.media_t")
-            frm = mnow()
-            if not source.seek(float(to)):
-                return event("SEEK_REJECTED", seq=seq, reason="source cannot seek (webcam)")
-            if frm is not None and media_t0 is not None:
-                played_before += max(0.0, frm - media_t0)
-            media_t0 = source.media_now()  # None for rate=max until the first frame of the new epoch
-            epoch = getattr(source, "epoch", epoch + 1)
-            buf.drain()
-            nxt = tracker._next_id
-            tracker = MultiTracker(req.tracker)
-            tracker._next_id = nxt  # ids stay unique within the run, so a replay can never confuse two epochs
-            selector = TargetSelector()
-            target_state = TargetState.SEARCHING
-            ctl = YawController(native_w)
-            if vo is not None:
-                vo.need_reset, vo.prev_hist = True, None  # next frame starts a new segment (identity origin)
-            last_frame_media_t = None
-            last_take_wall = time.monotonic()
-            return event("SEEK", seq=seq, **{"from": frm, "to": round(float(to), 4)})
-
-        def poll_control() -> None:
-            nonlocal applied_seq, ctl_sig
-            p = sd / "control.json"
-            try:
-                st = p.stat()
-            except FileNotFoundError:
-                return
-            sig = (st.st_mtime_ns, st.st_size)
-            if sig == ctl_sig:
-                return
-            try:
-                obj = json.loads(p.read_text())
-            except (json.JSONDecodeError, OSError):
-                return  # torn write; the server writes atomically, so retry on the next poll
-            ctl_sig = sig
-            cmds = obj.get("queue") if isinstance(obj, dict) and "queue" in obj else [obj]
-            cmds = [c for c in cmds if isinstance(c, dict) and isinstance(c.get("seq"), int) and c["seq"] > applied_seq]
-            for c in sorted(cmds, key=lambda c: c["seq"]):
-                try:
-                    e = apply(c)
-                except Exception as ex:  # a bad command never crashes the run
-                    e = event("CONTROL_ERROR", seq=c["seq"], op=c.get("op"), reason=f"{type(ex).__name__}: {ex}")
-                applied_seq = c["seq"]
-                counts["event_rows"] += 1
-                tl.append(base_row("event", "PAUSED" if paused else input_state, [str(e["type"])], [e]), sync=True)
-                status.write(control_seq_applied=applied_seq, epoch=epoch, input_state="PAUSED" if paused else input_state,
-                             last_row=tl.rows - 1, last_run_t=run_t(), target_id=selector.target_id,
-                             target_state=target_state.value, last_event=e)
-
-        def end_check() -> str | None:
-            if cancel.is_set():
-                return "CANCELLED"
-            if stop_requested:
-                return "STOP_REQUESTED"
-            if cap_thread.error:
-                return "SOURCE_ERROR"
-            m = source.media_now()
-            if req.max_seconds is not None and m is not None and media_t0 is not None and played_before + m - media_t0 >= req.max_seconds:
-                return "MAX_SECONDS"
-            return None
-
-        # ---- main loop
+        self.recent: list[float] = []
+        self.target_state = TargetState.SEARCHING
+        self.input_state = "LIVE"
+        self.prev_vo_seg = None
         while True:
             now = time.monotonic()
             if now - last_ctl_poll >= req.control_poll_s:
-                poll_control()
+                self.poll_control()
                 last_ctl_poll = now
-            end_reason = end_check()
-            if end_reason:
-                break
-            if media_t0 is None:
-                media_t0 = source.media_now()
-            if now - last_status >= req.status_every_s:
-                fps = len([x for x in recent if x > now - 2.0]) / 2.0
-                recent = [x for x in recent if x > now - 2.0]
-                dur = smeta.get("duration_s")
-                m = source.media_now()
-                status.write(input_state="PAUSED" if paused else input_state, last_row=tl.rows - 1,
-                             last_run_t=run_t(), processed_total=len(frames_out),
-                             dropped_total=buf.dropped + counts["discarded_old_epoch"],
-                             captured_total=buf.produced, epoch=epoch, control_seq_applied=applied_seq,
-                             target_id=selector.target_id, target_state=target_state.value, recent_fps=fps,
-                             latency_ms_p95_recent=_pct(lat_ms[-30:], 95), media_now=None if m is None else round(m, 3),
-                             progress=[round(m or 0, 2), round(dur, 2)] if dur else None,
-                             message=f"{'PAUSED' if paused else input_state} · {len(frames_out)} processed · "
-                                     f"{fps:.1f} fps · dropped {buf.dropped}")
-                last_status = now
-
-            if paused:
-                if now - last_hb >= req.heartbeat_s:
-                    counts["heartbeat_rows"] += 1
-                    tl.append(base_row("heartbeat", "PAUSED", ["PAUSED"]))
-                    last_hb = now
+            self.end_reason = self.end_check()
+            if self.end_reason:
+                return
+            if self.media_t0 is None:
+                self.media_t0 = self.source.media_now()
+            if now - self.last_status >= req.status_every_s:
+                self._write_status(now)
+            if self.paused:
+                if now - self.last_hb >= req.heartbeat_s:
+                    self.counts["heartbeat_rows"] += 1
+                    self.tl.append(self.base_row("heartbeat", "PAUSED", ["PAUSED"]))
+                    self.last_hb = now
                 time.sleep(req.control_poll_s)
                 continue
-
             f: SourceFrame | None = buf.take(timeout=req.control_poll_s)
             if f is None:
-                if cap_thread.eof and buf.counts()["waiting"] == 0:
-                    end_reason = "EOF"
-                    break
-                if time.monotonic() - last_take_wall > req.stall_after_s:
-                    input_state = "STALLED"
-                    if time.monotonic() - last_hb >= req.heartbeat_s:
-                        m = source.media_now()
-                        ft = last_frame_media_t if last_frame_media_t is not None else (m or 0.0) - req.stall_after_s - 1e-3
-                        # the controller is asked with NO track, so it can only stop; STALE_FRAME comes from it
-                        cmd = ctl.command(m or 0.0, target_state, None, ft, m, VIRTUAL_BATTERY_PCT)
-                        assert cmd.yaw == 0
-                        r = base_row("stall", "STALLED", [*cmd.stop_reasons, "INPUT_STALL"])
-                        counts["stall_rows"] += 1
-                        tl.append(r)
-                        last_hb = time.monotonic()
+                if self.cap_thread.eof and buf.counts()["waiting"] == 0:
+                    self.end_reason = "EOF"
+                    return
+                self._maybe_stall_row()
                 continue
-            if f.epoch != epoch:
-                counts["discarded_old_epoch"] += 1  # decoded before the seek; never processed
+            if f.epoch != self.epoch:
+                self.counts["discarded_old_epoch"] += 1  # decoded before the seek; never processed
                 continue
+            self._process(f)
 
-            # ---- process one frame
-            p0 = time.monotonic()
-            last_take_wall = p0
-            input_state = "LIVE"
-            dets = pipeline(f.image, f)
-            dms = last_ms() if last_ms else (time.monotonic() - p0) * 1000
-            det_ms.append(dms)
-            tracks = tracker.update(f.media_t, dets)
-            target_state, ttrack = selector.evaluate(tracker)
-            m_now = source.media_now()
-            m_now = f.media_t if m_now is None else m_now
-            cmd = ctl.command(m_now, target_state, ttrack if target_state == TargetState.LOCKED else None,
-                              f.media_t, m_now, VIRTUAL_BATTERY_PCT)
-            if cmd.yaw != 0 and (target_state != TargetState.LOCKED or cmd.stop_reasons):
-                raise AssertionError("non-zero yaw without a LOCKED target")  # cannot happen; checked anyway
-            small = _resize_long(f.image, req.frame_long_side)
-            vrec = None
-            if vo is not None:
-                v0 = time.perf_counter()
-                vimg = small if small.shape[1] == vo.w else _resize_width(f.image, vo.w)
-                vrec = vo.process(f.media_t, vimg)
-                vo_ms.append((time.perf_counter() - v0) * 1000)
-            k = len(frames_out)
-            name = f"frames/f{k:06d}.jpg"
-            ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, req.jpeg_quality])
-            data = jpg.tobytes()
-            (sd / name).write_bytes(data)
-            tmp = sd / "frames" / ".latest.tmp"
-            tmp.write_bytes(data)
-            os.replace(tmp, sd / "frames" / "latest.jpg")
-            manifest.append({"name": name, "size": len(data)})
+    def _write_status(self, now: float) -> None:
+        recent = self.recent = [x for x in self.recent if x > now - 2.0]
+        fps = len(recent) / 2.0
+        dur = self.smeta.get("duration_s")
+        m = self.source.media_now()
+        istate = "PAUSED" if self.paused else self.input_state
+        self.status.write(input_state=istate, last_row=self.tl.rows - 1,
+                          last_run_t=self.run_t(), processed_total=len(self.frames_out),
+                          dropped_total=self.buf.dropped + self.counts["discarded_old_epoch"],
+                          captured_total=self.buf.produced, epoch=self.epoch, control_seq_applied=self.applied_seq,
+                          target_id=self.selector.target_id, target_state=self.target_state.value, recent_fps=fps,
+                          latency_ms_p95_recent=_pct(self.lat_ms[-30:], 95), media_now=None if m is None else round(m, 3),
+                          progress=[round(m or 0, 2), round(dur, 2)] if dur else None,
+                          message=f"{istate} · {len(self.frames_out)} processed · {fps:.1f} fps · dropped {self.buf.dropped}")
+        self.last_status = now
 
-            shot = bool(vrec and vrec["state"] == "LOST" and vrec["reason"].startswith("scene change"))
-            ev = []
-            if vrec and prev_vo_seg is not None and vrec["segment"] != prev_vo_seg:
-                ev.append(event("VO_NEW_SEGMENT", segment=vrec["segment"], reason=vrec["reason"]))
-            if shot:
-                ev.append(event("SHOT_CHANGE", media_t=f.media_t, reason=vrec["reason"]))
-            prev_vo_seg = vrec["segment"] if vrec else None
-            dropped = buf.dropped
-            p1 = time.monotonic()
-            pms, lms = (p1 - p0) * 1000, (p1 - f.wall_captured) * 1000
-            proc_ms.append(pms)
-            lat_ms.append(lms)
-            recent.append(p1)
-            trk = [_track_dict(tr) for tr in tracks if tr.state != TrackState.LOST]
-            dlist = [[*(round(float(v), 1) for v in d.bbox_xyxy), round(float(d.score), 3)] for d in dets]
-            row = base_row("frame", "LIVE", list(cmd.stop_reasons), ev)
-            row.update({"k": k, "seq": f.seq, "source_index": f.index, "media_t": round(f.media_t, 4),
-                        "media_now": round(m_now, 4), "proc_ms": round(pms, 2), "detect_ms": round(dms, 2),
-                        "latency_ms": round(lms, 2), "dropped_since_last": dropped - last_dropped, "image": name,
-                        "detections": dlist, "tracks": trk, "target_id": selector.target_id,
-                        "target_state": target_state.value, "yaw": cmd.yaw,
-                        "error_norm": None if ttrack is None else round((float(ttrack.center[0]) - native_w / 2) / (native_w / 2), 3),
-                        "shot_change": shot})
-            if vrec:
-                row.update({"vo_state": vrec["state"], "vo_segment": vrec["segment"],
-                            "T_world_camera": vrec["T_world_camera"], "vo_reason": vrec["reason"],
-                            "vo_inliers": vrec["inliers"]})
-            last_dropped = dropped
-            tl.append(row, sync=bool(ev))
-            frames_out.append({"k": k, "t": row["run_t"], "media_t": row["media_t"], "epoch": epoch,
-                               "source_index": f.index, "image": name, "detect_ms": round(dms, 2),
-                               "detections": dlist, "tracks": trk})
-            last_frame_media_t = f.media_t
+    def _maybe_stall_row(self) -> None:
+        req = self.req
+        if time.monotonic() - self.last_take_wall <= req.stall_after_s:
+            return
+        self.input_state = "STALLED"
+        if time.monotonic() - self.last_hb < req.heartbeat_s:
+            return
+        m = self.source.media_now()
+        ft = self.last_frame_media_t if self.last_frame_media_t is not None else (m or 0.0) - req.stall_after_s - 1e-3
+        # the controller is asked with NO track, so it can only stop; STALE_FRAME comes from it
+        cmd = self.ctl.command(m or 0.0, self.target_state, None, ft, m, VIRTUAL_BATTERY_PCT)
+        assert cmd.yaw == 0
+        r = self.base_row("stall", "STALLED", [*cmd.stop_reasons, "INPUT_STALL"])
+        self.counts["stall_rows"] += 1
+        self.tl.append(r)
+        self.last_hb = time.monotonic()
 
-    except Cancelled:
-        end_reason = "CANCELLED"
-    except NoDevice as e:
-        end_reason, msg = "FAILED", str(e)
-        report["failure"] = {"stage": status.state["stage"], "reason": "NO_DEVICE", "message": msg}
-    except (InputError, ModelUnavailable) as e:
-        end_reason, msg = "FAILED", str(e)
-        report["failure"] = {"stage": status.state["stage"], "reason": type(e).__name__, "message": msg}
-    except Exception as e:  # every failure is reported; the traceback goes to process.log
-        traceback.print_exc()
-        end_reason, msg = "FAILED", f"{type(e).__name__}: {e}"
-        report["failure"] = {"stage": status.state["stage"], "reason": "EXCEPTION", "message": msg}
+    def _process(self, f: SourceFrame) -> None:
+        req, sd, vo, native_w = self.req, self.sd, self.vo, self.native_w
+        p0 = time.monotonic()
+        self.last_take_wall = p0
+        self.input_state = "LIVE"
+        dets = self.pipeline(f.image, f)
+        dms = self.last_ms() if self.last_ms else (time.monotonic() - p0) * 1000
+        self.det_ms.append(dms)
+        tracks = self.tracker.update(f.media_t, dets)
+        self.target_state, ttrack = self.selector.evaluate(self.tracker)
+        target_state = self.target_state
+        m_now = self.source.media_now()
+        m_now = f.media_t if m_now is None else m_now
+        cmd = self.ctl.command(m_now, target_state, ttrack if target_state == TargetState.LOCKED else None,
+                               f.media_t, m_now, VIRTUAL_BATTERY_PCT)
+        if cmd.yaw != 0 and (target_state != TargetState.LOCKED or cmd.stop_reasons):
+            raise AssertionError("non-zero yaw without a LOCKED target")  # cannot happen; checked anyway
+        small = _resize_long(f.image, req.frame_long_side)
+        vrec = None
+        if vo is not None:
+            v0 = time.perf_counter()
+            vimg = small if small.shape[1] == vo.w else _resize_width(f.image, vo.w)
+            vrec = vo.process(f.media_t, vimg)
+            self.vo_ms.append((time.perf_counter() - v0) * 1000)
+        k = len(self.frames_out)
+        name = f"frames/f{k:06d}.jpg"
+        ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, req.jpeg_quality])
+        data = jpg.tobytes()
+        (sd / name).write_bytes(data)
+        tmp = sd / "frames" / ".latest.tmp"
+        tmp.write_bytes(data)
+        os.replace(tmp, sd / "frames" / "latest.jpg")
+        self.manifest.append({"name": name, "size": len(data)})
 
-    # ---- finalize (also for cancel / failure: partial files stay readable)
-    stop_cap.set()
-    if cap_thread is not None:
-        cap_thread.join(2.0)
-        if cap_thread.error and end_reason == "SOURCE_ERROR":
-            report["failure"] = {"stage": "LIVE", "reason": "SOURCE_ERROR", "message": cap_thread.error}
-    if source is not None:
-        try:
-            source.close()
-        except Exception:
-            pass
-    buf.finalize()
-    status.write(stage="FINALIZE", stage_index=STAGES.index("FINALIZE"), message="writing tracks.json and run_report.json")
-    end_state = {"EOF": "EOF", "MAX_SECONDS": "EOF", "STOP_REQUESTED": "STOPPED", "CANCELLED": "CANCELLED"}.get(end_reason, "FAILED")
-    if tl.rows:  # header exists -> close the timeline with an end row
-        tl.append({"type": "end", "epoch": epoch, "run_t": round(time.monotonic() - t0, 4), "media_t": None,
-                   "wall_t": round(time.time(), 3), "input_state": end_state, "yaw": 0,
-                   "stop_reasons": ["END"], "end_reason": end_reason, "map_position": "NOT_AVAILABLE", "events": []},
-                  sync=True)
-    tl.close()
-    image_wh = report.get("source", {}).get("size")
-    _atomic_json(sd / "tracks.json", {"session_id": sd.name, "image_wh": image_wh, "time_axis": "run_t",
-                                      "labels": {**labels, "replay": "OPEN_LOOP_REPLAY", "source_kind": "live_run"},
-                                      "frames": frames_out}, compact=True)
+        shot = bool(vrec and vrec["state"] == "LOST" and vrec["reason"].startswith("scene change"))
+        ev = []
+        if vrec and self.prev_vo_seg is not None and vrec["segment"] != self.prev_vo_seg:
+            ev.append(self.event("VO_NEW_SEGMENT", segment=vrec["segment"], reason=vrec["reason"]))
+        if shot:
+            ev.append(self.event("SHOT_CHANGE", media_t=f.media_t, reason=vrec["reason"]))
+        self.prev_vo_seg = vrec["segment"] if vrec else None
+        dropped = self.buf.dropped
+        p1 = time.monotonic()
+        pms, lms = (p1 - p0) * 1000, (p1 - f.wall_captured) * 1000
+        self.proc_ms.append(pms)
+        self.lat_ms.append(lms)
+        self.recent.append(p1)
+        trk = [_track_dict(tr) for tr in tracks if tr.state != TrackState.LOST]
+        dlist = [[*(round(float(v), 1) for v in d.bbox_xyxy), round(float(d.score), 3)] for d in dets]
+        row = self.base_row("frame", "LIVE", list(cmd.stop_reasons), ev)
+        row.update({"k": k, "seq": f.seq, "source_index": f.index, "media_t": round(f.media_t, 4),
+                    "media_now": round(m_now, 4), "proc_ms": round(pms, 2), "detect_ms": round(dms, 2),
+                    "latency_ms": round(lms, 2), "dropped_since_last": dropped - self.last_dropped, "image": name,
+                    "detections": dlist, "tracks": trk, "target_id": self.selector.target_id,
+                    "target_state": target_state.value, "yaw": cmd.yaw,
+                    "error_norm": None if ttrack is None else round((float(ttrack.center[0]) - native_w / 2) / (native_w / 2), 3),
+                    "shot_change": shot})
+        if vrec:
+            row.update({"vo_state": vrec["state"], "vo_segment": vrec["segment"],
+                        "T_world_camera": vrec["T_world_camera"], "vo_reason": vrec["reason"],
+                        "vo_inliers": vrec["inliers"]})
+        self.last_dropped = dropped
+        self.tl.append(row, sync=bool(ev))
+        self.frames_out.append({"k": k, "t": row["run_t"], "media_t": row["media_t"], "epoch": self.epoch,
+                                "source_index": f.index, "image": name, "detect_ms": round(dms, 2),
+                                "detections": dlist, "tracks": trk})
+        self.last_frame_media_t = f.media_t
 
-    rows, _ = read_timeline(tl.path)
-    frame_rows = [r for r in rows if r.get("type") == "frame"]
-    captured = buf.produced
-    dropped_total = buf.dropped + counts["discarded_old_epoch"]
-    span = (frame_rows[-1]["run_t"] - frame_rows[0]["run_t"]) if len(frame_rows) > 1 else 0.0
-    paused_s, p_at = 0.0, None  # operator pauses are not processing time
-    for e in events:
-        if e["type"] == "PAUSE" and p_at is None:
-            p_at = e["run_t"]
-        elif e["type"] == "RESUME" and p_at is not None:
-            paused_s, p_at = paused_s + e["run_t"] - p_at, None
-    if p_at is not None and frame_rows:
-        paused_s += max(0.0, frame_rows[-1]["run_t"] - p_at)
-    active = span - paused_s
-    media_played = 0.0
-    for ep in sorted({r["epoch"] for r in frame_rows}):
-        mts = [r["media_t"] for r in frame_rows if r["epoch"] == ep]
-        media_played += mts[-1] - mts[0]
-    yaws = [r["yaw"] for r in rows if "yaw" in r]
-    bad_yaw = sum(1 for r in rows if r.get("yaw", 0) != 0 and (r.get("target_state") != "LOCKED" or r.get("stop_reasons")
-                                                                or r.get("input_state") != "LIVE" or r.get("type") != "frame"))
-    no_pose, cur = [], None
-    for r in frame_rows:
-        if r.get("vo_state") is None:
-            continue
-        if r["T_world_camera"] is None:
-            if cur is None:
-                cur = {"run_t0": r["run_t"], "run_t1": r["run_t"], "rows": 0, "reason": r.get("vo_reason")}
-            cur["run_t1"], cur["rows"] = r["run_t"], cur["rows"] + 1
-        elif cur is not None:
+    # ------------------------------------------------------------------------------------------------ finalize
+    def _finalize(self) -> dict:
+        sd, tl, report, status, buf, end_reason = self.sd, self.tl, self.report, self.status, self.buf, self.end_reason
+        self.stop_cap.set()
+        if self.cap_thread is not None:
+            self.cap_thread.join(2.0)
+            if self.cap_thread.error and end_reason == "SOURCE_ERROR":
+                report["failure"] = {"stage": "LIVE", "reason": "SOURCE_ERROR", "message": self.cap_thread.error}
+        if self.source is not None:
+            try:
+                self.source.close()
+            except Exception:
+                pass
+        buf.finalize()
+        status.write(stage="FINALIZE", stage_index=STAGES.index("FINALIZE"), message="writing tracks.json and run_report.json")
+        end_state = {"EOF": "EOF", "MAX_SECONDS": "EOF", "STOP_REQUESTED": "STOPPED", "CANCELLED": "CANCELLED"}.get(end_reason, "FAILED")
+        if tl.rows:  # header exists -> close the timeline with an end row
+            tl.append({"type": "end", "epoch": self.epoch, "run_t": round(time.monotonic() - self.t0, 4), "media_t": None,
+                       "wall_t": round(time.time(), 3), "input_state": end_state, "yaw": 0,
+                       "stop_reasons": ["END"], "end_reason": end_reason, "map_position": "NOT_AVAILABLE", "events": []},
+                      sync=True)
+        tl.close()
+        image_wh = report.get("source", {}).get("size")
+        _atomic_json(sd / "tracks.json", {"session_id": sd.name, "image_wh": image_wh, "time_axis": "run_t",
+                                          "labels": {**self.labels, "replay": "OPEN_LOOP_REPLAY", "source_kind": "live_run"},
+                                          "frames": self.frames_out}, compact=True)
+        rows, _ = read_timeline(tl.path)
+        frame_rows = [r for r in rows if r.get("type") == "frame"]
+        captured = buf.produced
+        dropped_total = buf.dropped + self.counts["discarded_old_epoch"]
+        self._summarize(rows, frame_rows, captured, dropped_total)
+        problems = self._completeness(rows, frame_rows, captured, dropped_total)
+        msg = self.msg
+        if end_reason == "CANCELLED":
+            report["status"], msg = "CANCELLED", "cancelled by user (SIGTERM); partial files are readable"
+        elif end_reason in ("EOF", "MAX_SECONDS", "STOP_REQUESTED"):
+            report["status"] = "SUCCEEDED" if not problems else "INCOMPLETE"
+            msg = (f"{len(frame_rows)} frames processed · {report['processed_fps']} fps · latency p95 "
+                   f"{report['latency_ms']['p95']} ms · dropped {dropped_total} · end {end_reason}")
+            if problems:
+                msg += " · INCOMPLETE: " + "; ".join(problems)
+        else:
+            report["status"] = "FAILED"
+            msg = msg or (report.get("failure") or {}).get("message") or str(end_reason)
+            report.setdefault("failure", {"stage": "LIVE", "reason": str(end_reason), "message": msg})
+        _atomic_json(sd / "run_report.json", report)  # the report is the last data file
+        status.write(state=report["status"], message=msg, input_state=end_state, last_row=tl.rows - 1,
+                     processed_total=len(frame_rows), dropped_total=dropped_total, failure=report.get("failure"))
+        print(f"{report['status']}: {msg}", flush=True)
+        return report
+
+    def _summarize(self, rows: list[dict], frame_rows: list[dict], captured: int, dropped_total: int) -> None:
+        req, buf, tl, vo, counts = self.req, self.buf, self.tl, self.vo, self.counts
+        lat_ms, proc_ms, det_ms, vo_ms = self.lat_ms, self.proc_ms, self.det_ms, self.vo_ms
+        span = (frame_rows[-1]["run_t"] - frame_rows[0]["run_t"]) if len(frame_rows) > 1 else 0.0
+        paused_s, p_at = 0.0, None  # operator pauses are not processing time
+        for e in self.events:
+            if e["type"] == "PAUSE" and p_at is None:
+                p_at = e["run_t"]
+            elif e["type"] == "RESUME" and p_at is not None:
+                paused_s, p_at = paused_s + e["run_t"] - p_at, None
+        if p_at is not None and frame_rows:
+            paused_s += max(0.0, frame_rows[-1]["run_t"] - p_at)
+        active = span - paused_s
+        media_played = 0.0
+        for ep in sorted({r["epoch"] for r in frame_rows}):
+            mts = [r["media_t"] for r in frame_rows if r["epoch"] == ep]
+            media_played += mts[-1] - mts[0]
+        yaws = [r["yaw"] for r in rows if "yaw" in r]
+        bad_yaw = sum(1 for r in rows if r.get("yaw", 0) != 0 and (r.get("target_state") != "LOCKED" or r.get("stop_reasons")
+                                                                    or r.get("input_state") != "LIVE" or r.get("type") != "frame"))
+        no_pose, cur = [], None
+        for r in frame_rows:
+            if r.get("vo_state") is None:
+                continue
+            if r["T_world_camera"] is None:
+                if cur is None:
+                    cur = {"run_t0": r["run_t"], "run_t1": r["run_t"], "rows": 0, "reason": r.get("vo_reason")}
+                cur["run_t1"], cur["rows"] = r["run_t"], cur["rows"] + 1
+            elif cur is not None:
+                no_pose.append(cur)
+                cur = None
+        if cur is not None:
             no_pose.append(cur)
-            cur = None
-    if cur is not None:
-        no_pose.append(cur)
 
-    def cnt(key, rs):
-        out: dict = {}
-        for r in rs:
-            out[str(r.get(key))] = out.get(str(r.get(key)), 0) + 1
-        return out
+        def cnt(key, rs):
+            out: dict = {}
+            for r in rs:
+                out[str(r.get(key))] = out.get(str(r.get(key)), 0) + 1
+            return out
 
-    report.update({
-        "end_reason": end_reason,
-        "counts": {"captured": captured, "processed": len(frame_rows), "dropped": dropped_total,
-                   "dropped_by_buffer": buf.dropped, "discarded_old_epoch": counts["discarded_old_epoch"],
-                   "captured_minus_processed": captured - len(frame_rows), "rows": tl.rows,
-                   "frames_written": len(manifest), **{k: v for k, v in counts.items() if k != "discarded_old_epoch"}},
-        "latency_ms": {"p50": _pct(lat_ms, 50), "p95": _pct(lat_ms, 95), "max": round(max(lat_ms), 2) if lat_ms else None,
-                       "definition": "monotonic processed-row time minus time the frame left the source"},
-        "proc_ms": {"p50": _pct(proc_ms, 50), "p95": _pct(proc_ms, 95)},
-        "detect_ms": {"p50": _pct(det_ms, 50), "p95": _pct(det_ms, 95)},
-        "vo_ms": {"p50": _pct(vo_ms, 50), "p95": _pct(vo_ms, 95)},
-        "processed_fps": round((len(frame_rows) - 1) / active, 2) if active > 0 else None,
-        "processed_fps_definition": "(frame rows - 1) / (run_t first->last frame row minus operator-paused seconds)",
-        "paused_seconds": round(paused_s, 3),
-        "run_seconds": round(time.monotonic() - t0, 3),
-        "media_seconds": round(media_played, 3) if len(frame_rows) > 1 else None,
-        "yaw": {"nonzero_rows": sum(1 for y in yaws if y), "min": min(yaws) if yaws else None,
-                "max": max(yaws) if yaws else None,
-                "mean_abs_nonzero": round(float(np.mean([abs(y) for y in yaws if y])), 2) if any(yaws) else None,
-                "source": "MOCK", "transmitted": False},
-        "yaw_nonzero_while_not_locked_or_stop": bad_yaw,
-        "target_state_counts": cnt("target_state", frame_rows),
-        "input_state_counts": cnt("input_state", rows[1:]),
-        "row_type_counts": cnt("type", rows),
-        "stop_reason_counts": _reason_counts(rows),
-        "epochs": epoch + 1,
-        "vo": None if not req.vo else {
-            "segments": sorted({r["vo_segment"] for r in frame_rows if r.get("vo_segment") is not None}),
-            "state_counts": cnt("vo_state", frame_rows), "no_pose_spans": no_pose, "label": LABELS["vo"],
-            "steps": vo.stats if vo is not None else None},
-        "scene_changes": [{"run_t": e["run_t"], "media_t": e.get("media_t"), "reason": e["reason"]}
-                          for e in events if e["type"] == "SHOT_CHANGE"],
-        "events": events,
-        "control_seq_applied": status.state.get("control_seq_applied", 0),
-        "timeline_rows": tl.rows,
-        "timeline_sha256": tl.sha.hexdigest(),
-        "frames_manifest": manifest,
-    })
-    # ---- completeness: row count, sha256 and every manifest frame, checked against the files on disk
-    problems = []
-    _, nlines = read_timeline(tl.path)
-    if nlines != tl.rows or len(rows) != tl.rows:
-        problems.append(f"timeline lines {nlines} / parsed {len(rows)} != rows written {tl.rows}")
-    if sha256_file(tl.path) != report["timeline_sha256"]:
-        problems.append("timeline sha256 mismatch")
-    if any(not (sd / m["name"]).is_file() or (sd / m["name"]).stat().st_size != m["size"] for m in manifest):
-        problems.append("frame manifest mismatch")
-    if len(manifest) != len(frame_rows):
-        problems.append(f"frames_written {len(manifest)} != frame rows {len(frame_rows)}")
-    if captured != len(frame_rows) + dropped_total:
-        problems.append(f"captured {captured} != processed {len(frame_rows)} + dropped {dropped_total}")
-    report["completeness"] = {"ok": not problems, "problems": problems}
-    if end_reason == "CANCELLED":
-        report["status"], msg = "CANCELLED", "cancelled by user (SIGTERM); partial files are readable"
-    elif end_reason in ("EOF", "MAX_SECONDS", "STOP_REQUESTED"):
-        report["status"] = "SUCCEEDED" if not problems else "INCOMPLETE"
-        msg = (f"{len(frame_rows)} frames processed · {report['processed_fps']} fps · latency p95 "
-               f"{report['latency_ms']['p95']} ms · dropped {dropped_total} · end {end_reason}")
-        if problems:
-            msg += " · INCOMPLETE: " + "; ".join(problems)
-    else:
-        report["status"] = "FAILED"
-        msg = msg or (report.get("failure") or {}).get("message") or str(end_reason)
-        report.setdefault("failure", {"stage": "LIVE", "reason": str(end_reason), "message": msg})
-    _atomic_json(sd / "run_report.json", report)  # the report is the last data file
-    status.write(state=report["status"], message=msg, input_state=end_state, last_row=tl.rows - 1,
-                 processed_total=len(frame_rows), dropped_total=dropped_total, failure=report.get("failure"))
-    print(f"{report['status']}: {msg}", flush=True)
-    return report
+        self.report.update({
+            "end_reason": self.end_reason,
+            "counts": {"captured": captured, "processed": len(frame_rows), "dropped": dropped_total,
+                       "dropped_by_buffer": buf.dropped, "discarded_old_epoch": counts["discarded_old_epoch"],
+                       "captured_minus_processed": captured - len(frame_rows), "rows": tl.rows,
+                       "frames_written": len(self.manifest), **{k: v for k, v in counts.items() if k != "discarded_old_epoch"}},
+            "latency_ms": {"p50": _pct(lat_ms, 50), "p95": _pct(lat_ms, 95), "max": round(max(lat_ms), 2) if lat_ms else None,
+                           "definition": "monotonic processed-row time minus time the frame left the source"},
+            "proc_ms": {"p50": _pct(proc_ms, 50), "p95": _pct(proc_ms, 95)},
+            "detect_ms": {"p50": _pct(det_ms, 50), "p95": _pct(det_ms, 95)},
+            "vo_ms": {"p50": _pct(vo_ms, 50), "p95": _pct(vo_ms, 95)},
+            "processed_fps": round((len(frame_rows) - 1) / active, 2) if active > 0 else None,
+            "processed_fps_definition": "(frame rows - 1) / (run_t first->last frame row minus operator-paused seconds)",
+            "paused_seconds": round(paused_s, 3),
+            "run_seconds": round(time.monotonic() - self.t0, 3),
+            "media_seconds": round(media_played, 3) if len(frame_rows) > 1 else None,
+            "yaw": {"nonzero_rows": sum(1 for y in yaws if y), "min": min(yaws) if yaws else None,
+                    "max": max(yaws) if yaws else None,
+                    "mean_abs_nonzero": round(float(np.mean([abs(y) for y in yaws if y])), 2) if any(yaws) else None,
+                    "source": "MOCK", "transmitted": False},
+            "yaw_nonzero_while_not_locked_or_stop": bad_yaw,
+            "target_state_counts": cnt("target_state", frame_rows),
+            "input_state_counts": cnt("input_state", rows[1:]),
+            "row_type_counts": cnt("type", rows),
+            "stop_reason_counts": _reason_counts(rows),
+            "epochs": self.epoch + 1,
+            "vo": None if not req.vo else {
+                "segments": sorted({r["vo_segment"] for r in frame_rows if r.get("vo_segment") is not None}),
+                "state_counts": cnt("vo_state", frame_rows), "no_pose_spans": no_pose, "label": LABELS["vo"],
+                "steps": vo.stats if vo is not None else None},
+            "scene_changes": [{"run_t": e["run_t"], "media_t": e.get("media_t"), "reason": e["reason"]}
+                              for e in self.events if e["type"] == "SHOT_CHANGE"],
+            "events": self.events,
+            "control_seq_applied": self.status.state.get("control_seq_applied", 0),
+            "timeline_rows": tl.rows,
+            "timeline_sha256": tl.sha.hexdigest(),
+            "frames_manifest": self.manifest,
+        })
+
+    def _completeness(self, rows: list[dict], frame_rows: list[dict], captured: int, dropped_total: int) -> list[str]:
+        """Row count, sha256 and every manifest frame, checked against the files on disk."""
+        sd, tl, manifest = self.sd, self.tl, self.manifest
+        problems = []
+        _, nlines = read_timeline(tl.path)
+        if nlines != tl.rows or len(rows) != tl.rows:
+            problems.append(f"timeline lines {nlines} / parsed {len(rows)} != rows written {tl.rows}")
+        if sha256_file(tl.path) != self.report["timeline_sha256"]:
+            problems.append("timeline sha256 mismatch")
+        if any(not (sd / m["name"]).is_file() or (sd / m["name"]).stat().st_size != m["size"] for m in manifest):
+            problems.append("frame manifest mismatch")
+        if len(manifest) != len(frame_rows):
+            problems.append(f"frames_written {len(manifest)} != frame rows {len(frame_rows)}")
+        if captured != len(frame_rows) + dropped_total:
+            problems.append(f"captured {captured} != processed {len(frame_rows)} + dropped {dropped_total}")
+        self.report["completeness"] = {"ok": not problems, "problems": problems}
+        return problems
 
 
 def _reason_counts(rows: list[dict]) -> dict:

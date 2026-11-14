@@ -4,7 +4,6 @@ import sqlite3
 
 import cv2
 import numpy as np
-import pytest
 
 from mapping.quality import THRESHOLDS, evaluate, trajectory_jumps
 from mapping.shots import detect_shots

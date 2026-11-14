@@ -8,6 +8,11 @@ SIMULATED planar pose: rc forward/lateral drive a velocity with a first-order la
 moving briefly after a STOP like a real aircraft) at `mps_per_rc` m/s per rc unit. `sim_pose()` exposes it in a
 SIMULATED_FRAME_ONLY frame (x forward at take-off heading, y to the right, metres). A real Tello reports no such
 position (only mission-pad x/y/z), so this exists to test logic such as a geofence guard, not localisation.
+
+Scripted altitude (`altitude_profile`, [(seconds since take-off, metres), ...], linear in between, last value held):
+while flying, `h` follows it in whole cm like the real state packet and `tof` = h + `tof_offset_cm` (flat floor below,
+the sensor sitting that far under the reference point). `true_height_m(t)` gives the exact profile value at a
+monotonic time, for tests that compare a telemetry-derived scale with the truth.
 """
 from __future__ import annotations
 
@@ -25,7 +30,8 @@ QUERY_REPLIES = {"battery?": lambda s: str(s["bat"]), "sdk?": lambda s: "30", "s
 
 class MockTello:
     def __init__(self, state_port: int, drop_prob: float = 0.0, latency_s: float = 0.0, battery: int = 90,
-                 seed: int = 0, state_hz: float = 10.0, mps_per_rc: float = 0.01, vel_tau_s: float = 0.4):
+                 seed: int = 0, state_hz: float = 10.0, mps_per_rc: float = 0.01, vel_tau_s: float = 0.4,
+                 altitude_profile: list[tuple[float, float]] | None = None, tof_offset_cm: int = 10):
         self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.cmd_sock.bind(("127.0.0.1", 0))
         self.cmd_sock.settimeout(0.05)
@@ -48,6 +54,9 @@ class MockTello:
         self.received: list[str] = []
         self.last_cmd_t = time.monotonic()
         self.auto_landed = False
+        self.altitude_profile = sorted((float(t), float(h)) for t, h in altitude_profile) if altitude_profile else None
+        self.tof_offset_cm = int(tof_offset_cm)
+        self.takeoff_t: float | None = None
         self._stop = threading.Event()
         self._threads = [threading.Thread(target=self._serve, daemon=True), threading.Thread(target=self._state_loop, daemon=True)]
 
@@ -82,6 +91,8 @@ class MockTello:
             if self.s["bat"] < 10:
                 return "error Not enough battery"
             self.flying, self.s["h"] = True, 80
+            self.takeoff_t = time.monotonic()
+            self._apply_altitude(self.takeoff_t)
             return "ok"
         if v in ("land", "emergency"):
             self.flying, self.s["h"], self.rc_yaw = False, 0, 0
@@ -126,6 +137,26 @@ class MockTello:
         with self._pose_lock:
             return self._pos[0], self._pos[1], self._heading
 
+    def true_height_m(self, t: float) -> float | None:
+        """Exact scripted height (metres) at monotonic time t, or None without a profile / before take-off."""
+        if not self.altitude_profile or self.takeoff_t is None:
+            return None
+        x = t - self.takeoff_t
+        ts = [p[0] for p in self.altitude_profile]
+        hs = [p[1] for p in self.altitude_profile]
+        if x <= ts[0]:
+            return hs[0]
+        for (t0, h0), (t1, h1) in zip(self.altitude_profile, self.altitude_profile[1:]):
+            if x <= t1:
+                return h0 + (h1 - h0) * (x - t0) / (t1 - t0) if t1 > t0 else h1
+        return hs[-1]
+
+    def _apply_altitude(self, t: float) -> None:
+        h = self.true_height_m(t)
+        if h is not None:
+            self.s["h"] = int(round(100 * h))
+            self.s["tof"] = self.s["h"] + self.tof_offset_cm
+
     def _state_loop(self) -> None:
         out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         period, t0 = 1.0 / self.state_hz, time.monotonic()
@@ -134,6 +165,7 @@ class MockTello:
                 self._heading = (self._heading + self.rc_yaw * 1.0 * period + 180) % 360 - 180  # ~1 deg/s per rc unit
                 self.s["yaw"] = int(round(self._heading))
                 self._step_pose(period)
+                self._apply_altitude(time.monotonic())
                 if time.monotonic() - self.last_cmd_t > 15.0:
                     self.flying, self.s["h"], self.auto_landed = False, 0, True
             self.s["time"] = int(time.monotonic() - t0)
