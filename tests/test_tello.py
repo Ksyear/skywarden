@@ -116,8 +116,12 @@ def test_mock_integrates_small_yaw_rates():
         c.start_state_listener()
         assert c.command("command") == "ok" and c.command("takeoff") == "ok"
         c.rc(0, 0, 0, 5)  # 5 deg/s: below one degree per state tick
+        t0 = time.monotonic()
         time.sleep(1.2)
+        while c.latest_state().data["yaw"] < 4 and time.monotonic() - t0 < 5:  # slow runners deliver ticks late
+            time.sleep(0.05)
         assert c.latest_state().data["yaw"] >= 4
+        assert c.latest_state().data["yaw"] <= 5 * (time.monotonic() - t0) + 1  # integrated, not jumped
         c.close()
 
 

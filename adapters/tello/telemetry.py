@@ -20,6 +20,7 @@ class TelemetryRecorder:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_t: float | None = None
+        self._lock = threading.Lock()  # a poll and stop() never interleave: file and samples always hold the same rows
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self.path.open("w")
         self._fh.write(json.dumps({"schema": "skywarden/telemetry@1", "clock": "time.monotonic of the receiving client",
@@ -27,13 +28,16 @@ class TelemetryRecorder:
                                    "note": note}) + "\n")
 
     def _poll(self) -> None:
-        st = self.client.latest_state()
-        if st is None or st.t == self._last_t:
-            return
-        self._last_t = st.t
-        row = {"t": round(st.t, 4), **{k: st.data[k] for k in KEEP if k in st.data}}
-        self.samples.append(row)
-        self._fh.write(json.dumps(row) + "\n")
+        with self._lock:
+            if self._fh.closed:
+                return
+            st = self.client.latest_state()
+            if st is None or st.t == self._last_t:
+                return
+            self._last_t = st.t
+            row = {"t": round(st.t, 4), **{k: st.data[k] for k in KEEP if k in st.data}}
+            self._fh.write(json.dumps(row) + "\n")
+            self.samples.append(row)
 
     def start(self) -> "TelemetryRecorder":
         def loop():
@@ -47,7 +51,8 @@ class TelemetryRecorder:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=1)
-        self._fh.close()
+        with self._lock:
+            self._fh.close()
         return self.samples
 
     def __enter__(self):
