@@ -134,7 +134,10 @@ def test_mock_altitude_profile_and_telemetry_recorder(tmp_path):
         c.start_state_listener()
         rec = TelemetryRecorder(c, tmp_path / "telemetry.jsonl").start()
         assert c.command("command") == "ok" and c.command("takeoff") == "ok"
+        t0 = time.monotonic()
         time.sleep(1.0)
+        while len(rec.samples) < 5 and time.monotonic() - t0 < 5:  # slow runners deliver state packets late
+            time.sleep(0.05)
         t_mid = mock.takeoff_t + 0.3
         rec.stop()
         c.close()
