@@ -199,6 +199,8 @@ def _video(path, n=40, fps=10):
     vw.release()
 
 
+@pytest.mark.skipif(not (Path(__file__).resolve().parents[1] / "data/models/yolox/yolox_nano.onnx").is_file(),
+                    reason="weights missing: run scripts/fetch_models.sh")
 def test_live_run_lifecycle_control_and_integrity(tmp_path):
     vids = tmp_path / "in"
     vids.mkdir()
