@@ -17,7 +17,7 @@ COORDINATE_NOTE = ("COLMAP world frame, arbitrary origin and RELATIVE scale. Cam
 def write_ply(path: Path, points: np.ndarray) -> None:
     """points: structured array with PLY_DTYPE. first_seen = trajectory order of the first camera observing the point."""
     header = ("ply\nformat binary_little_endian 1.0\n"
-              "comment security-drone-a sparse map (RELATIVE scale, NOT_NAVIGATION_SAFE)\n"
+              "comment Skywarden sparse map (RELATIVE scale, NOT_NAVIGATION_SAFE)\n"
               f"element vertex {len(points)}\n"
               "property float x\nproperty float y\nproperty float z\n"
               "property uchar red\nproperty uchar green\nproperty uchar blue\n"
@@ -40,6 +40,16 @@ _PLY_TYPES = {"float": "<f4", "float32": "<f4", "double": "<f8", "uchar": "u1", 
 def read_ply(path: Path) -> np.ndarray:
     """Strict reader for binary little-endian vertex-only PLY files (what this project writes)."""
     data = Path(path).read_bytes()
+    count, dtype, body_at = parse_ply_header(data, path)
+    body = data[body_at:]
+    if len(body) != count * dtype.itemsize:
+        raise PlyError(f"{path}: expected {count * dtype.itemsize} bytes of vertex data, found {len(body)}")
+    return np.frombuffer(body, dtype=dtype, count=count)
+
+
+def parse_ply_header(data: bytes, path: Path | str = "PLY") -> tuple[int, np.dtype, int]:
+    """(vertex count, vertex dtype, offset of the vertex data) from the start of a file; `data` needs only to
+    reach past end_header."""
     end = data.find(b"end_header\n")
     if not data.startswith(b"ply\n") or end < 0:
         raise PlyError(f"{path}: not a PLY file")
@@ -59,16 +69,17 @@ def read_ply(path: Path) -> np.ndarray:
             fields.append((parts[2], _PLY_TYPES[parts[1]]))
     if count is None or not fields:
         raise PlyError(f"{path}: missing vertex element")
-    dtype = np.dtype(fields)
-    body = data[end + len(b"end_header\n"):]
-    if len(body) != count * dtype.itemsize:
-        raise PlyError(f"{path}: expected {count * dtype.itemsize} bytes of vertex data, found {len(body)}")
-    return np.frombuffer(body, dtype=dtype, count=count)
+    return count, np.dtype(fields), end + len(b"end_header\n")
 
 
 def export_reconstruction(rec, out_dir: Path, frames_by_name: dict[str, dict]) -> dict:
     """Writes sparse.ply + trajectory.json for one pycolmap.Reconstruction. Returns basic counts."""
-    images = sorted((rec.image(i) for i in rec.reg_image_ids()), key=lambda im: im.name)
+    # Time order comes from the frame timestamps, never from image_id; the name (selection order) only breaks ties
+    # and orders frames without a clock.
+    def _when(im):
+        ts = frames_by_name.get(im.name, {}).get("timestamp_s")
+        return (0 if ts is not None else 1, ts if ts is not None else 0.0, im.name)
+    images = sorted((rec.image(i) for i in rec.reg_image_ids()), key=_when)
     rank = {im.image_id: k for k, im in enumerate(images)}
 
     poses = []
@@ -97,7 +108,7 @@ def export_reconstruction(rec, out_dir: Path, frames_by_name: dict[str, dict]) -
 
     cam = rec.camera(images[0].camera_id) if images else None
     traj = {
-        "schema": "security-drone-a/trajectory@1",
+        "schema": "skywarden/trajectory@1",
         "coordinate_frame": COORDINATE_NOTE,
         "scale": "RELATIVE",
         "camera": None if cam is None else {

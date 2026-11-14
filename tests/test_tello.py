@@ -119,3 +119,64 @@ def test_mock_integrates_small_yaw_rates():
         time.sleep(1.2)
         assert c.latest_state().data["yaw"] >= 4
         c.close()
+
+
+def test_mock_altitude_profile_and_telemetry_recorder(tmp_path):
+    from adapters.tello.telemetry import TelemetryRecorder, height_at, read_telemetry
+    port = free_udp_port()
+    profile = [(0.0, 0.8), (0.6, 1.2), (1.2, 1.2)]
+    with MockTello(state_port=port, altitude_profile=profile, tof_offset_cm=7) as mock:
+        c = TelloClient(mock.addr, state_port=port)
+        c.start_state_listener()
+        rec = TelemetryRecorder(c, tmp_path / "telemetry.jsonl").start()
+        assert c.command("command") == "ok" and c.command("takeoff") == "ok"
+        time.sleep(1.0)
+        t_mid = mock.takeoff_t + 0.3
+        rec.stop()
+        c.close()
+        assert mock.true_height_m(t_mid) == pytest.approx(1.0)
+    rows = read_telemetry(tmp_path / "telemetry.jsonl")
+    assert rows == rec.samples and len(rows) >= 5
+    flying = [r for r in rows if r["h"] > 0]
+    assert all(r["tof"] == r["h"] + 7 for r in flying)
+    assert max(r["h"] for r in flying) == 120 and min(r["h"] for r in flying) >= 80
+    assert height_at(rows, rows[-1]["t"] + 1.0) is None  # never extrapolated
+
+
+def test_height_scale_recovers_known_scale_and_stays_a_cross_check(tmp_path):
+    import json
+
+    import numpy as np
+
+    from adapters.tello.height_scale_check import TRUE_MPU, synthetic_map
+    from mapping import metric_scale
+    heights = np.linspace(0.8, 1.2, 30)
+    m = synthetic_map(heights, seed=4)
+    plane = metric_scale.ground_plane_ransac(m["points"], seed=0)
+    assert 0.75 <= plane["inlier_ratio"] <= 0.9  # floor found, clutter rejected
+    tel = np.round(heights * 100) / 100  # whole-cm telemetry
+    res = metric_scale.scale_from_height(m["centres"], tel, plane)
+    assert abs(res["metres_per_unit"] / TRUE_MPU - 1) <= 0.01
+    # stored only as a cross-check: alone it gives no scale, next to a measurement it only reports the difference
+    sd = tmp_path / "s"
+    sd.mkdir()
+    (sd / "trajectory.json").write_text(json.dumps({"poses": []}))
+    s = metric_scale.set_cross_check(sd, "TELLO_TELEMETRY", res["metres_per_unit"], note="MOCK")
+    assert s["status"] == "NONE" and s["metres_per_unit"] is None
+    s = metric_scale.add_two_point(sd, [0, 0, 0], [10, 0, 0], 10 * TRUE_MPU * 1.2, "fit", note="tape")
+    assert s["status"] == "MEASURED_UNVERIFIED" and s["primary_method"] == "TWO_POINT_TAPE"
+    assert s["metres_per_unit"] == pytest.approx(TRUE_MPU * 1.2)
+    tc = next(c for c in s["cross_checks"] if c["method"] == "TELLO_TELEMETRY")
+    assert tc["diff_vs_primary_pct"] == pytest.approx(-16.67, abs=0.1) and "TELEMETRY_DISAGREES" in s["flags"]
+
+
+def test_height_flow_sends_nothing_off_loopback(tmp_path):
+    from adapters.tello.height_scale_check import SendAudit, fly_profile
+    with SendAudit() as audit:
+        flight = fly_profile([(0.0, 0.8), (0.5, 1.0)], tmp_path / "t.jsonl", settle_s=0.1)
+        sock = CountingSocket()
+        real = TelloClient(("192.168.10.1", 8889), sock=sock, env={})
+        with pytest.raises(HardwareDisarmed):
+            real.command("takeoff", timeout=0.01)
+    assert flight["telemetry"] and audit.loopback > 0
+    assert audit.other == [] and sock.sent == 0

@@ -19,7 +19,7 @@ import numpy as np
 from adapters.tello.client import TelloClient
 from adapters.tello.mock_tello import MockTello
 from control.yaw_controller import YawController
-from tracking.tracker import Detection, MultiTracker, TargetSelector, TargetState
+from tracking.tracker import Detection, MultiTracker, TargetSelector
 
 W, H, F_PX, FPS, DURATION = 640, 480, 500.0, 15.0, 20.0
 OCCLUSIONS = [(6.0, 6.5), (9.0, 10.5), (14.0, 16.5)]  # target hidden: 0.5 s, 1.5 s, 2.5 s

@@ -1,0 +1,16 @@
+# Lint only (no formatter): catches real mistakes without restyling the dense one-line idioms used in this code.
+target-version = "py313"
+line-length = 200
+extend-exclude = ["outputs", "data", "assets", "models"]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "W"]
+ignore = [
+    "E702",  # several statements on one line: used deliberately in short numeric helpers
+    "E731",  # lambda assignment: small local closures
+    "E741",  # ambiguous names (l, I) in numeric code
+]
+
+[lint.per-file-ignores]
+# experiment scripts under packages/learned are tidied in their own change
+"packages/learned/*" = ["F401", "E401"]

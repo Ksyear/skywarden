@@ -1,3 +1,5 @@
+> **초기 설계(2026-11-08); 현재 상태는 [docs/SYSTEM_STATUS.md](SYSTEM_STATUS.md)**
+
 # 시스템 전체 설계 — PC 우선, 나중에 Tello EDU
 
 ## 요구사항 우선순위
@@ -25,7 +27,15 @@ Alarm(PIR Mock or ESP32 MQTT) -> EventStore -> Local recorder
 ## 데이터 계약 — JSON/Python dataclass
 - `Frame`: frame_id, source, timestamp_ns_monotonic, bgr_frame, width/height, camera_id, calibration_id.
 - `Detection`: track_hint? class_id, score, bbox_xyxy_px, timestamp_ns.
-- `Track`: ID, center_px, velocity_px_s, covariance, state[SEARCHING,LOCKED,COASTING,LOST], age_ms.
+- `Track`: ID, center_px, velocity_px_s, covariance, state[TENTATIVE,LOCKED,PREDICTING,AMBIGUOUS,LOST], age_ms. (설계 초안의 SEARCHING/COASTING은 구현에서 TENTATIVE/PREDICTING으로 명명.)
+
+### 데이터 연관 규칙 (구현 기준, `packages/tracking/tracker.py`, 2026-11-09 E2 수정 반영)
+1. 예측 후 **만료 먼저**: 마지막 *신뢰* 검출로부터 `t − last_hit_t > max_coast_s`(2.0 s)인 트랙은 어떤 검출도 보기 전에 제거. 2.000 s는 생존, 그 초과는 만료, 프레임 간격이 불규칙해도 동일. 만료된 id는 재사용·부활하지 않음.
+2. 게이트 = Mahalanobis χ² ≤ 9.21 **그리고** 픽셀 거리 ≤ 0.5 × 박스 높이. 픽셀 상한이 없으면 1.5 s coasting 트랙의 게이트가 약 500 px로 커져 무관한 사람을 끌어들임(E2 fix_v2에서 관측).
+3. 확정 트랙(LOCKED/PREDICTING/AMBIGUOUS)은 게이트 그래프의 연결 성분 단위로 연관. 트랙 1 + 검출 1인 성분만 신뢰(Kalman 보정, hits, `last_hit_t` 갱신). 트랙 또는 검출이 둘 이상인 성분은 **AMBIGUOUS**: 보정·갱신 없음, 그 검출들은 이번 프레임에 보류(새 트랙도 만들지 않음). 순수 Hungarian 1:1 배정은 더 이상 확정 트랙에 쓰지 않음.
+4. 잠정(TENTATIVE) 트랙은 확정 트랙이 가져가지 않은 검출에 대해 게이트된 Hungarian으로 배정, 남은 검출은 새 TENTATIVE 트랙.
+5. `TargetSelector`는 선택된 id가 사라지면 운영자가 다시 `select()`할 때까지 LOST를 반환하고, 같은 자리의 새 id를 자동으로 고르지 않음. `YawController`는 LOCKED 외 모든 상태에서 STOP이며 사유는 `TARGET_<state>`(`TARGET_AMBIGUOUS`, `TARGET_LOST`, `TARGET_PREDICTING`).
+한계: 모션만으로는 게이트가 겹친 두 사람을 구분할 수 없다. 이 규칙은 잘못된 LOCK을 STOP으로 바꾸는 것이지, 교차 후 같은 id 재획득을 보장하지 않는다.
 - `Pose`: xyz, R/quaternion, timestamp_ns, frame_id, scale_status[UNKNOWN,RELATIVE,METRIC_ANCHORED], quality, covariance_or_null, origin.
 - `SparseMap`: xyz_points, feature_ids, source_frame_ids, trajectory, point units, calibration provenance.
 - `MissionPadPose`: pad_id, pad_center_and_axes, xyz_cm, detected_age_ms, validity, map transform if known.

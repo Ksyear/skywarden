@@ -1,0 +1,11 @@
+# Source record: YouTube 5xXMItmYKp4
+- URL: https://www.youtube.com/watch?v=5xXMItmYKp4
+- Title: #1 Drone  test flight in Juliana Park, Utrecht, Netherlands
+- Channel / author: Terrell Neuage (https://www.youtube.com/channel/UCYMgCOx4h9v6Q2r2AJwpeJA)
+- Upload date: 20251028
+- License (from YouTube metadata, checked 2026-11-09): Creative Commons Attribution license (reuse allowed) — attribution: "#1 Drone  test flight in Juliana Park, Utrecht, Netherlands" by Terrell Neuage, CC BY, https://www.youtube.com/watch?v=5xXMItmYKp4
+- Downloaded: 2026-11-09 with yt-dlp 2026.10.21 (project .venv), <=1080p mp4; section 0:35-1:35 (60 s), declared before mapping, inside the 34.5-109.5 s continuous shot; camera follows a walking person
+- File: 5xXMItmYKp4_0035-0135.mp4, SHA-256 385d8f12faba8f620d241ee5d6b24a99c646d7d89ca57e3d0b08c568db3f2711
+- Analysis copy: analysis_360p/5xXMItmYKp4_full360.mp4 (whole video, 360p, used only for shot/motion detection), SHA-256 8ceadde52a5c7171c3d1efbdd7a3bbbd2f3372dee5045501fbe584e3b13bc3df
+- Use here: local test input (mapping quality, tracking). Processed on this Mac; never uploaded. Labelled PUBLIC_DATASET.
+- People are visible; no identification, no re-identification, no redistribution of frames beyond local evidence.

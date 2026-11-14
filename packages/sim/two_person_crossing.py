@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
+from control.yaw_controller import YawController
 from tracking.tracker import Detection, MultiTracker, TargetSelector, TargetState
 
 W, H, FPS = 640, 480, 15.0
@@ -32,17 +33,23 @@ OCCLUSIONS = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
 CRITERIA = {"K1_same_id_rate_min": 0.95, "K1_occ": [0.5, 1.5], "K2_occ": 2.5, "K2_lost_rate": 1.0, "K3_switches_to_B": 0}
 
 
-def truth(t: float, who: str, y_sep: float) -> tuple[float, float, float]:
+def truth(t: float, who: str, y_sep: float, x_cross: float = W / 2) -> tuple[float, float, float]:
     """Centre x, centre y, box height for person A or B at time t."""
     if who == "A":
-        return W / 2 + SPEED * (t - T_CROSS), H / 2, 180.0
-    return W / 2 - SPEED * (t - T_CROSS), H / 2 + y_sep, 150.0
+        return x_cross + SPEED * (t - T_CROSS), H / 2, 180.0
+    return x_cross - SPEED * (t - T_CROSS), H / 2 + y_sep, 150.0
 
 
 def run_once(occ: float, with_b: bool, seed: int, y_sep: float = 12.0, noise_px: float = 2.0,
-             dropout: float = 0.05, trace_on: bool = False) -> dict:
+             dropout: float = 0.05, trace_on: bool = False, x_cross: float = W / 2) -> dict:
     rng = np.random.default_rng(seed)
     tr, sel = MultiTracker(), TargetSelector()
+    # Control path (socket-free): the real YawController with virtual, always-fresh telemetry. Reported separately
+    # from the tracker's id accuracy: it measures whether a non-zero yaw is produced for the wrong person or while
+    # the target is not LOCKED.
+    ctl = YawController(W)
+    ctrl = {"yaw_nonzero_frames": 0, "yaw_nonzero_not_locked": 0, "yaw_nonzero_on_B": 0, "yaw_nonzero_A_hidden": 0,
+            "locked_while_A_hidden": 0, "ambiguous_frames": 0, "frames_after_select": 0}
     hide = (T_CROSS - occ / 2, T_CROSS + occ / 2)
     on_b = 0
     first_relock = None
@@ -51,9 +58,9 @@ def run_once(occ: float, with_b: bool, seed: int, y_sep: float = 12.0, noise_px:
     trace = []
     for k in range(int(T_EVAL * FPS) + 1):
         t = k / FPS
-        people = {"A": truth(t, "A", y_sep)}
+        people = {"A": truth(t, "A", y_sep, x_cross)}
         if with_b:
-            people["B"] = truth(t, "B", y_sep)
+            people["B"] = truth(t, "B", y_sep, x_cross)
         dets = []
         for who, (cx, cy, h) in people.items():
             visible = 0 < cx < W and not (who == "A" and hide[0] <= t < hide[1])
@@ -68,6 +75,19 @@ def run_once(occ: float, with_b: bool, seed: int, y_sep: float = 12.0, noise_px:
                 target_id = cands[0].id
                 sel.select(target_id)
         state, track = sel.evaluate(tr)
+        a_hidden = hide[0] <= t < hide[1]
+        if target_id is not None:
+            cmd = ctl.command(t, state, track, t, t, 85)
+            ctrl["frames_after_select"] += 1
+            ctrl["ambiguous_frames"] += state.value == "AMBIGUOUS"
+            ctrl["locked_while_A_hidden"] += state == TargetState.LOCKED and a_hidden
+            if cmd.yaw != 0:
+                ctrl["yaw_nonzero_frames"] += 1
+                ctrl["yaw_nonzero_not_locked"] += state != TargetState.LOCKED
+                ctrl["yaw_nonzero_A_hidden"] += a_hidden
+                if track is not None and "B" in people:
+                    d = {w: float(np.hypot(*(track.center - np.array(p[:2])))) for w, p in people.items()}
+                    ctrl["yaw_nonzero_on_B"] += min(d, key=d.get) == "B" and d["B"] < FOLLOW_PX
         if track is not None:
             d = {w: float(np.hypot(*(track.center - np.array(p[:2])))) for w, p in people.items()}
             near = min(d, key=d.get)
@@ -91,7 +111,7 @@ def run_once(occ: float, with_b: bool, seed: int, y_sep: float = 12.0, noise_px:
             "same_id_on_A": st in ("LOCKED", "PREDICTING") and final_on == "A" and (occ == 0 or first_relock is not None),
             "switched_to_B": on_b > 0 or final_on == "B",
             "on_B_at_eval": final_on == "B",
-            "lost": st == "LOST", "ids_created": tr.stats.created, **({"trace": trace} if trace_on else {})}
+            "lost": st == "LOST", "ids_created": tr.stats.created, **ctrl, **({"trace": trace} if trace_on else {})}
 
 
 def summarise(rows: list[dict]) -> dict:
@@ -106,6 +126,9 @@ def summarise(rows: list[dict]) -> dict:
                 "switched_to_B": int(sum(r["switched_to_B"] for r in rs)),
                 "on_B_at_eval": int(sum(r["on_B_at_eval"] for r in rs)),
                 "locked_frames_on_B_total": int(sum(r["locked_frames_on_B"] for r in rs)),
+                "control": {k: int(sum(r[k] for r in rs)) for k in ("yaw_nonzero_frames", "yaw_nonzero_not_locked",
+                            "yaw_nonzero_on_B", "yaw_nonzero_A_hidden", "locked_while_A_hidden", "ambiguous_frames",
+                            "frames_after_select")},
                 "relock_delay_s_p50": round(float(np.median(delays)), 3) if delays else None}
     return out
 
@@ -132,7 +155,16 @@ def run(out_dir: Path, seeds: int = 50) -> dict:
     tight_s = {f"occ{o}": {"same_id_on_A": round(float(np.mean([r["same_id_on_A"] for r in tight if r["occ"] == o])), 3),
                            "switched_to_B": int(sum(r["switched_to_B"] for r in tight if r["occ"] == o))}
                for o in (0.5, 1.0, 1.5)}
-    result = {"measurement_change_log": ["same_id_on_A originally required LOCKED exactly at T_EVAL; changed to re-locked + same id + on A (LOCKED or PREDICTING) because the no-occlusion control scored 0.96 from single dropped detections. Criteria values unchanged."],
+    # Control-path check with the crossing moved right of centre (x=440 px) so that a wrong lock gives a non-zero
+    # yaw error; not part of the K1-K3 verdict.
+    off = [run_once(o, True, s, x_cross=440.0) for o in OCCLUSIONS for s in range(seeds)]
+    ctrl_keys = ("yaw_nonzero_frames", "yaw_nonzero_not_locked", "yaw_nonzero_on_B", "yaw_nonzero_A_hidden",
+                 "locked_while_A_hidden", "ambiguous_frames", "frames_after_select")
+    control_total = {"centre_crossing_all_700_runs": {k: int(sum(r[k] for r in rows)) for k in ctrl_keys},
+                     "off_centre_crossing_x440_350_runs": {k: int(sum(r[k] for r in off)) for k in ctrl_keys},
+                     "off_centre_same_id_on_A": {f"occ{o}": round(float(np.mean([r["same_id_on_A"] for r in off if r["occ"] == o])), 3) for o in OCCLUSIONS}}
+    result = {"control_path": control_total,
+              "measurement_change_log": ["same_id_on_A originally required LOCKED exactly at T_EVAL; changed to re-locked + same id + on A (LOCKED or PREDICTING) because the no-occlusion control scored 0.96 from single dropped detections. Criteria values unchanged."],
               "experiment": "E2 two-person crossing during occlusion", "label": "SIMULATED (synthetic detections, known identities)",
               "setup": {"fps": FPS, "speed_px_s": SPEED, "noise_px": 2.0, "dropout": 0.05, "y_separation_px": 12.0,
                         "box_h_A_B": [180, 150], "seeds": seeds, "follow_px": FOLLOW_PX,

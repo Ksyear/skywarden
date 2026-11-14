@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import os
 import platform
 import shutil
@@ -26,9 +27,13 @@ from .export import export_reconstruction
 from .frame_selection import Cancelled, SelectionConfig, SelectionError, select_frames
 from .frame_source import InputError, open_source
 from .labels import NAV_SAFETY, is_synthetic_input, CalibrationStatus, DataOrigin, Geometry, MapSource, Scale, map_source_for
+from .quality import THRESHOLDS, evaluate as evaluate_quality
+from .shots import STATIC_FLOW_PX, detect_shots
 
 STAGES = ["SELECT_FRAMES", "EXTRACT_FEATURES", "MATCH_FEATURES", "MAP", "EXPORT"]
-REPORT_SCHEMA = "security-drone-a/map_report@1"
+REPORT_SCHEMA = "skywarden/map_report@2"  # @2: job status and map quality are separate; every model exported
+MAX_KEPT_GAP_S = 1.0  # consecutive selected frames further apart than this lose overlap; fail instead of thinning
+PAIR_ID_BASE = 2147483647
 
 
 @dataclass
@@ -40,6 +45,10 @@ class BuildRequest:
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     source_note: str = ""
     seed: int = 0
+    # "global" (rotation averaging + global positioning) is the default: on the FSC aerial clip it removed the late
+    # scale drift of the incremental mapper, and on TUM fr1/desk it lowered ATE 2.05 -> 1.66 cm (all 53 frames).
+    # "incremental" stays available; it is the only mapper that honours cancellation inside the MAP stage.
+    mapper: str = "global"
 
 
 def _now() -> str:
@@ -68,6 +77,34 @@ class StatusWriter:
 
     def stage(self, name: str, message: str) -> None:
         self.write(stage=name, stage_index=STAGES.index(name), progress=None, message=message)
+
+
+def _drop_cross_shot_pairs(db: Path, shot_of: dict[str, int]) -> dict:
+    """Remove matches between frames of different shots so the mapper can never chain two scenes, and return the
+    verified inlier count between each selected frame and its predecessor (for the coverage report)."""
+    con = sqlite3.connect(db)
+    try:
+        name_of = dict(con.execute("SELECT image_id, name FROM images"))
+        removed = 0
+        for table in ("matches", "two_view_geometries"):
+            for (pid,) in list(con.execute(f"SELECT pair_id FROM {table}")):
+                i2 = pid % PAIR_ID_BASE
+                i1 = (pid - i2) // PAIR_ID_BASE
+                a, b = name_of.get(i1), name_of.get(i2)
+                if a in shot_of and b in shot_of and shot_of[a] != shot_of[b]:
+                    con.execute(f"DELETE FROM {table} WHERE pair_id = ?", (pid,))
+                    removed += table == "two_view_geometries"
+        con.commit()
+        inliers = {}
+        for pid, rows in con.execute("SELECT pair_id, rows FROM two_view_geometries"):
+            i2 = pid % PAIR_ID_BASE
+            inliers[((pid - i2) // PAIR_ID_BASE, i2)] = rows
+        id_of = {v: k for k, v in name_of.items()}
+        names = sorted(shot_of)  # frames are named in selection order (f000000.jpg, ...)
+        prev = [None] + [inliers.get(tuple(sorted((id_of[a], id_of[b]))), 0) for a, b in zip(names, names[1:])]
+    finally:
+        con.close()
+    return {"cross_shot_pairs_removed": removed, "inliers_to_prev": prev}
 
 
 def hash_input(path: Path, should_stop=lambda: False) -> str:
@@ -172,7 +209,42 @@ def build_sparse_map(req: BuildRequest, cancel_event: threading.Event | None = N
         sel = select_frames(source, frames_dir, req.selection, should_stop=cancel_flag.is_set,
                             on_progress=lambda d, t: status.write(progress=[d, t], message=f"scanned {d}/{t} candidate frames"))
         report["frames"] = sel.summary()
-        (sd / "frames.json").write_text(json.dumps([vars(k) for k in sel.kept], indent=1))
+        stamps = [k.timestamp_s for k in sel.kept]
+        max_gap = max((b - a for a, b in zip(stamps, stamps[1:])), default=0.0) if None not in stamps else None
+        report["frames"]["max_gap_s"] = None if max_gap is None else round(max_gap, 3)
+
+        # input check: shots (continuous takes) and camera motion; frames on different shots are never linked
+        shot_of = {k.file: 0 for k in sel.kept}
+        if source.kind == "video_file":
+            status.write(message="detecting shot changes and camera motion")
+            shots, shot_meta = detect_shots(req.input_path)
+            (sd / "shots.json").write_text(json.dumps({**shot_meta, "shots": [vars(x) for x in shots]}, indent=1))
+            starts = [x.start_frame for x in shots]
+            for k in sel.kept:
+                shot_of[k.file] = max(i for i, st in enumerate(starts) if st <= k.source_index)
+            dur = sum(x.duration_s for x in shots) or 1.0
+            static_share = sum(x.duration_s for x in shots if x.camera_motion == "static") / dur
+            report["input_check"] = {"shots": len(shots), "cuts": shot_meta["cuts"], "rule": shot_meta["rule"],
+                                     "static_duration_share": round(static_share, 3),
+                                     "shots_with_selected_frames": len(set(shot_of.values()))}
+            if static_share > 0.9:
+                med = [x.median_flow_px_per_frame for x in shots if x.median_flow_px_per_frame is not None]
+                raise SelectionError(
+                    f"camera is static (median flow {np.median(med) if med else 0:.3f} px/frame < {STATIC_FLOW_PX}) for "
+                    f"{static_share:.0%} of the input: structure from motion needs a moving camera. Use this clip for "
+                    f"tracking; for mapping use a clip where the camera moves sideways.")
+        else:
+            report["input_check"] = {"shots": 1, "cuts": 0, "note": "image folder: treated as one continuous take"}
+        # Fatal only when the frame cap caused the gap (silent thinning). Gaps left by blur/duplicate rejection are
+        # recorded and judged by the quality check (max_internal_gap_s): rejecting them here refused TUM fr1/desk,
+        # a ground-truth input that reconstructs GOOD (ATE 1.66-2.05 cm) with 1.34 s gaps.
+        report["frames"]["gap_guard"] = {"max_gap_s": report["frames"]["max_gap_s"], "limit_s": MAX_KEPT_GAP_S,
+                                         "fatal_only_when_caused_by_cap": True, "cap_dropped": sel.dropped_by_cap}
+        if max_gap is not None and max_gap > MAX_KEPT_GAP_S and sel.dropped_by_cap:
+            raise SelectionError(f"selected frames are up to {max_gap:.3f} s apart (> {MAX_KEPT_GAP_S} s), which breaks "
+                                 f"overlap: the cap of {req.selection.max_frames} frames dropped {sel.dropped_by_cap} "
+                                 f"frames; use a shorter section or a higher --max-frames.")
+        (sd / "frames.json").write_text(json.dumps([{**vars(k), "shot": shot_of[k.file]} for k in sel.kept], indent=1))
         timings[stage] = round(time.monotonic() - t0, 2)
         say(f"selected {len(sel.kept)} frames: {sel.summary()}")
         check_cancel()
@@ -211,13 +283,28 @@ def build_sparse_map(req: BuildRequest, cancel_event: threading.Event | None = N
         pairing.overlap = 10
         pairing.loop_detection = False  # needs a vocabulary tree file; not shipped
         pycolmap.match_sequential(db, pairing_options=pairing, device=pycolmap.Device.cpu, cancellation_token=token)
+        report["matching"] = _drop_cross_shot_pairs(db, shot_of)
         timings[stage] = round(time.monotonic() - t0, 2)
         check_cancel()
 
-        # 4. incremental mapping
+        # 4. mapping
         stage = "MAP"
         t0 = time.monotonic()
-        status.stage(stage, "incremental mapping")
+        status.stage(stage, f"{req.mapper} mapping")
+        sparse_dir = sd / "sparse"
+        sparse_dir.mkdir(exist_ok=True)
+        report["mapper"] = req.mapper
+        if req.mapper == "global":
+            gopts = pycolmap.GlobalPipelineOptions()
+            gopts.random_seed = req.seed
+            gopts.num_threads = os.cpu_count() or 1
+            if req.camera:  # calibrated intrinsics stay fixed, as with the incremental mapper
+                ba = gopts.mapper.bundle_adjustment
+                ba.refine_focal_length = ba.refine_principal_point = ba.refine_extra_params = False
+            status.write(message="global mapping (rotation averaging + positioning); cancel takes effect after this stage")
+            models = pycolmap.global_mapping(db, frames_dir, sparse_dir, gopts)
+        else:
+            models = None
         opts = pycolmap.IncrementalPipelineOptions()
         opts.random_seed = req.seed
         opts.num_threads = os.cpu_count() or 1
@@ -231,31 +318,77 @@ def build_sparse_map(req: BuildRequest, cancel_event: threading.Event | None = N
             registered[0] += 1
             status.write(progress=[registered[0], len(sel.kept)], message=f"registered {registered[0]}/{len(sel.kept)} frames")
 
-        sparse_dir = sd / "sparse"
-        sparse_dir.mkdir(exist_ok=True)
-        models = pycolmap.incremental_mapping(db, frames_dir, sparse_dir, options=opts,
-                                              initial_image_pair_callback=on_image, next_image_callback=on_image,
-                                              cancellation_token=token)
+        if models is None:
+            models = pycolmap.incremental_mapping(db, frames_dir, sparse_dir, options=opts,
+                                                  initial_image_pair_callback=on_image, next_image_callback=on_image,
+                                                  cancellation_token=token)
         timings[stage] = round(time.monotonic() - t0, 2)
         check_cancel()
         if not models:
             raise SelectionError("COLMAP registered no image pair. Typical causes: pure rotation, low texture, "
                                  "motion blur or too little overlap. Re-capture with sideways translation.")
-        best_idx, best = max(models.items(), key=lambda kv: kv[1].num_reg_images())
-        say(f"models: {[m.num_reg_images() for m in models.values()]}, best={best_idx}")
+        ranked = sorted(models.items(), key=lambda kv: -kv[1].num_reg_images())
+        best_idx, best = ranked[0]
+        say(f"models: {[m.num_reg_images() for _, m in ranked]}, best={best_idx}")
 
-        # 5. export
+        # 5. export: every model separately (models/<rank>/, rank 0 = largest); the top-level files are the largest
         stage = "EXPORT"
         t0 = time.monotonic()
-        status.stage(stage, "writing sparse.ply and trajectory.json")
+        status.stage(stage, "writing every model, coverage and quality")
         frames_by_name = {k.file: vars(k) for k in sel.kept}
         counts = export_reconstruction(best, sd, frames_by_name)
+        index_of = {k.file: i for i, k in enumerate(sel.kept)}
+        model_frames, model_info = [], []
+        largest_centers = []
+        shutil.rmtree(sd / "models", ignore_errors=True)
+        for rank, (idx, m) in enumerate(ranked):
+            mdir = sd / "models" / str(rank)
+            mdir.mkdir(parents=True)
+            c = export_reconstruction(m, mdir, frames_by_name)
+            ims = sorted((im for im in m.images.values() if im.has_pose), key=lambda im: index_of[im.name])
+            fidx = [index_of[im.name] for im in ims]
+            if rank == 0:
+                largest_centers = [list(map(float, im.projection_center())) for im in ims]
+            model_frames.append(fidx)
+            ts = [sel.kept[i].timestamp_s for i in fidx]
+            info = {"rank": rank, "colmap_dir": f"sparse/{idx}", "registered_images": c["registered_images"],
+                    "points3D": c["points3D"], "mean_reprojection_error_px": round(float(m.compute_mean_reprojection_error()), 4),
+                    "first_frame": fidx[0], "last_frame": fidx[-1],
+                    "time_range_s": [ts[0], ts[-1]] if None not in ts else None,
+                    "shots": sorted({shot_of[sel.kept[i].file] for i in fidx}),
+                    "focal_px": round(float(list(m.cameras.values())[0].params[0]), 1)}
+            (mdir / "model_report.json").write_text(json.dumps(info, indent=1))
+            model_info.append(info)
+        times = [k.timestamp_s if k.timestamp_s is not None else float(i) for i, k in enumerate(sel.kept)]
+        member: dict[int, list[int]] = {}
+        for rank, fidx in enumerate(model_frames):
+            for i in fidx:
+                member.setdefault(i, []).append(rank)
+        inl = report["matching"].get("inliers_to_prev", [])
+        cov_rows = [{"frame": i, "file": k.file, "timestamp_s": k.timestamp_s, "shot": shot_of[k.file],
+                     "models": member.get(i, []), "inliers_to_prev": inl[i] if i < len(inl) else None}
+                    for i, k in enumerate(sel.kept)]
+        missing, run = [], None
+        for r in cov_rows:
+            if 0 not in r["models"]:
+                run = run or [r["timestamp_s"], r["timestamp_s"]]
+                run[1] = r["timestamp_s"]
+            elif run:
+                missing.append(run)
+                run = None
+        if run:
+            missing.append(run)
+        quality = evaluate_quality(times, model_frames, float(best.compute_mean_reprojection_error()),
+                                   counts["points3D"], largest_centers, THRESHOLDS)
+        (sd / "coverage.json").write_text(json.dumps({"frames": cov_rows, "missing_in_largest_model_s": missing,
+                                                      "jumps_in_largest_model": quality["jumps"]}, indent=1))
         timings[stage] = round(time.monotonic() - t0, 2)
 
         n_sel = len(sel.kept)
         report["reconstruction"] = {
             "num_models": len(models),
-            "model_sizes": sorted((m.num_reg_images() for m in models.values()), reverse=True),
+            "model_sizes": [m.num_reg_images() for _, m in ranked],
+            "models": model_info,
             "chosen_model_dir": str((sparse_dir / str(best_idx)).relative_to(sd)),
             "registered_images": counts["registered_images"],
             "selected_frames": n_sel,
@@ -269,9 +402,13 @@ def build_sparse_map(req: BuildRequest, cancel_event: threading.Event | None = N
                 "ply_nonempty": (sd / "sparse.ply").stat().st_size > 200}
         gate["formal_minimum"] = all(gate.values())
         gate["registered_ratio_ge_0.5"] = counts["registered_images"] >= 0.5 * n_sel
-        report["quality_gate"] = gate
+        report["quality_gate"] = gate  # formal minimum only: decides whether the job wrote a usable file set
+        report["quality"] = quality    # whether the map is one continuous, consistent reconstruction of the input
+        report["labels"]["completeness"] = "COMPLETE" if quality["verdict"] == "GOOD" else "PARTIAL_RECONSTRUCTION"
         report["outputs"] = {"ply": "sparse.ply", "trajectory": "trajectory.json", "frames_dir": "frames",
-                             "frames_manifest": "frames.json", "log": "log.txt"}
+                             "frames_manifest": "frames.json", "log": "log.txt", "coverage": "coverage.json",
+                             "models_dir": "models", "shots": "shots.json" if (sd / "shots.json").exists() else None,
+                             "top_level_files": "largest model only (models/0); other models are separate coordinate frames"}
         report["labels"]["map_source"] = map_source_for(req.origin).value
         report["status"] = "SUCCEEDED" if gate["formal_minimum"] else "FAILED"
         if not gate["formal_minimum"]:

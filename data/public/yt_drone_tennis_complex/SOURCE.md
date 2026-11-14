@@ -1,0 +1,13 @@
+# Source record: YouTube a5mun9m1CKY
+- URL: https://www.youtube.com/watch?v=a5mun9m1CKY
+- Title: Sue Lorimer and Bob Bruns Tennis Complex @ Folsom Lake College
+- Channel / author: Zack Dowell (https://www.youtube.com/channel/UCSfJY-BC5a9ttLu7TtcHnQA)
+- Upload date: 20190909
+- License (from YouTube metadata, checked 2026-11-14): Creative Commons Attribution license (reuse allowed) — attribution: "Sue Lorimer and Bob Bruns Tennis Complex @ Folsom Lake College" by Zack Dowell, CC BY, https://www.youtube.com/watch?v=a5mun9m1CKY
+- Downloaded: 2026-11-14 with yt-dlp 2026.10.21 (project .venv), format 137+140 (1920x1080, 29.97 fps, H.264); full video (29 s), aerial flyover, 0 cuts (histogram check on a 360p copy)
+- Command: `.venv/bin/yt-dlp -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]" --write-info-json -o "data/public/yt_drone_tennis_complex/a5mun9m1CKY_full.%(ext)s" "https://www.youtube.com/watch?v=a5mun9m1CKY"`
+- File: a5mun9m1CKY_full.mp4, SHA-256 59b9d114deea7149896ad9a43b47c0317dad69e4b3932b1bf9007ec677d8a215
+- court_seeds.json: rough outer-corner clicks (one frame per court) used only to start the line-junction search for the metric-scale test.
+- Use here: local test input (metric scale from regulation tennis-court dimensions). Processed on this Mac; never uploaded. Labelled PUBLIC_DATASET.
+- Court dimensions used are the ITF regulation values, not a survey of these courts.
+- People may be visible; no identification, no re-identification, no redistribution of frames beyond local evidence.

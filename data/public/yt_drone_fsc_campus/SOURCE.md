@@ -1,0 +1,11 @@
+# Source record: YouTube l5IB1ucby_w
+- URL: https://www.youtube.com/watch?v=l5IB1ucby_w
+- Title: Drone Footage: Florida Southern College FSC Drone Flyover 5 4K
+- Channel / author: Audric Kraus (https://www.youtube.com/channel/UCAWSIJUVpFRpcdWc-eUuHJg)
+- Upload date: 20210904
+- License (from YouTube metadata, checked 2026-11-09): Creative Commons Attribution license (reuse allowed) — attribution: "Drone Footage: Florida Southern College FSC Drone Flyover 5 4K" by Audric Kraus, CC BY, https://www.youtube.com/watch?v=l5IB1ucby_w
+- Downloaded: 2026-11-09 with yt-dlp 2026.10.21 (project .venv), <=1080p mp4; full video (71 s), aerial flyover, 0 cuts; downloaded at <=1080p
+- File: l5IB1ucby_w_full.mp4, SHA-256 a862e2b45ed374a503b4f1b5b41aaf96381ea61573f0113f721bb0aff4fef620
+- Analysis copy: analysis_360p/l5IB1ucby_w_full360.mp4 (whole video, 360p, used only for shot/motion detection), SHA-256 3c58ec0730bdc6333fe946215b564af16e259a7a61f18c639a152b15451f6060
+- Use here: local test input (mapping quality, tracking). Processed on this Mac; never uploaded. Labelled PUBLIC_DATASET.
+- People are visible; no identification, no re-identification, no redistribution of frames beyond local evidence.

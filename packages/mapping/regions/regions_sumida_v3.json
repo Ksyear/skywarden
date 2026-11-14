@@ -1,0 +1,727 @@
+{
+ "session": "mqg_sumida_0025_0125",
+ "source": "yt_tokyo_sumida Td9TYnibTl0 0:25-1:25 (CC BY)",
+ "coords": "pixels of the stored 1600x900 JPEG frames. Frames f000240/f000900/f001560 copy regions_sumida.json unchanged (tuning frames); f000600 and f001260 are held-out comparison frames drawn before any static-map change and never used to choose a change (docs/PLAN_STATIC_MAP.md). f001080 (t 36 s) and f001680 (t 56 s) are fast-rotation frames added before any frame-selection or depth change (docs/PLAN_FRAMES_AND_DEPTH.md).",
+ "frames": [
+  {
+   "frame": "f000240.jpg",
+   "width": 1600,
+   "height": 900,
+   "regions": [
+    {
+     "name": "walkway_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       530
+      ],
+      [
+       560,
+       470
+      ],
+      [
+       1250,
+       470
+      ],
+      [
+       1600,
+       530
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "walkway_far",
+     "class": "floor_far",
+     "polygon": [
+      [
+       560,
+       470
+      ],
+      [
+       720,
+       430
+      ],
+      [
+       760,
+       405
+      ],
+      [
+       1000,
+       405
+      ],
+      [
+       1250,
+       470
+      ]
+     ]
+    },
+    {
+     "name": "rail_viaduct_left",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       190
+      ],
+      [
+       470,
+       190
+      ],
+      [
+       470,
+       370
+      ],
+      [
+       0,
+       370
+      ]
+     ]
+    },
+    {
+     "name": "trees_centre",
+     "class": "structure",
+     "polygon": [
+      [
+       470,
+       225
+      ],
+      [
+       830,
+       225
+      ],
+      [
+       830,
+       370
+      ],
+      [
+       470,
+       370
+      ]
+     ]
+    },
+    {
+     "name": "road_bridge_trees_right",
+     "class": "structure",
+     "polygon": [
+      [
+       830,
+       170
+      ],
+      [
+       1600,
+       170
+      ],
+      [
+       1600,
+       390
+      ],
+      [
+       830,
+       390
+      ]
+     ]
+    }
+   ],
+   "role": "tuning"
+  },
+  {
+   "frame": "f000900.jpg",
+   "width": 1600,
+   "height": 900,
+   "regions": [
+    {
+     "name": "plaza_and_walkway_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       520
+      ],
+      [
+       775,
+       520
+      ],
+      [
+       1100,
+       700
+      ],
+      [
+       1330,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "walkway_far",
+     "class": "floor_far",
+     "polygon": [
+      [
+       560,
+       400
+      ],
+      [
+       620,
+       400
+      ],
+      [
+       775,
+       520
+      ],
+      [
+       470,
+       520
+      ]
+     ]
+    },
+    {
+     "name": "trees_road_bridge_buildings",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       220
+      ],
+      [
+       1600,
+       220
+      ],
+      [
+       1600,
+       395
+      ],
+      [
+       0,
+       395
+      ]
+     ]
+    }
+   ],
+   "role": "tuning"
+  },
+  {
+   "frame": "f001560.jpg",
+   "width": 1600,
+   "height": 900,
+   "regions": [
+    {
+     "name": "ground_left",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       800
+      ],
+      [
+       320,
+       800
+      ],
+      [
+       320,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "ground_right",
+     "class": "floor",
+     "polygon": [
+      [
+       500,
+       790
+      ],
+      [
+       1600,
+       800
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       500,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "ground_far",
+     "class": "floor_far",
+     "polygon": [
+      [
+       600,
+       770
+      ],
+      [
+       1150,
+       770
+      ],
+      [
+       1150,
+       790
+      ],
+      [
+       600,
+       790
+      ]
+     ]
+    },
+    {
+     "name": "trees_buildings",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       440
+      ],
+      [
+       1600,
+       440
+      ],
+      [
+       1600,
+       770
+      ],
+      [
+       0,
+       770
+      ]
+     ]
+    }
+   ],
+   "role": "tuning"
+  },
+  {
+   "frame": "f000600.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "held_out",
+   "regions": [
+    {
+     "name": "plaza_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       660
+      ],
+      [
+       240,
+       640
+      ],
+      [
+       240,
+       580
+      ],
+      [
+       340,
+       500
+      ],
+      [
+       1050,
+       460
+      ],
+      [
+       1600,
+       500
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "plaza_far",
+     "class": "floor_far",
+     "polygon": [
+      [
+       350,
+       400
+      ],
+      [
+       1000,
+       400
+      ],
+      [
+       1050,
+       460
+      ],
+      [
+       340,
+       500
+      ]
+     ]
+    },
+    {
+     "name": "viaduct_building",
+     "class": "wall",
+     "polygon": [
+      [
+       0,
+       100
+      ],
+      [
+       560,
+       100
+      ],
+      [
+       560,
+       340
+      ],
+      [
+       0,
+       340
+      ]
+     ]
+    },
+    {
+     "name": "trees_road_bridge",
+     "class": "structure",
+     "polygon": [
+      [
+       560,
+       150
+      ],
+      [
+       1600,
+       150
+      ],
+      [
+       1600,
+       340
+      ],
+      [
+       560,
+       340
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f001260.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "held_out",
+   "regions": [
+    {
+     "name": "path_and_ground_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       610
+      ],
+      [
+       1600,
+       610
+      ],
+      [
+       1600,
+       780
+      ],
+      [
+       1390,
+       780
+      ],
+      [
+       1390,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "ground_far",
+     "class": "floor_far",
+     "polygon": [
+      [
+       0,
+       560
+      ],
+      [
+       1050,
+       560
+      ],
+      [
+       1050,
+       610
+      ],
+      [
+       0,
+       610
+      ]
+     ]
+    },
+    {
+     "name": "apartment_block",
+     "class": "wall",
+     "polygon": [
+      [
+       1100,
+       340
+      ],
+      [
+       1225,
+       340
+      ],
+      [
+       1225,
+       420
+      ],
+      [
+       1100,
+       420
+      ]
+     ]
+    },
+    {
+     "name": "trees_left",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       200
+      ],
+      [
+       400,
+       280
+      ],
+      [
+       400,
+       540
+      ],
+      [
+       0,
+       540
+      ]
+     ]
+    },
+    {
+     "name": "trees_middle",
+     "class": "structure",
+     "polygon": [
+      [
+       400,
+       380
+      ],
+      [
+       1100,
+       380
+      ],
+      [
+       1100,
+       540
+      ],
+      [
+       400,
+       540
+      ]
+     ]
+    },
+    {
+     "name": "trees_right_lower",
+     "class": "structure",
+     "polygon": [
+      [
+       1100,
+       420
+      ],
+      [
+       1230,
+       420
+      ],
+      [
+       1230,
+       560
+      ],
+      [
+       1100,
+       560
+      ]
+     ]
+    },
+    {
+     "name": "trees_right",
+     "class": "structure",
+     "polygon": [
+      [
+       1230,
+       0
+      ],
+      [
+       1600,
+       0
+      ],
+      [
+       1600,
+       560
+      ],
+      [
+       1230,
+       560
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f001080.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "fast",
+   "regions": [
+    {
+     "name": "path_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       800
+      ],
+      [
+       640,
+       704
+      ],
+      [
+       1600,
+       656
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "field_far",
+     "class": "floor_far",
+     "polygon": [
+      [
+       0,
+       424
+      ],
+      [
+       1600,
+       528
+      ],
+      [
+       1600,
+       656
+      ],
+      [
+       640,
+       704
+      ],
+      [
+       0,
+       768
+      ]
+     ]
+    },
+    {
+     "name": "bridge_trees_far",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       208
+      ],
+      [
+       1600,
+       240
+      ],
+      [
+       1600,
+       432
+      ],
+      [
+       0,
+       424
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f001680.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "fast",
+   "regions": [
+    {
+     "name": "path_ground_near",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       672
+      ],
+      [
+       1600,
+       608
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "trees_buildings_far",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       288
+      ],
+      [
+       1600,
+       288
+      ],
+      [
+       1600,
+       592
+      ],
+      [
+       0,
+       592
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,4 +1,6 @@
-# Implementation Plan — Security Drone A, Iteration 1 (2026-11-08)
+> **초기 설계(2026-11-08); 현재 상태는 [docs/SYSTEM_STATUS.md](SYSTEM_STATUS.md)**
+
+# Implementation Plan — Skywarden, Iteration 1 (2026-11-08)
 
 Author: fable-planner (claude-fable-5-1). Implementer: Opus 5.5. Supersedes nothing; obeys `docs/CAMERA_ONLY_EXECUTION_PLAN.md`, `docs/VERIFICATION_CONTRACT.md`, `docs/RECOVERY_MATRIX.md`.
 
@@ -53,7 +55,7 @@ Exit tests: M3-T1 synthetic scenarios (ID persistence, 0.5/1.5/2.5 s occlusion �
 - Dense MVS (CUDA) and live SLAM are out of iteration 1; Depth Anything V2 optional later.
 
 ## Handoff to Opus (5 lines)
-1. Doc created: `/Volumes/HIBACHI/Share/university/dev/security-drone-a/docs/IMPLEMENTATION_PLAN.md` (this file); no other docs touched.
+1. Doc created: `docs/IMPLEMENTATION_PLAN.md` (this file); no other docs touched.
 2. Do first: M0 (git init, `.venv` with pycolmap, skeleton, `test_all.sh`), then M1 synthetic smoke, then M1-T2 real-video gate with user clip or licensed public set (record URL/license/sha256).
 3. Then M2 dashboard (stdlib server, canvas viewer, 8 UI states, stale/disconnected handling), then M3 tracking/PID/MockTello with unarmed guard.
 4. Acceptance: M0-T1..T3, M1-T1..T4, M2-T1..T4, M3-T1..T4 as defined above; save raw logs under `outputs/evidence/<milestone>/` and hand paths to fable-documenter for `docs/PROGRESS.md` / `docs/VALIDATION_LOG.md`.

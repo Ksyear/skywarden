@@ -60,7 +60,7 @@ New: `packages/vision/{__init__,person_detector,yolox_postprocess,track_video,re
 No identity re-identification or appearance model; new id after LOST. No distance or approach from bbox size; lateral/forward/vertical stay 0. No hardware: replay and job open no sockets; `TelloClient` untouched; `HARDWARE_ARMED=false`, `DRY_RUN=true`; UI keeps `NO REAL DRONE`. Open-loop replay is labelled as such and never presented as tracking performance. Model inference local only; no paid API. Real vs LIMITED vs SYNTHETIC labels on every report, badge and PASS row.
 
 ## Handoff to Opus
-1. Doc created: `/Volumes/HIBACHI/Share/university/dev/security-drone-a/docs/PLAN_M4_DETECTOR_TRACKING_PANEL.md`; no other docs touched.
+1. Doc created: `docs/PLAN_M4_DETECTOR_TRACKING_PANEL.md`; no other docs touched.
 2. Order: M4.0 fetch (weights + fr3_walking_xyz, SOURCE.md) → M4.1 postprocess tests then detector load (cv2 → ort → HOG, log each) → M4.2 job (synthetic first, then real) → M4.3 replay → M4.4 server + UI → M4.5 evidence to fable-documenter.
 3. Acceptance: M4-T1..T8 above; raw evidence in `outputs/evidence/m4/`, UI screenshots in `outputs/evidence/ui/`.
 4. Blockers to confirm at run time: YOLOX release asset URL and sha256; OpenCV 5.0 ONNX import of the YOLOX graph; fr3_walking_xyz archive size and licence page text.

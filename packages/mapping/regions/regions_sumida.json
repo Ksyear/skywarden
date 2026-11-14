@@ -1,0 +1,22 @@
+{
+ "session": "mqg_sumida_0025_0125",
+ "source": "yt_tokyo_sumida Td9TYnibTl0 0:25-1:25 (CC BY)",
+ "coords": "pixels of the stored 1600x900 JPEG frames, drawn by hand before any dense change (docs/PLAN_DENSE_COVERAGE.md section 1)",
+ "frames": [
+  {"frame": "f000240.jpg", "width": 1600, "height": 900, "regions": [
+   {"name": "walkway_near", "class": "floor", "polygon": [[0, 530], [560, 470], [1250, 470], [1600, 530], [1600, 900], [0, 900]]},
+   {"name": "walkway_far", "class": "floor_far", "polygon": [[560, 470], [720, 430], [760, 405], [1000, 405], [1250, 470]]},
+   {"name": "rail_viaduct_left", "class": "structure", "polygon": [[0, 190], [470, 190], [470, 370], [0, 370]]},
+   {"name": "trees_centre", "class": "structure", "polygon": [[470, 225], [830, 225], [830, 370], [470, 370]]},
+   {"name": "road_bridge_trees_right", "class": "structure", "polygon": [[830, 170], [1600, 170], [1600, 390], [830, 390]]}]},
+  {"frame": "f000900.jpg", "width": 1600, "height": 900, "regions": [
+   {"name": "plaza_and_walkway_near", "class": "floor", "polygon": [[0, 520], [775, 520], [1100, 700], [1330, 900], [0, 900]]},
+   {"name": "walkway_far", "class": "floor_far", "polygon": [[560, 400], [620, 400], [775, 520], [470, 520]]},
+   {"name": "trees_road_bridge_buildings", "class": "structure", "polygon": [[0, 220], [1600, 220], [1600, 395], [0, 395]]}]},
+  {"frame": "f001560.jpg", "width": 1600, "height": 900, "regions": [
+   {"name": "ground_left", "class": "floor", "polygon": [[0, 800], [320, 800], [320, 900], [0, 900]]},
+   {"name": "ground_right", "class": "floor", "polygon": [[500, 790], [1600, 800], [1600, 900], [500, 900]]},
+   {"name": "ground_far", "class": "floor_far", "polygon": [[600, 770], [1150, 770], [1150, 790], [600, 790]]},
+   {"name": "trees_buildings", "class": "structure", "polygon": [[0, 440], [1600, 440], [1600, 770], [0, 770]]}]}
+ ]
+}

@@ -8,3 +8,4 @@
 - File: kjciube52gA_0030-0130.mp4, SHA-256 b404817b8d008a99568fc5ee841465ae90de02a67e40ee99c7f9c371a1b76dc8
 - Use here: local test input only (person detection/tracking, mapping). Processed on this Mac; never uploaded. Not the user's own video: labelled PUBLIC_DATASET, the "own video" gate stays NOT_RUN.
 - Faces of bystanders are visible; no identification, no re-ID, no redistribution of frames beyond local evidence.
+- Analysis copy (added 2026-11-09): analysis_360p/kjciube52gA_full360.mp4 (whole video, 360p, shot/motion detection only), SHA-256 b7889b65967fb0721db1beaf1b528ce30150b38c5abab72c190a60a2fbbd80fd

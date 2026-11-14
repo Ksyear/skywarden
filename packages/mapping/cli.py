@@ -1,4 +1,4 @@
-"""python -m mapping.cli build|replay ... (see scripts/build_sparse_map.sh, scripts/replay_map.sh)."""
+"""python -m mapping.cli build|replay|rate|scale ... (see scripts/build_sparse_map.sh, scripts/replay_map.sh)."""
 from __future__ import annotations
 
 import argparse
@@ -27,9 +27,52 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--fps", type=float, default=3.0, help="target sampling rate for video sources")
     b.add_argument("--max-frames", type=int, default=150)
     b.add_argument("--source-note", default="")
+    b.add_argument("--mapper", choices=["global", "incremental"], default="global")
+    b.add_argument("--selection", choices=["fixed", "adaptive"], default="fixed", help="frame selection (adaptive = F1, docs/PLAN_FRAMES_AND_DEPTH.md)")
+    b.add_argument("--force-frames", type=int, nargs="*", default=[], help="source frame indices that must be kept (evaluation frames)")
+    b.add_argument("--selection-masks", help="sky/person segmentation ONNX used to ignore features on sky and people during adaptive selection")
     r = sub.add_parser("replay", help="load a stored map and print its summary")
     r.add_argument("session_dir")
+    q = sub.add_parser("rate", help="evaluate map quality of an existing session (built before quality checks)")
+    q.add_argument("session_dir")
+    sc = sub.add_parser("scale", help="metric scale beside a finished map (scale.json; the map itself stays RELATIVE)")
+    ssub = sc.add_subparsers(dest="scale_cmd", required=True)
+    sm = ssub.add_parser("markers", help="detect printed markers in the session frames and measure the scale")
+    sm.add_argument("session_dir")
+    sm.add_argument("--measurements", required=True, help='{"markers": {"0": {"side_m": 0.159}}, "checks": [...]}')
+    sm.add_argument("--model", type=int, default=0, help="model rank (only 0 is supported)")
+    sm.add_argument("--dict", default="4X4_50")
+    ss = ssub.add_parser("status", help="print the judged scale of a session")
+    ss.add_argument("session_dir")
     a = ap.parse_args(argv)
+
+    if a.cmd == "scale":
+        from . import metric_scale
+        sd = Path(a.session_dir)
+        if a.scale_cmd == "markers":
+            try:
+                s = metric_scale.observe_markers(sd, json.loads(Path(a.measurements).read_text()), a.model, a.dict,
+                                                 command=" ".join(["python -m mapping.cli", *sys.argv[1:]]))
+            except (ValueError, FileNotFoundError) as e:
+                print(f"scale failed: {e}", file=sys.stderr)
+                return 2
+        else:
+            s = metric_scale.current_scale(sd)
+        print(json.dumps({**metric_scale.summary(s), "observations": [
+            {k: o.get(k) for k in ("method", "marker_id", "metres_per_unit", "accepted", "reject_reason")}
+            for o in s["observations"]]}, indent=1, ensure_ascii=False))
+        return 0
+
+    if a.cmd == "rate":
+        from .rate import rate_session
+        try:
+            res = rate_session(Path(a.session_dir))
+        except ReplayError as e:
+            print(f"rate failed: {e}", file=sys.stderr)
+            return 2
+        print(json.dumps({"verdict": res["verdict"], "failed_checks": res["failed_checks"],
+                          "checks": {k: v["value"] for k, v in res["checks"].items()}}, indent=1))
+        return 0
 
     if a.cmd == "replay":
         try:
@@ -43,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     camera = json.loads(Path(a.camera_json).read_text()) if a.camera_json else None
     session = a.session or datetime.now().strftime("%Y%m%d-%H%M%S")
     req = BuildRequest(Path(a.input), Path(a.maps_root) / session, DataOrigin(a.origin), camera,
-                       SelectionConfig(target_fps=a.fps, max_frames=a.max_frames), a.source_note)
+                       SelectionConfig(target_fps=a.fps, max_frames=a.max_frames, mode=a.selection, force_indices=tuple(a.force_frames), mask_weights=a.selection_masks), a.source_note,
+                       mapper=a.mapper)
     # Run the build in a worker so this (main) thread stays in Python and can receive SIGTERM/SIGINT while
     # COLMAP is busy in C++; the signal only sets the event, the pipeline forwards it to COLMAP.
     cancel = threading.Event()
@@ -55,7 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     while worker.is_alive():
         worker.join(0.2)
     rep = result
-    print(json.dumps({k: rep.get(k) for k in ("session_id", "status", "labels", "frames", "reconstruction", "failure", "timings_s")}, indent=1))
+    q = rep.get("quality") or {}
+    print(json.dumps({**{k: rep.get(k) for k in ("session_id", "status", "labels", "frames", "input_check",
+                                                 "reconstruction", "failure", "timings_s")},
+                      "quality": {"verdict": q.get("verdict"), "failed_checks": q.get("failed_checks")}}, indent=1))
     return {"SUCCEEDED": 0, "CANCELLED": 130}.get(rep["status"], 1)
 
 

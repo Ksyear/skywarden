@@ -1,181 +1,140 @@
 # Skywarden
 
-**카메라 한 대로 만드는 희소 3D 지도와 사람 추적 콘솔 — 지상 검증 전용, 실기체 명령 0회.**
+카메라 한 대의 영상만으로 3D 지도를 만들고 사람을 추적해, 비행 없이 MOCK 드론 제어까지 검증하는 로컬 macOS 프로젝트입니다. 모든 처리는 이 컴퓨터 안에서 끝나며 외부 API·업로드·실기체 명령이 없습니다.
 
-Skywarden은 스마트폰·웹캠·Tello EDU급 소형 드론의 단안 영상만으로 (1) 오프라인 희소 3D 지도(COLMAP sparse SfM)를 만들고, (2) 실제 사람 검출 모델과 Kalman 다중 추적기로 사람을 따라가며, (3) 그 결과를 yaw 전용 PID와 Tello SDK 2.0 Mock에 연결해 **비행 없이** 검증하는 로컬 macOS 프로젝트입니다. 모든 처리는 로컬 CPU에서 실행되며 외부 API나 업로드가 없습니다. 코드 내부 이름은 `security-drone-a`이며 콘솔 헤더도 그 이름을 표시합니다.
+| 항공 영상 지도 (모델 추정 레이어) | 강변 산책 영상 지도 (다중 뷰 검증 레이어) |
+|---|---|
+| ![FSC 캠퍼스 항공 영상의 모델 출력 레이어](docs/images/01_fsc_aerial_model_output.png) | ![스미다 강변 산책 영상의 검증 밀집 레이어](docs/images/04_sumida_dense_verified.png) |
+| **라이다 없는 미터 스케일 측정 (미검증 표시)** | **사람 추적과 MOCK yaw 명령 (송신 안 함)** |
+| ![테니스장 항공 영상에서 두 점 거리 재기](docs/images/06_tennis_measure.png) | ![TUM 녹화에서 대상 LOCKED와 가상 yaw](docs/images/07_tracking_target.png) |
 
----
+<sub>왼쪽 위: "Drone Footage: Florida Southern College FSC Drone Flyover 5 4K" by Audric Kraus, CC BY — 학습 모델이 추정한 깊이를 우리 SfM 카메라 경로에 놓은 표시 레이어이며 검증된 지도가 아닙니다. 오른쪽 위: "Sumida Park Tokyo Japan 4K Walking Tour …" by 4K Explore On Foot, CC BY — 여러 뷰로 확인된 점만 남긴 기본 지도 레이어. 왼쪽 아래: "Sue Lorimer and Bob Bruns Tennis Complex @ Folsom Lake College" by Zack Dowell, CC BY, https://www.youtube.com/watch?v=a5mun9m1CKY — 표시된 미터 값은 미검증. 오른쪽 아래: TUM RGB-D `fr3/walking_xyz`, CC BY 4.0, Sturm et al., IROS 2012 — 공개 데이터셋의 인물이며 식별·재식별은 하지 않습니다. 각 영상의 출처는 `data/public/*/SOURCE.md`. 화면은 2026-11-15 콘솔 캡처(`outputs/evidence/portfolio/screens.json`).</sub>
 
-## 핵심 기능
+## 무엇을 하는가
 
-| 영역 | 구현 내용 | 결과물 |
-|---|---|---|
-| 희소 3D 지도 | 영상 파일 또는 이미지 폴더 → 프레임 선별(블러·저질감·중복 제거) → pycolmap SIFT/매칭/증분 SfM → PLY + 카메라 궤적 + 보고서. 보정 파일이 없으면 COLMAP이 SIMPLE_RADIAL 내부 파라미터를 추정 | `outputs/maps/<session>/{sparse.ply,trajectory.json,map_report.json,log.txt}` |
-| 지도 콘솔 | 표준 라이브러리 HTTP 서버(`127.0.0.1:8780`) + 캔버스 3D 뷰어. 저장된 지도 로드, 브라우저에서 빌드 시작/취소, 진행 단계, 라벨 배지(`STORED_RECONSTRUCTION`, `SCALE RELATIVE`, `NOT_NAVIGATION_SAFE` 등) | `apps/desktop/` |
-| 사람 검출·추적 | YOLOX-nano ONNX(Apache-2.0)를 OpenCV DNN CPU로 실행(`source=REAL_MODEL`), 등속 Kalman + Mahalanobis 게이트 + Hungarian 매칭의 `MultiTracker`, 한 명을 고르는 `TargetSelector` | `outputs/tracks/<session>/{tracks.json,tracking_report.json,status.json,frames/}` |
-| Tracking 탭 | 프레임 위 박스 오버레이, 트랙 목록에서 대상 선택, 대상 상태(LOCKED / PREDICTING / LOST) 타임라인, 기록된 트랙 위에서 계산한 **가상** yaw 명령(`MOCK`, 송신 안 함) | 콘솔 `Tracking` 탭 |
-| 제어 · Mock 기체 | yaw 전용 `YawController`(PID, 클램프, anti-windup, STOP 사유), Tello SDK 2.0 텍스트 프로토콜 파서, 루프백 UDP `MockTello`, 가상 경계 `GeofenceGuard` | `packages/control/`, `adapters/tello/` |
-| 안전 게이트 | `TelloClient`는 `HARDWARE_ARMED=true` **그리고** `DRY_RUN=false`가 아니면 소켓을 열기 전에 `HardwareDisarmed`를 발생시킴. 모든 실행 스크립트가 `HARDWARE_ARMED=false DRY_RUN=true`를 강제 | `adapters/tello/client.py`, `tests/test_tello.py` |
+1. **카메라 영상 → 3D 지도.** 영상을 프레임으로 고르고 pycolmap(COLMAP) SfM으로 희소 지도와 카메라 궤적을 만든 뒤, CPU 평면 스윕 MVS로 여러 뷰에서 확인된 점만 밀집 점군으로 더합니다. 지도마다 품질 판정(GOOD / PARTIAL / POOR)을 고정 임계값으로 기록합니다.
+2. **사람 검출·추적.** YOLOX-nano(ONNX, OpenCV DNN, CPU)와 Kalman 다중 추적기. 두 사람이 겹쳐 구분할 수 없으면 대상을 `AMBIGUOUS`로 두고 정지합니다(잘못된 추격보다 정지).
+3. **MOCK 드론 제어.** yaw 전용 PID → Tello SDK 2.0 텍스트 프로토콜 → 루프백 UDP `MockTello`. 실기체로는 아무것도 보내지 않습니다.
+4. **라이다 없는 미터 스케일.** 지도 파일은 상대 스케일 그대로 두고, 인쇄 마커·두 점 실측·(MOCK) 텔레메트리 높이로 "지도 1단위 = 몇 m"를 별도 `scale.json`에 측정합니다. 독립 검증 길이 2개가 모두 5 % 이내일 때만 "확인됨"으로 표시합니다.
+5. **로컬 콘솔.** `127.0.0.1` 전용 HTTP 서버 + WebGL 점군 뷰어(Mapping / Tracking / Live 탭, 거리 재기 도구).
 
-## 안전 원칙
+## 핵심 수치 (실제로 실행해 측정한 것만)
 
-- **실기체 이륙·모터 명령·자동 추격 없음.** 모든 명령 트래픽은 루프백 UDP의 `MockTello`로만 갑니다. 테스트는 4가지 환경 변수 조합에서 비루프백 주소로의 송신이 0회임을 확인합니다.
-- **단안 지도는 상대 스케일.** 모든 지도는 `scale=RELATIVE`, `NOT_NAVIGATION_SAFE`로 라벨됩니다. 미터 거리, 장애물 회피, 충돌 안전을 보장하지 않습니다. TUM 정답 궤적 대비 ATE는 평가용으로만 스케일을 빌려 계산했고 저장된 지도는 여전히 상대 스케일입니다.
-- **박스 크기로 거리를 추정하지 않습니다.** 실험 E1에서 측정한 결과(아래 표) 때문에 이 규칙은 설계가 아니라 측정으로 뒷받침됩니다. lateral / forward / vertical 축 명령은 항상 0입니다.
-- **신원 재식별(Re-ID) 없음.** 대상이 LOST되면 자동 재획득하지 않고 새 id가 부여됩니다. 외모 특징을 저장하지 않습니다.
-- **합성 데이터와 실제 데이터 분리.** `SIMULATED` 결과는 실제 데이터 게이트 통과로 집계하지 않으며, 파이프라인은 합성 입력에 실제 라벨을 붙이는 것을 거부합니다.
-- 콘솔은 `127.0.0.1`에만 바인드되고 `/api/health`의 `hardware_armed`는 항상 `false`입니다.
+이 Mac(Apple M6, 16 GiB, macOS 27.2) 한 대에서 실제로 실행한 결과입니다. 라벨: `PUBLIC_DATASET` = 공개 데이터셋·CC BY 공개 영상, `SIMULATED` = 합성, `MOCK` = 가상 기체. 상태 어휘는 PASS / FAIL / BLOCKED / NOT_RUN이고, 실패한 시도도 지우지 않고 적습니다. 사용자 본인 영상(`REAL_VIDEO`)으로는 아직 실행하지 않았습니다. 원시 증거(`outputs/`)는 용량 때문에 git에 넣지 않았고, 명령·버전·경로는 `docs/VALIDATION_LOG.md`에 기록돼 있습니다.
 
-## 요구 사항
+| 항목 | 데이터 (라벨) | 상태 | 수치 | 근거 |
+|---|---|---|---|---|
+| 희소 지도, 정답 궤적 비교 | TUM fr1/desk (PUBLIC_DATASET) | PASS | 전역 매퍼 53/53 포즈, ATE RMSE 1.66 cm (Sim(3) 스케일은 평가용으로만 빌림) | [VALIDATION_LOG](docs/VALIDATION_LOG.md) |
+| 희소 지도, 한 테이크 영상 | 스미다 60 s / FSC 항공 71 s (PUBLIC_DATASET) | PASS, GOOD | 150/150 등록, 37,430점·0.512 px / 96,344점·0.708 px | [EXPERIMENTS](docs/EXPERIMENTS.md) |
+| 검증 밀집 점군 (CPU) | 같은 두 지도 | PASS | 917,498점 / 1,942,876점 | [EXPERIMENTS](docs/EXPERIMENTS.md) |
+| 미터 스케일, 정답 있는 실제 녹화 | TUM fr1/desk (PUBLIC_DATASET, Kinect 깊이·모션캡처 정답) | 1차 FAIL → 2차 PASS | 1차(전체 점) 스케일 오차 −11.8 %, 검증 1/2 통과. 2차(책상 점) −1.24 %, 검증 0.16 % · 1.22 %. 2차 점 기준은 1차 결과를 본 뒤 정함 | [PLAN_METRIC_SCALE 결과](docs/PLAN_METRIC_SCALE.md#10-결과) |
+| 미터 스케일, 항공 영상 | 테니스장 29 s (PUBLIC_DATASET) | 수치 PASS 3/3, 라벨 `MEASURED_UNVERIFIED` | 검증 오차 4.906 / 0.477 / 4.925 % (5 % 이내지만 실측이 아닌 규정 치수라 검증으로 세지 않음) | 같은 절 |
+| 미터 스케일, 합성 마커 | 합성 방 (SIMULATED) | 같은 벽 PASS / 다른 벽 FAIL | 같은 벽 두 마커 +0.39 %; 다른 벽 배치는 두 번째 마커가 3 프레임·45 px 미만이라 기각 | 같은 절 |
+| 텔레메트리 높이 스케일 | MockTello (MOCK) | PASS | 오차 0.0025 %, 비루프백 송신 0회 | 같은 절 |
+| 사람 검출+추적 | TUM fr3/walking_xyz (PUBLIC_DATASET) | PASS | 검출 p50 8.94 ms, 검출+추적 109.5 fps (MOTA/IDF1은 정답 박스가 없어 미정의) | [EXPERIMENTS](docs/EXPERIMENTS.md) |
+| 라이브 실행, 원래 시간 기준 | 위트레흐트 1080p 30 s (PUBLIC_DATASET) | PASS | 29.96 fps, 지연 p95 24.2 ms. 대상 LOCKED는 프레임의 17 % | [EXPERIMENTS](docs/EXPERIMENTS.md) |
+| 뷰어 렌더 (WebGL) | FSC 3,226,170점, dpr 1 / 2 | PASS | 프레임 p50 61.4 → 7.6 ms / 121.2 → 12.6 ms (이전 2D 캔버스 대비) | [VALIDATION_LOG](docs/VALIDATION_LOG.md) |
+| 자동 테스트 | pytest / ruff / UI 스모크 | PASS | 175 passed × 5회 연속, ruff 통과, UI 117 passed · 0 failed · 4 skipped | [VALIDATION_LOG](docs/VALIDATION_LOG.md) |
 
-검증된 환경(`docs/ENV_AUDIT.md`): macOS 27.2 arm64, Apple M6, 16 GiB RAM. 다른 환경은 NOT_RUN입니다.
+## 구조
 
-| 항목 | 버전 | 용도 |
-|---|---|---|
-| Python | 3.13.16 (`python3 -m venv .venv`) | 전부 |
-| pycolmap | 4.2.1 (CPU SIFT, CUDA·dense MVS 없음) | 지도 |
-| opencv-python-headless | 5.0.0.93 | 영상 읽기, ONNX 추론(`cv2.dnn`) |
-| numpy / scipy / pytest | 2.5.4 / 1.18.1 / 9.2.0 | 추적기, 평가, 테스트 |
-| Node.js | v24.21.0 (선택) | `tests/ui/ui_smoke.mjs`만 사용. 헤드리스 브라우저로 `/Applications/Dia.app`이 필요 |
-| ffmpeg | 9.0.2 (선택) | 영상 사전 변환용. 파이프라인 자체는 `cv2.VideoCapture`로 읽음 |
+```mermaid
+flowchart LR
+  V[영상 파일 / 웹캠] --> F[프레임 선별]
+  F --> S[pycolmap SfM<br/>희소 지도 + 궤적]
+  S --> D[CPU 평면 스윕 MVS<br/>검증 밀집 점군]
+  S --> M[scale.json<br/>마커 · 두 점 · 텔레메트리]
+  V --> Y[YOLOX-nano<br/>사람 검출]
+  Y --> K[Kalman 다중 추적<br/>대상 선택]
+  K --> P[yaw PID]
+  P --> T[MockTello<br/>루프백 UDP]
+  S & D & M & K --> C[로컬 콘솔<br/>127.0.0.1:8780]
+```
 
-`colmap` CLI는 필요 없습니다. 모델 가중치(`data/models/yolox/*.onnx`)와 데이터셋(`data/public/*/`)은 git에 포함되지 않으며 아래 스크립트로 받습니다.
+코드: `packages/mapping`(지도·스케일), `packages/vision`(검출·VO·라이브 실행), `packages/tracking`, `packages/control`, `packages/learned`(학습 깊이 모델 실행기, 별도 환경), `adapters/tello`(프로토콜·Mock·안전 게이트), `apps/desktop`(서버·뷰어), `tests/`.
 
 ## 빠른 시작
 
+요구 사항: macOS arm64, Python 3.13, (선택) Node.js — 검증 환경 상세는 `docs/ENV_AUDIT.md`. `colmap` CLI는 필요 없습니다. 가중치와 데이터셋은 git에 없고 아래 스크립트와 `data/public/*/SOURCE.md`의 링크로 받습니다.
+
 ```zsh
-git clone <this repo> skywarden && cd skywarden
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # requirements.txt + ruff, yt-dlp
+scripts/fetch_models.sh yolox_nano            # YOLOX-nano ONNX, SHA-256 확인 후 data/models/yolox/
+scripts/run_demo.sh --check                   # 경로와 HARDWARE_ARMED=false DRY_RUN=true 확인
+scripts/run_demo.sh                           # 콘솔 http://127.0.0.1:8780
 
-# 0) 프로젝트 전용 venv. 시스템 Python은 건드리지 않음
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-
-# 1) 사람 검출 가중치 (YOLOX-nano ONNX 3.66 MB, SHA-256 검증 후 data/models/yolox/ 에 저장)
-scripts/fetch_models.sh yolox_nano
-
-# 2) 로컬 콘솔: http://127.0.0.1:8780 (포트 충돌 시 --port <free port>)
-scripts/run_demo.sh --check   # 경로와 HARDWARE_ARMED=false DRY_RUN=true 만 출력하고 종료
-scripts/run_demo.sh
-
-# 3) 영상 또는 이미지 폴더 -> 희소 3D 지도
+# 영상 → 희소 지도 (assets/input/ 에 본인 영상)
 scripts/build_sparse_map.sh assets/input/<clip>.mp4 --session my_room_01 --origin REAL_VIDEO
-#    옵션: --camera-json FILE  --fps 3  --max-frames 150  --origin REAL_VIDEO|PUBLIC_DATASET|SYNTHETIC
-
-# 4) 저장된 지도 요약 출력 (콘솔의 "Stored maps" 에서도 로드 가능)
 scripts/replay_map.sh outputs/maps/my_room_01
 
-# 5) 녹화 영상 -> YOLOX-nano(CPU) -> Kalman 다중 추적 (드론 명령 생성 없음)
+# 미터 스케일: 마커 인쇄 → 마커가 보이게 촬영 → 측정 (지도 파일은 RELATIVE 유지)
+PYTHONPATH=packages .venv/bin/python -m mapping.markers make --ids 0 1 --side-mm 160
+PYTHONPATH=packages .venv/bin/python -m mapping.cli scale markers outputs/maps/my_room_01 \
+  --measurements assets/input/<clip>.measurements.json
+PYTHONPATH=packages .venv/bin/python -m mapping.cli scale status outputs/maps/my_room_01
+
+# 사람 추적, SIMULATED 폐루프(MockTello), 라이브 실행
 scripts/run_tracking.sh assets/input/<clip>.mp4 my_people_01 --origin REAL_VIDEO
-#    옵션: --model yolox_nano  --fps 10  --max-frames 600  --score-thr 0.35
-
-# 6) SIMULATED 폐루프 약 20 s: 합성 검출기 -> Kalman -> yaw PID -> MockTello (루프백 UDP)
 scripts/run_tracking_sim.sh
+PYTHONPATH=packages .venv/bin/python -m vision.live_run assets/input/<clip>.mp4 --session live_01 --rate realtime --max-seconds 30
 
-# 7) 자동 테스트 (원시 로그를 outputs/evidence/tests/ 에 남김) / 헤드리스 UI 테스트
-scripts/test_all.sh
-node tests/ui/ui_smoke.mjs
+# 테스트
+scripts/test_all.sh                           # pytest 전체, 로그는 outputs/evidence/tests/
+.venv/bin/ruff check .
+node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222   # 또는 --browser <path> / CHROME_PATH
 ```
 
-촬영 팁(지도용): 움직이는 사람·물체가 없는 정적인 실내, 제자리 회전이 아니라 **옆으로 천천히 이동**, 질감 많은 벽·가구, 밝은 조명, 30–90초, 1080p 이하. 고정 카메라 영상은 베이스라인이 없어 지도가 만들어지지 않으며, 이 경우 `map_report.json`의 `failure.message`에 다음 조치가 적힙니다.
+촬영 팁: 움직이는 사람이 적은 정적인 장면, 제자리 회전 대신 **옆으로 천천히 이동**, 질감 많은 벽·바닥, 30–90초, 컷 없는 한 테이크. 미터 스케일용 촬영 절차는 [PLAN_METRIC_SCALE 7절](docs/PLAN_METRIC_SCALE.md#7-사용자에게-요청할-촬영-방법).
 
-## 콘솔 사용법
+## 안전 원칙
 
-![설계 단계 레이아웃 목업 — 실제 실행 화면이나 결과가 아니며 표시된 수치는 모두 가상입니다](assets/design/mockup_map_console_v1.png)
+- **실기체 이륙·모터 명령·자동 추격 없음.** `HARDWARE_ARMED=false`가 기본이며, `TelloClient`는 `HARDWARE_ARMED=true` **그리고** `DRY_RUN=false`가 아니면 소켓을 열기 전에 멈춥니다. 모든 명령은 루프백의 `MockTello`로만 가고, 테스트가 비루프백 송신 0회를 확인합니다. 기체 구매·실제 비행은 하지 않습니다.
+- **모든 지도는 `NOT_NAVIGATION_SAFE`.** 미터 스케일이 "확인됨"이어도 빈 곳·반사로 생긴 가짜 점은 그대로이므로 충돌 회피·항법에 쓰지 않습니다.
+- **라벨을 섞지 않음.** 실제 영상으로 검증된 지도(`Dense · verified`)와 모델이 추정한 레이어(`Model output`, `MODEL_ESTIMATED`)를 UI와 보고서에서 구분하고, 합성 결과는 실제 데이터 게이트로 세지 않습니다.
+- **박스 크기로 거리를 추정하지 않음**(실험 E1: p95 오차 61–90 %). 외모로 사람을 재식별하지 않음.
+- 콘솔은 `127.0.0.1`에만 바인드되고, Host·Origin이 이 콘솔이 아니면 403, JSON이 아닌 POST는 415로 거부합니다.
 
-위 이미지는 UI 작성 전에 만든 **레이아웃 목업**입니다(`docs/DESIGN_ASSETS.md`). 실제 콘솔은 같은 분할(카메라 프레임 | 3D 지도 | 우측 제어 열)을 따르되, 배지와 수치는 전부 `map_report.json` / `tracking_report.json`에서 읽습니다.
+## 한계
 
-**Mapping 탭** — 입력 선택 후 `Build map`으로 빌드(단계: Frames → Features → Matching → Mapping → Export, 취소 가능), `Stored maps`에서 저장된 세션 로드. 프레임 스크러버를 움직이면 궤적과 점군이 그 시점까지 그려집니다. 하단 상태 줄에 등록 프레임 수, 3D 점 수, 재투영 오차, 렌더 시간이 표시됩니다.
+- **지도는 상대 스케일입니다.** 미터 스케일은 별도 측정으로만 붙고, 실제 녹화에서 "확인됨"까지 간 것은 TUM fr1/desk 한 건이며 그 점 기준은 첫 시도가 실패한 뒤 정했습니다. 항공 테니스장 결과는 규정 치수 기반이라 미검증이고, 폭 방향 길이가 4–5 % 길게 나오는 체계 오차의 원인(보정 없이 추정한 초점거리 가설)은 확인하지 않았습니다.
+- **본인 영상(`REAL_VIDEO`)·실제 웹캠·실기체는 NOT_RUN.** 모든 결과는 공개 데이터셋, CC BY 공개 영상, 합성 장면, MOCK에서 나왔습니다.
+- **한 대의 Mac에서만 검증했습니다.** 다른 OS·하드웨어는 NOT_RUN. GitHub Actions 워크플로(`.github/workflows/ci.yml`)는 작성했지만 GitHub에서 아직 한 번도 실행되지 않았습니다(NOT_RUN).
+- **지도는 오프라인입니다.** 영상 1분당 대략 6–12분. 편집 영상(컷 많음)과 고정 카메라 영상은 지도가 되지 않습니다.
+- **밀집 지도 개선 시도는 모두 미채택.** 바닥 커버리지·정적 장면·학습 깊이 변형이 사전 기준 중 하나를 넘지 못해 trial로만 남았습니다([EXPERIMENTS](docs/EXPERIMENTS.md)).
+- **추적은 모션만 봅니다.** 가림·교차 뒤 같은 id 재획득을 보장하지 않습니다.
+- **미터 깊이 모델은 참고용입니다.** MapAnything·DA3METRIC·DA3NESTED·Pi3X를 로컬(MPS)에서 시험했지만 기본 레이어를 대체한 모델은 없고, 항공 영상에서 모델 간 미터 스케일이 최대 10.96배 달랐습니다. DA3NESTED와 Pi3X 가중치는 비상업(CC BY-NC 4.0)이라 로컬 연구 실행만 했고 저장소에 없습니다.
+- 코드 라이선스(`LICENSE`)는 아직 정하지 않았습니다.
 
-**Tracking 탭** — 입력과 검출기(로컬에서 해시가 확인된 모델만 목록에 뜸)를 고르고 `Run tracking`. 완료된 실행은 `Recorded runs`에서 재생합니다. 프레임 위 박스(대상 강조, PREDICTING 점선, TENTATIVE 점박이, 원시 검출 토글), 트랙 목록, 대상 상태 배지, 가상 yaw 바와 STOP 사유, 상태별 색 타임라인이 표시됩니다. 대상 선택은 **개루프 재생**입니다: 녹화 카메라는 돌지 않았으므로 yaw 값은 `MOCK · NOT SENT`로만 표시됩니다. 지도 빌드와 추적 실행은 한 번에 하나만 가능합니다(409).
+## 문서 지도
 
-| 키 | 동작 |
+| 문서 | 내용 |
 |---|---|
-| `M` / `T` | Mapping / Tracking 탭 전환(URL 해시 `#tracking` 유지) |
-| `Space`, `←` / `→` | 재생·일시정지, 한 프레임 이동 |
-| `R`, `+` / `-`, `G` | (Mapping) 뷰 리셋, 줌, 지도 성장 모드 토글 |
-| `1`–`9`, `0`, 박스 클릭 | (Tracking) n번째 트랙을 대상으로 선택, 대상 해제, 클릭 선택 |
-| `Esc` | 취소 확인 창 닫기 |
-
-## 프로젝트 구조
-
-```
-apps/desktop/            # server.py (stdlib HTTP, 127.0.0.1:8780) + static/{index.html,app.js,tracking.js,viewer.js,app.css}
-packages/
-  mapping/               # frame_source, frame_selection, sparse_pipeline(pycolmap), export(PLY/trajectory), evaluate(ATE), replay, labels, cli
-  vision/                # person_detector(YoloxDetector), track_video(offline job), bbox_distance_eval(E1)
-  tracking/              # tracker: Detection, MultiTracker(Kalman+gate+Hungarian), TargetSelector
-  control/               # yaw_controller(PID, SafetyLimits, DroneCommand), virtual_replay, geofence(Geofence, GeofenceGuard)
-  sim/                   # synthetic_scene, tracking_scenario(SIMULATED 폐루프), two_person_crossing(E2), geofence_scenario(E3)
-adapters/tello/          # protocol(SDK 2.0 텍스트), client(TelloClient + HardwareDisarmed 게이트), mock_tello(MockTello, 루프백 UDP)
-scripts/                 # run_demo.sh, build_sparse_map.sh, replay_map.sh, run_tracking.sh, run_tracking_sim.sh, fetch_models.sh, test_all.sh
-tests/                   # pytest 12개 모듈(83 tests) + ui/ui_smoke.mjs(47 checks)
-data/public/<set>/SOURCE.md   # 데이터셋 출처·라이선스·SHA-256 (데이터 자체는 git 제외)
-data/models/yolox/SOURCE.md   # 가중치 출처·SHA-256 (가중치는 git 제외)
-assets/input/            # 사용자 본인 영상을 두는 곳 (git 제외)
-assets/design/           # 레이아웃 목업 이미지 (결과 아님)
-outputs/                 # maps/, tracks/, evidence/ — 실행 산출물 (git 제외)
-docs/                    # 설계·계획·검증 기록
-```
-
-서버 API: `GET /api/health`, `/api/inputs`, `/api/sessions[/<id>[/files/*]]`, `/api/models`, `/api/tracks[/<id>[/files/*]]`; `POST /api/jobs`, `/api/jobs/<id>/cancel`, `/api/track-jobs`, `/api/track-jobs/<id>/cancel`, `/api/tracks/<id>/control`. 세션 id로 `.`/`..`는 거부되고 파일 경로는 허용 목록으로 제한됩니다.
-
-## 검증 결과
-
-전 행이 이 Mac에서 실제 실행된 명령과 원시 산출물(`outputs/evidence/`, `outputs/maps/`, `outputs/tracks/`)에 근거합니다. 전체 명령·버전·경로는 `docs/VALIDATION_LOG.md`, 실패와 후속 조치는 `docs/FAILURES.md`에 있습니다. 상태 어휘는 PASS / FAIL / BLOCKED / NOT_RUN 네 가지만 씁니다.
-
-| 항목 | 입력 (라벨) | 상태 | 핵심 수치 |
-|---|---|---|---|
-| 희소 지도, OPENCV 4계수 보정 | TUM fr1/desk, 613 → 53 프레임 (PUBLIC_DATASET) | PASS | 49/53 등록(92.5 %), 4,297점, 재투영 0.831 px, 약 5 s. ATE RMSE 2.05 cm(Sim(3), 정답 스케일 차용, 평가 전용) |
-| 희소 지도, 보정 없이 추정 | 동일 | PASS | 48/53 등록, 3,987점, 0.665 px, ATE 1.86 cm |
-| 희소 지도, 공식 FULL_OPENCV 5계수 보정 | 동일 | FAIL | 초기 이미지 쌍 생성 실패. 원인 미확인(F-01), 위 두 경로로 복구 |
-| 희소 지도, 핸드헬드 공원 산책 영상 60 s | CC BY YouTube 클립 (PUBLIC_DATASET) | PASS (게이트 `registered_ratio>=0.5` 미달) | 49/150 등록(0.327), 10,814점, 0.848 px, 약 5.9 min. 4개 모델로 분할, 최대 모델 내보냄 |
-| 희소 지도, 고정 카메라 거리 영상 | CC BY YouTube 클립 (PUBLIC_DATASET) | FAIL (예상된 실패, 보고 경로 검증) | "COLMAP registered no image pair" — 카메라가 이동하지 않아 베이스라인 없음 |
-| 희소 지도, 합성 방 | 생성기 8프레임 (SIMULATED) | PASS (파이프라인 점검용) | 8/8 등록, 3,845점, 0.084 px, ATE 0.5 mm. 실제 데이터 게이트에 집계하지 않음 |
-| **본인 영상 지도·추적 (REAL_VIDEO)** | `assets/input/` | **NOT_RUN** | `.gitkeep`만 존재. 위 공개 클립은 타인 영상이라 이 게이트를 닫지 못함 |
-| 사람 추적, 주 증거 | TUM fr3/walking_xyz 859 → 287 프레임 (REAL_MODEL / PUBLIC_DATASET) | PASS | 검출 p50/p95 8.94/10.45 ms, 109.5 fps(검출+추적), 349 검출, 트랙 33개 중 24개 확정, MOTA/IDF1 미정의 |
-| 사람 추적, 스트레스 클립 | OpenCV `vtest.avi` 600 프레임 | PASS | 105.0 fps, 3,856 검출, 39개 중 23개 확정, 확정 지속 p50 13.0 s / 최대 52.1 s |
-| 사람 추적, 혼잡한 거리 | CC BY YouTube 클립 1,390 프레임 | PASS | 90.6 fps, 10,916 검출, 438개 중 222개 확정, Re-ID가 없어 189 new ids/min |
-| SIMULATED 폐루프 | 합성 검출기 → Kalman → yaw PID → MockTello | PASS | 300 프레임/20 s, 15.04 Hz, 처리 0.108/0.18 ms p50/p95, 중심 오차 106.4 → 21.3 px, 0.5/1.5 s 가림 재획득, 2.5 s 가림 → LOST, LOCKED 아닐 때 yaw 0회, rc 패킷 301건 모두 Mock |
-| E1 박스 크기로 거리 추정이 쓸 만한가 | 위 TUM 검출 329건 vs 등록된 Kinect 깊이 0.94–9.33 m | 실행 PASS, **판정 FAIL** | 키 1.70 m 가정: 상대 오차 p50 43 % / p95 90 %. 첫 20 %로 보정(1.387 m): p50 26 % / p95 61 %, 절대 오차 p50 0.43 m / p95 1.16 m. 사전 기준 p95 ≤ 25 % 미달 |
-| E2 가림 중 다른 사람이 지나가면 대상 id가 유지되는가 | 합성 검출 700회(50 seed × 7 가림 × B 유무) (SIMULATED) | 실행 PASS, **판정 FAIL** (K1 PASS, K2 FAIL, K3 FAIL) | K1 0.5/1.5 s 가림 후 같은 id 재획득 100 %. K2 2.5 s 가림 후 LOST 10 %(기준 100 %): B의 검출이 coasting 트랙을 연장. K3 대상 id가 B 위에 LOCKED된 프레임이 있는 실행 158/350(기준 0) |
-| E3 가상 경계에서 이동을 멈추는가 | MockTello 운동학 토이, 10 × 10 m, 여유 1 m (SIMULATED_FRAME_ONLY) | PASS | 사전 6개 체크 모두 참. 보호 시 최소 거리 경계 안쪽 1.175 m(여유 구간 미진입), 비보호 대조군은 0.485 m 침범, 포즈 끊김 3–4 s 동안 `NO_POSE_FOR_GEOFENCE` 정지 10회·이동 0, 비루프백 패킷 0 |
-| 자동 테스트 | `scripts/test_all.sh` | PASS | 83 passed in 36.82 s (`outputs/evidence/tests/pytest-20261109-014913.log`) |
-| 헤드리스 UI 테스트 | `node tests/ui/ui_smoke.mjs` | PASS | 47/47 checks, 콘솔 오류 0 (점 수 4297 = 보고서, 빌드·취소, Tracking 탭 선택·재생·실행·취소, 1100×800 / 700×900 레이아웃, 재연결) |
-| 실기체 비행 | — | BLOCKED | 정책상 금지, 기체 없음 |
-
-## 알려진 한계 / 다음 단계
-
-1. **본인 영상 게이트 NOT_RUN.** `assets/input/`에 영상 한 개를 두고 빠른 시작 3)·5)를 실행하면 `data_origin=REAL_VIDEO`로 기록됩니다. 이것이 가장 먼저 닫아야 할 게이트입니다.
-2. **MOTA/IDF1 미정의.** 로컬 데이터셋에는 정답 사람 박스가 없습니다(TUM `groundtruth.txt`는 카메라 포즈만). 검출·추적 성공률을 주장하지 않습니다. 정답 박스가 있는 시퀀스가 생기면 `tracking_report.json`의 `accuracy` 블록이 채워집니다.
-3. **E2 후속: `TARGET_AMBIGUOUS` STOP.** 다른 트랙이 대상의 게이트 안에 있는 동안 yaw를 멈추는 규칙은 아직 구현되지 않았습니다. 구현 후 `PYTHONPATH=packages .venv/bin/python -m sim.two_person_crossing`을 다시 실행해 K2/K3를 `outputs/evidence/e2_two_person/e2_two_person.json`과 비교하는 것이 다음 테스트입니다.
-4. **지오펜스는 포즈 소스가 필요합니다.** Tello EDU는 절대 위치를 주지 않습니다. E3의 가드는 시뮬레이터의 포즈를 읽었고, 0.4 s 지연 모델은 토이입니다. 실제 기체에서는 미션 패드 등 별도 포즈 소스와 측량된 지도 앵커 없이는 쓸 수 없습니다.
-5. **F-01 원인 미확인.** FULL_OPENCV 5계수(k3 = 1.1633) 보정으로 초기화가 실패하는 이유는 가설 단계입니다. 다음 테스트는 5계수로 사전 왜곡 보정한 프레임을 PINHOLE로 빌드하는 것입니다.
-6. **미구현 (NOT_RUN):** 실시간 웹캠 VO/SLAM, 상대 깊이 추정 모델, 녹화 UI, AprilTag/체커보드 기반 미터 앵커링, 지도 뷰의 STALE_DATA 배너, `yolox_tiny` 비교 실행. 미터 앵커링 전까지 어떤 지도에도 미터 거리를 붙이지 않습니다.
-7. **단일 환경.** 모든 수치는 Apple M6 / 16 GiB / macOS 27.2 한 대에서 측정했습니다.
+| [docs/SYSTEM_STATUS.md](docs/SYSTEM_STATUS.md) | 구성 요소별 현재 상태, 장단점, 소요 시간, 다음 할 일 |
+| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | 이전 README 전체: 기능 표, 콘솔 사용법, API, 실험별 검증 표와 절 |
+| [docs/PLAN_METRIC_SCALE.md](docs/PLAN_METRIC_SCALE.md) | 미터 스케일 계획(사전 등록 기준)과 결과 |
+| [docs/PROGRESS.md](docs/PROGRESS.md) · [docs/VALIDATION_LOG.md](docs/VALIDATION_LOG.md) | 마일스톤 상태표 · 실행 명령·버전·증거 경로 |
+| [docs/FAILURES.md](docs/FAILURES.md) | 관찰된 실패와 다음 테스트 |
+| [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) | 개선 항목 목록과 처리 상태 |
+| [docs/DRONE_PURCHASE_AND_KOREA_RULES.md](docs/DRONE_PURCHASE_AND_KOREA_RULES.md) | 기체 선택안과 한국 비행 규정 (구매·비행은 하지 않음) |
+| `docs/PLAN_*.md` | 실험별 계획과 끝의 Result 절 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 외 초기 설계 문서 | 2026-11-08 초기 설계 (현재와 다른 부분 있음) |
 
 ## 데이터 · 모델 출처
 
-저장소에는 출처 기록(`SOURCE.md`)만 포함되며 데이터와 가중치는 각자 내려받습니다. 모두 로컬에서만 처리했고 업로드하지 않았으며, 등장 인물에 대한 식별이나 재식별을 하지 않습니다.
+데이터와 가중치는 저장소에 포함하지 않고 출처 기록(`SOURCE.md`)만 둡니다. 모두 로컬에서만 처리했습니다.
 
-| 자원 | 라이선스 | 비고 |
-|---|---|---|
-| TUM RGB-D `fr1/desk`, `fr3/walking_xyz` | CC BY 4.0 — Sturm et al., "A Benchmark for the Evaluation of RGB-D SLAM Systems", IROS 2012 | `data/public/tum_fr1_desk/SOURCE.md`, `data/public/tum_fr3_walking_xyz/SOURCE.md`. fr3 영상의 인물은 데이터셋 저자 |
-| YOLOX-nano / -tiny ONNX (Megvii-BaseDetection/YOLOX 0.1.1rc0) | Apache-2.0 | `data/models/yolox/SOURCE.md`. `scripts/fetch_models.sh`가 SHA-256을 검증하고 `YoloxDetector`가 로드 때마다 재검증 |
-| OpenCV 샘플 `vtest.avi` | OpenCV 저장소(Apache-2.0) 배포, 원 촬영 출처 미기재 | `data/public/opencv_vtest/SOURCE.md`. 개발용 보조 클립 |
-| "Free City Street Footage - Royalty Free Stock Footage - People Walking Stock Footage No Copyright" by Montreal Walking Tours | CC BY (YouTube 메타데이터, 2026-11-09 확인) | https://www.youtube.com/watch?v=bwJ-TNu0hGM — `data/public/yt_montreal_street/SOURCE.md` |
-| "Suan Luang Rama IX Park Bangkok \| 4K Walking Tour, Lake, Gardens & Pavilion" by Streets & Spaces \| Travel Walks | CC BY (YouTube 메타데이터, 2026-11-09 확인) | https://www.youtube.com/watch?v=kjciube52gA, 0:30–1:30 구간 — `data/public/yt_bangkok_park/SOURCE.md` |
+| 자원 | 저자 / 라이선스 |
+|---|---|
+| TUM RGB-D `fr1/desk`, `fr3/walking_xyz` | Sturm et al., IROS 2012, CC BY 4.0 |
+| 테니스장 항공 영상 (a5mun9m1CKY) | Zack Dowell, CC BY — https://www.youtube.com/watch?v=a5mun9m1CKY |
+| FSC 캠퍼스 항공 (l5IB1ucby_w) | Audric Kraus, CC BY |
+| 스미다 강변 산책 (Td9TYnibTl0) | 4K Explore On Foot, CC BY |
+| 위트레흐트 공원 드론 (5xXMItmYKp4) | Terrell Neuage, CC BY |
+| 방콕 공원 산책 (kjciube52gA), 몬트리올 거리 (bwJ-TNu0hGM) | Streets & Spaces \| Travel Walks / Montreal Walking Tours, CC BY |
+| OpenCV `vtest.avi` | OpenCV 저장소 배포(Apache-2.0), 원 촬영 출처 미기재 |
+| YOLOX-nano ONNX | Megvii YOLOX, Apache-2.0 (`data/models/yolox/SOURCE.md`) |
+| 하늘·사람 분할 `skywater_fp32.onnx` | MIT (`data/models/static/SOURCE.md`) |
+| LingBot-Map (학습 깊이, 외부 도구) | Apache-2.0. 별도 환경에서 실행; a LingBot-Map checkout supplied by the user는 점검 실행에만 사용 |
+| 미터 깊이 모델 시험: MapAnything(`map-anything-apache`), Depth Anything 3 DA3METRIC-LARGE, DA3NESTED-GIANT-LARGE-1.1, Pi3X | 가중치 기준 Apache-2.0 / Apache-2.0 / **CC BY-NC 4.0** / **CC BY-NC 4.0** — 모두 별도 환경의 로컬 시험만, 코드·가중치는 저장소에 없음 |
 
-Tello EDU 연동 근거: Ryze Tello SDK 2.0 사용자 가이드(UDP 8889 명령, 8890 상태, 11111 영상). 실기체 접속은 이 저장소 범위 밖이며 Mock으로만 검증했습니다(`docs/TELLO_SDK.md`).
-
-## 문서
-
-- `docs/PROGRESS.md` — 마일스톤별 상태표(PASS/FAIL/BLOCKED/NOT_RUN)와 다음 명령
-- `docs/VALIDATION_LOG.md` — 실행 날짜, 환경, 명령, 입력 해시, 산출물 경로, 한계
-- `docs/FAILURES.md` — 관찰된 실패, 시도한 대안, 다음 테스트
-- `docs/ARCHITECTURE.md`, `docs/VISUAL_MAPPING.md`, `docs/CAMERA_ONLY_EXECUTION_PLAN.md` — 설계와 지도 정확도 계층
-- `docs/IMPLEMENTATION_PLAN.md`, `docs/PLAN_M4_DETECTOR_TRACKING_PANEL.md` — 마일스톤 계획과 종료 테스트
-- `docs/VERIFICATION_CONTRACT.md`, `docs/RECOVERY_MATRIX.md`, `docs/PHASES_AND_ACCEPTANCE.md` — 검증 기준, 복구 매트릭스, 품질 게이트
-- `docs/TELLO_SDK.md`, `docs/ENV_AUDIT.md`, `docs/DESIGN_ASSETS.md`, `docs/SOURCES_AND_ASSUMPTIONS.md`
-
-## 라이선스
-
-이 저장소의 코드 라이선스는 아직 정해지지 않았습니다(`LICENSE` 파일 없음). 외부 데이터셋·가중치·영상은 위 표의 각 라이선스를 따릅니다.
+영상별 제목·URL·다운로드 명령·SHA-256은 `data/public/*/SOURCE.md`에 있습니다. Tello 연동 근거는 Ryze Tello SDK 2.0 사용자 가이드(`docs/TELLO_SDK.md`)이며 실기체 연결은 이 저장소 범위 밖입니다.

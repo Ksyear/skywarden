@@ -24,7 +24,9 @@ class StoredSession:
     def summary(self) -> dict:
         return {"session_id": self.path.name, "map_source": self.report["labels"]["map_source"],
                 "labels": self.report["labels"], "registered_images": len(self.trajectory["poses"]),
-                "points3D": int(len(self.points)), "report_status": self.report["status"]}
+                "points3D": int(len(self.points)), "report_status": self.report["status"],
+                "quality": (self.report.get("quality") or {}).get("verdict", "UNRATED"),
+                "num_models": self.report.get("reconstruction", {}).get("num_models")}
 
 
 def load_session(path: Path) -> StoredSession:

@@ -1,5 +1,4 @@
 import json
-import shutil
 import socket
 import threading
 from pathlib import Path

@@ -72,3 +72,19 @@ def test_rerun_into_same_session_does_not_mix_runs(synthetic_room, tmp_path):
     assert first["status"] == second["status"] == "SUCCEEDED"
     assert len(list((tmp_path / "same" / "frames").glob("*.jpg"))) == second["frames"]["selected"] == 6
     assert second["reconstruction"]["registered_images"] <= 6
+
+
+@pytest.mark.slow
+def test_report_separates_job_status_from_map_quality(synthetic_room, tmp_path):
+    rep = build_sparse_map(_req(synthetic_room, tmp_path / "q1"))
+    assert rep["schema"].endswith("@2") and rep["status"] == "SUCCEEDED"
+    q = rep["quality"]
+    assert q["verdict"] in {"GOOD", "PARTIAL", "POOR"} and set(q["checks"]) >= {"registered_ratio", "time_coverage", "models_ge_10pct", "trajectory_jumps"}
+    assert rep["labels"]["completeness"] == ("COMPLETE" if q["verdict"] == "GOOD" else "PARTIAL_RECONSTRUCTION")
+    n = rep["reconstruction"]["num_models"]
+    assert len(rep["reconstruction"]["models"]) == n
+    for i in range(n):
+        assert (tmp_path / "q1" / "models" / str(i) / "sparse.ply").is_file()
+    cov = json.loads((tmp_path / "q1" / "coverage.json").read_text())
+    assert len(cov["frames"]) == rep["frames"]["selected"]
+    assert load_session(tmp_path / "q1").summary()["quality"] == q["verdict"]

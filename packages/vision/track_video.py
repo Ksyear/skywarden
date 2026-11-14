@@ -100,6 +100,7 @@ def _track_stats(frames: list[dict], duration_s: float) -> dict:
         "confirmed_track_span_s": {"p50": _pct(spans, 50), "max": round(max(spans), 2) if spans else None},
         "confirmed_tracks_shorter_than_1s": sum(1 for s in spans if s < 1.0),
         "frames_with_predicting_track": sum(1 for f in frames if any(t["state"] == "PREDICTING" for t in f["tracks"])),
+        "frames_with_ambiguous_track": sum(1 for f in frames if any(t["state"] == "AMBIGUOUS" for t in f["tracks"])),
         "mean_locked_tracks_per_frame": round(float(np.mean([sum(t["state"] == "LOCKED" for t in f["tracks"]) for f in frames])), 2) if frames else None,
         "new_ids_per_minute": round(len(life) / duration_s * 60, 1) if duration_s > 0 else None,
     }

@@ -1,0 +1,449 @@
+{
+ "session": "mqg_corridor",
+ "source": "test video from the user's LingBot-Map checkout (private, data/private/zip_test)",
+ "coords": "pixels of the stored 1600x900 frames, drawn before any comparison run; floor = corridor floor, wall = plain painted walls, structure = lockers, doors, cabinets, glass doors",
+ "frames": [
+  {
+   "frame": "f000360.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "tuning",
+   "regions": [
+    {
+     "name": "floor_left",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       430
+      ],
+      [
+       60,
+       470
+      ],
+      [
+       230,
+       630
+      ],
+      [
+       600,
+       780
+      ],
+      [
+       910,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "lockers",
+     "class": "structure",
+     "polygon": [
+      [
+       380,
+       140
+      ],
+      [
+       910,
+       70
+      ],
+      [
+       910,
+       830
+      ],
+      [
+       380,
+       650
+      ]
+     ]
+    },
+    {
+     "name": "door",
+     "class": "structure",
+     "polygon": [
+      [
+       1000,
+       70
+      ],
+      [
+       1240,
+       60
+      ],
+      [
+       1230,
+       880
+      ],
+      [
+       1000,
+       850
+      ]
+     ]
+    },
+    {
+     "name": "wall_right",
+     "class": "wall",
+     "polygon": [
+      [
+       1250,
+       0
+      ],
+      [
+       1600,
+       0
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       1240,
+       880
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f000720.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "tuning",
+   "regions": [
+    {
+     "name": "floor_centre",
+     "class": "floor",
+     "polygon": [
+      [
+       400,
+       900
+      ],
+      [
+       620,
+       500
+      ],
+      [
+       780,
+       330
+      ],
+      [
+       880,
+       330
+      ],
+      [
+       1050,
+       500
+      ],
+      [
+       1150,
+       780
+      ],
+      [
+       1180,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "lockers_left",
+     "class": "structure",
+     "polygon": [
+      [
+       0,
+       0
+      ],
+      [
+       400,
+       0
+      ],
+      [
+       400,
+       900
+      ],
+      [
+       0,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "lockers_right",
+     "class": "structure",
+     "polygon": [
+      [
+       1250,
+       0
+      ],
+      [
+       1600,
+       0
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       1250,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "cabinet_mid",
+     "class": "structure",
+     "polygon": [
+      [
+       500,
+       160
+      ],
+      [
+       680,
+       160
+      ],
+      [
+       680,
+       640
+      ],
+      [
+       500,
+       640
+      ]
+     ]
+    },
+    {
+     "name": "wall_left",
+     "class": "wall",
+     "polygon": [
+      [
+       400,
+       100
+      ],
+      [
+       500,
+       100
+      ],
+      [
+       500,
+       700
+      ],
+      [
+       400,
+       700
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f001440.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "held_out",
+   "regions": [
+    {
+     "name": "floor_centre",
+     "class": "floor",
+     "polygon": [
+      [
+       330,
+       900
+      ],
+      [
+       500,
+       620
+      ],
+      [
+       700,
+       350
+      ],
+      [
+       820,
+       350
+      ],
+      [
+       1050,
+       600
+      ],
+      [
+       1230,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "lockers",
+     "class": "structure",
+     "polygon": [
+      [
+       300,
+       100
+      ],
+      [
+       650,
+       180
+      ],
+      [
+       650,
+       700
+      ],
+      [
+       300,
+       860
+      ]
+     ]
+    },
+    {
+     "name": "glass_door_right",
+     "class": "structure",
+     "polygon": [
+      [
+       1270,
+       0
+      ],
+      [
+       1600,
+       0
+      ],
+      [
+       1600,
+       900
+      ],
+      [
+       1270,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "wall_right",
+     "class": "wall",
+     "polygon": [
+      [
+       1100,
+       100
+      ],
+      [
+       1270,
+       50
+      ],
+      [
+       1270,
+       800
+      ],
+      [
+       1100,
+       650
+      ]
+     ]
+    },
+    {
+     "name": "wall_left",
+     "class": "wall",
+     "polygon": [
+      [
+       100,
+       0
+      ],
+      [
+       300,
+       0
+      ],
+      [
+       300,
+       900
+      ],
+      [
+       100,
+       900
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "frame": "f002160.jpg",
+   "width": 1600,
+   "height": 900,
+   "role": "held_out",
+   "regions": [
+    {
+     "name": "floor_front",
+     "class": "floor",
+     "polygon": [
+      [
+       0,
+       900
+      ],
+      [
+       0,
+       700
+      ],
+      [
+       400,
+       560
+      ],
+      [
+       1000,
+       560
+      ],
+      [
+       1200,
+       700
+      ],
+      [
+       1250,
+       900
+      ]
+     ]
+    },
+    {
+     "name": "lift_doors_entrance",
+     "class": "structure",
+     "polygon": [
+      [
+       60,
+       220
+      ],
+      [
+       960,
+       200
+      ],
+      [
+       960,
+       560
+      ],
+      [
+       60,
+       600
+      ]
+     ]
+    },
+    {
+     "name": "wall_right",
+     "class": "wall",
+     "polygon": [
+      [
+       1020,
+       150
+      ],
+      [
+       1250,
+       100
+      ],
+      [
+       1250,
+       800
+      ],
+      [
+       1020,
+       560
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}
