@@ -28,11 +28,12 @@
 
 ## 핵심 수치 (실제로 실행해 측정한 것만)
 
-이 Mac(Apple M6, 16 GiB, macOS 27.2) 한 대에서 실제로 실행한 결과입니다. 라벨: `PUBLIC_DATASET` = 공개 데이터셋·CC BY 공개 영상, `SIMULATED` = 합성, `MOCK` = 가상 기체. 상태 어휘는 PASS / FAIL / BLOCKED / NOT_RUN이고, 실패한 시도도 지우지 않고 적습니다. 사용자 본인 영상(`REAL_VIDEO`)으로는 아직 실행하지 않았습니다. 원시 증거(`outputs/`)는 용량 때문에 git에 넣지 않았고, 명령·버전·경로는 `docs/VALIDATION_LOG.md`에 기록돼 있습니다.
+이 Mac(Apple M6, 16 GiB, macOS 27.2) 한 대에서 실제로 실행한 결과입니다. 라벨: `REAL_VIDEO` = 직접 촬영한 영상, `PUBLIC_DATASET` = 공개 데이터셋·CC BY 공개 영상, `SIMULATED` = 합성, `MOCK` = 가상 기체. 상태 어휘는 PASS / FAIL / BLOCKED / NOT_RUN이고, 실패한 시도도 지우지 않고 적습니다. 원시 증거(`outputs/`)는 용량 때문에 git에 넣지 않았고, 명령·버전·경로는 `docs/VALIDATION_LOG.md`에 기록돼 있습니다.
 
 | 항목 | 데이터 (라벨) | 상태 | 수치 | 근거 |
 |---|---|---|---|---|
 | 희소 지도, 정답 궤적 비교 | TUM fr1/desk (PUBLIC_DATASET) | PASS | 전역 매퍼 53/53 포즈, ATE RMSE 1.66 cm (Sim(3) 스케일은 평가용으로만 빌림) | [VALIDATION_LOG](docs/VALIDATION_LOG.md) |
+| 희소 지도, 직접 촬영한 영상 | 실내 복도 47 s, 1920×1080 (REAL_VIDEO) | PASS, GOOD | 139/139 등록, 10,406점, 재투영 0.819 px, 보정 없이 초점거리 추정 | [SYSTEM_STATUS](docs/SYSTEM_STATUS.md) |
 | 희소 지도, 한 테이크 영상 | 스미다 60 s / FSC 항공 71 s (PUBLIC_DATASET) | PASS, GOOD | 150/150 등록, 37,430점·0.512 px / 96,344점·0.708 px | [EXPERIMENTS](docs/EXPERIMENTS.md) |
 | 검증 밀집 점군 (CPU) | 같은 두 지도 | PASS | 917,498점 / 1,942,876점 | [EXPERIMENTS](docs/EXPERIMENTS.md) |
 | 미터 스케일, 정답 있는 실제 녹화 | TUM fr1/desk (PUBLIC_DATASET, Kinect 깊이·모션캡처 정답) | 1차 FAIL → 2차 PASS | 1차(전체 점) 스케일 오차 −11.8 %, 검증 1/2 통과. 2차(책상 점) −1.24 %, 검증 0.16 % · 1.22 %. 2차 점 기준은 1차 결과를 본 뒤 정함 | [PLAN_METRIC_SCALE 결과](docs/PLAN_METRIC_SCALE.md#10-결과) |
@@ -40,6 +41,7 @@
 | 미터 스케일, 합성 마커 | 합성 방 (SIMULATED) | 같은 벽 PASS / 다른 벽 FAIL | 같은 벽 두 마커 +0.39 %; 다른 벽 배치는 두 번째 마커가 3 프레임·45 px 미만이라 기각 | 같은 절 |
 | 텔레메트리 높이 스케일 | MockTello (MOCK) | PASS | 오차 0.0025 %, 비루프백 송신 0회 | 같은 절 |
 | 사람 검출+추적 | TUM fr3/walking_xyz (PUBLIC_DATASET) | PASS | 검출 p50 8.94 ms, 검출+추적 109.5 fps (MOTA/IDF1은 정답 박스가 없어 미정의) | [EXPERIMENTS](docs/EXPERIMENTS.md) |
+| 사람 검출+추적, 직접 촬영한 영상 | 같은 복도 47 s, 사람 없음 (REAL_VIDEO) | 오검출만 확인 | 466 프레임 중 검출 5회, 모두 회색 캐비닛 오검출(점수 0.36–0.59), 그중 하나가 2.7 s 확정 트랙. 사람이 나오는 본인 영상 추적은 NOT_RUN | [SYSTEM_STATUS](docs/SYSTEM_STATUS.md) |
 | 라이브 실행, 원래 시간 기준 | 위트레흐트 1080p 30 s (PUBLIC_DATASET) | PASS | 29.96 fps, 지연 p95 24.2 ms. 대상 LOCKED는 프레임의 17 % | [EXPERIMENTS](docs/EXPERIMENTS.md) |
 | 뷰어 렌더 (WebGL) | FSC 3,226,170점, dpr 1 / 2 | PASS | 프레임 p50 61.4 → 7.6 ms / 121.2 → 12.6 ms (이전 2D 캔버스 대비) | [VALIDATION_LOG](docs/VALIDATION_LOG.md) |
 | 자동 테스트 | pytest / ruff / UI 스모크 | PASS | 175 passed × 5회 연속, ruff 통과, UI 117 passed · 0 failed · 4 skipped | [VALIDATION_LOG](docs/VALIDATION_LOG.md) |
@@ -105,7 +107,7 @@ node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222   # 또는 --browser <
 ## 한계
 
 - **지도는 상대 스케일입니다.** 미터 스케일은 별도 측정으로만 붙고, 실제 녹화에서 "확인됨"까지 간 것은 TUM fr1/desk 한 건이며 그 점 기준은 첫 시도가 실패한 뒤 정했습니다. 항공 테니스장 결과는 규정 치수 기반이라 미검증이고, 폭 방향 길이가 4–5 % 길게 나오는 체계 오차의 원인(보정 없이 추정한 초점거리 가설)은 확인하지 않았습니다.
-- **본인 영상(`REAL_VIDEO`)·실제 웹캠·실기체는 NOT_RUN.** 모든 결과는 공개 데이터셋, CC BY 공개 영상, 합성 장면, MOCK에서 나왔습니다.
+- **직접 촬영한 영상은 실내 복도 한 편뿐입니다.** 지도는 GOOD이지만 사람이 나오지 않아 본인 영상에서의 추적 정확도는 확인하지 못했고, 대신 캐비닛을 사람으로 본 오검출 트랙(2.7 s)이 나왔습니다. 실제 웹캠·실기체는 NOT_RUN이며, 나머지 결과는 공개 데이터셋, CC BY 공개 영상, 합성 장면, MOCK에서 나왔습니다.
 - **한 대의 Mac에서만 검증했습니다.** 다른 OS·하드웨어는 NOT_RUN. GitHub Actions(run 43618986459, macos-15): fast 잡 159 passed / 11 skipped, full 잡(가중치·샘플 영상 받은 뒤) 175 passed로 PASS. 처음 4회는 FAIL — 가중치 없는 환경의 라이브 테스트, 느린 러너에서의 텔레메트리 기록기 경쟁(실제 버그, 수정)과 고정 대기 테스트 2개, 실행 권한 없는 `scripts/*.sh`.
 - **지도는 오프라인입니다.** 영상 1분당 대략 6–12분. 편집 영상(컷 많음)과 고정 카메라 영상은 지도가 되지 않습니다.
 - **밀집 지도 개선 시도는 모두 미채택.** 바닥 커버리지·정적 장면·학습 깊이 변형이 사전 기준 중 하나를 넘지 못해 trial로만 남았습니다([EXPERIMENTS](docs/EXPERIMENTS.md)).

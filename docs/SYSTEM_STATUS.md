@@ -31,7 +31,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 | 미터 스케일 (`scale.json`, 마커·두 점·텔레메트리; 지도 파일은 RELATIVE 유지) | **동작 (공개 데이터) / NOT_RUN (본인 촬영 마커 영상)** | 합성 마커 같은 벽 +0.39 % PASS(다른 벽 배치 FAIL). TUM fr1/desk 두 점: 1차 −11.8 % FAIL, 2차(책상 점, 사후 기준) −1.24 % `MEASURED_VERIFIED`. 테니스장 항공: 검증 4.906 / 0.477 / 4.925 %, 규정 치수라 `MEASURED_UNVERIFIED`. MockTello 높이 0.0025 %(교차 확인 전용). 뷰어 Measure 도구와 상태 칩. 확인돼도 `NOT_NAVIGATION_SAFE` | `outputs/evidence/metric_scale/`, `docs/PLAN_METRIC_SCALE.md` 10절 |
 | 미터 깊이 모델 시험 (MapAnything, DA3METRIC, DA3NESTED, Pi3X; 별도 venv, MPS) | **시험 단계 (참고용)** | 4종 모두 MPS 완주, TUM 깊이 스케일 오차 −2.27 / −4.53 / +48.19 / +1.73 %. 사전 기준으로 대체 후보 없음(떠 있는 점 증가 또는 커버리지 하락). DA3NESTED·Pi3X 가중치는 CC BY-NC 4.0이라 로컬 연구 실행만, 저장소에 없음 | `outputs/evidence/metric_scale/metric_models_summary.json` |
 | 자동 테스트 · 린트 · CI | **동작 (로컬·GitHub)** | pytest 175 passed 5회 연속, ruff 통과, UI 스모크 117 / 0 / 4 skipped. GitHub Actions(run 43618986459, macos-15): fast 잡 159 passed / 11 skipped, full 잡(가중치·샘플 영상 받은 뒤) 175 passed로 PASS. 처음 4회는 FAIL — 가중치 없는 환경의 라이브 테스트, 느린 러너에서의 텔레메트리 기록기 경쟁(실제 버그, 수정)과 고정 대기 테스트 2개, 실행 권한 없는 `scripts/*.sh` | `outputs/evidence/portfolio/` |
-| 본인 영상 게이트 (`assets/input/`, `REAL_VIDEO`) | **NOT_RUN** | 공개 CC BY 클립과 사용자가 제공한 복도 영상(origin 라벨 `UNSPECIFIED`)으로만 실행. `REAL_VIDEO` 라벨이 붙은 세션은 아직 없음 | `docs/PROGRESS.md` "Next single command" |
+| 본인 영상 게이트 (`REAL_VIDEO`) | **지도 PASS / 추적 NOT_RUN** | 2026-11-15 사용자가 복도 영상을 직접 찍었다고 확인 → `mqg_corridor`의 `data_origin`을 `UNSPECIFIED`에서 `REAL_VIDEO`로 바꿈(지도는 그대로, 변경 기록은 리포트의 `relabels`와 증거 파일). 희소 지도 139/139, 10,406점, 0.819 px, GOOD. 같은 영상 추적: 사람이 없고 검출 5회가 모두 캐비닛 오검출, 그중 하나가 2.7 s 확정 트랙 | `outputs/evidence/real_video/{corridor_relabel,corridor_tracking}.json`, `corridor_detection_check.jpg` |
 | 실기체 비행 | **차단** | 기체 없음, 정책상 금지. Mock만 | `CLAUDE.md` |
 
 ---
@@ -50,7 +50,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 | | `Hybrid · model near + multi-view far` (`dense_hybrid`) | 가까운 곳은 모델 깊이(검증 없음), 먼 구조물은 평면 스윕. 표시용 정리(`clean_cloud`) 적용 | 2,540,617 / 0.288 |
 | | `Model output · all pixels` | 위와 같음 | 2,016,336 |
 | | `Model output · steady` (v4) | 위와 같음(이웃 ≥ 2개, 8 %); 모델이 불확실한 **28–38 s(넓은 잔디밭 위 회전)는 근처 삼각측량점으로 픽셀 단위 보정**해 채움(26 프레임, 건너뜀 0), 표시용 정리 적용 | 1,367,234 / 0.209, 고립 0.0016 |
-| `mqg_corridor` (실내 복도, 47 s, 사용자 제공, origin 라벨 미지정) | `Sparse` | 희소 지도 GOOD | 10,406 |
+| `mqg_corridor` (실내 복도, 47 s, 사용자가 직접 촬영, `REAL_VIDEO`) | `Sparse` | 희소 지도 GOOD | 10,406 |
 | | `Model output · all pixels` | 모델 추정 전 픽셀 | 1,755,680 |
 
 읽는 법: **`Dense · verified`만이 여러 뷰로 확인된 점**이고, `Model output`·`Hybrid`의 가까운 부분은 모델이 추측한 깊이를 우리 경로에 맞춰 놓은 것입니다. 상대 스케일, 미터 아님, 항법에 쓸 수 없음. 스크린샷: `outputs/evidence/ui/fsc_onpath3.png`, `outputs/evidence/ui/sumida_onpath4.png`(이전 버전 `fsc_onpath2_top.png`, `sumida_onpath3.png`).
@@ -77,7 +77,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 - **추적은 모션만 봅니다.** Re-ID가 없어 가림·교차 후 같은 id 재획득을 보장하지 않고, 혼잡하면 STOP이 늘고 트랙이 짧아집니다(옷 색 재식별 E4는 NO_GO). MOTA/IDF1은 정답 박스가 없어 미정의입니다.
 - **VO는 보정 카메라가 필요**하고(F-10), 재측위·지도 위 위치는 미구현입니다.
 - **편집 영상·고정 카메라·사람이 화면을 채우는 영상**은 지도가 안 되거나 PARTIAL입니다(방콕 POOR, 몬트리올 거부, 위트레흐트 점프 19–43회).
-- **한 대의 Mac에서만 측정**했고, 실제 웹캠·실기체·다른 OS는 NOT_RUN/차단입니다. 본인 영상(`REAL_VIDEO`) 게이트도 아직 열려 있습니다.
+- **한 대의 Mac에서만 측정**했고, 실제 웹캠·실기체·다른 OS는 NOT_RUN/차단입니다. 본인 영상은 복도 한 편뿐이고 사람이 나오지 않아, 본인 영상에서의 추적 정확도는 아직 확인하지 못했습니다(오검출 트랙 1개는 확인).
 - **미터 깊이 모델은 장면에 따라 크게 틀립니다.** 항공 영상에서 모델 4종의 미터 스케일이 최대 10.96배 달랐고, DA3NESTED는 TUM에서 +48 % 어긋났습니다. 그래서 모델 값은 교차 확인으로만 씁니다.
 - **일부 실행 인자 미보관.** `learned_fuse`/`far_cleanup`/`static_eval`의 정확한 셸 한 줄과 "우리 쪽" 융합 시간은 보관되지 않았습니다(모듈 docstring의 사용법이 기준).
 - 코드 라이선스 파일이 아직 없습니다(`LICENSE` 미정).
@@ -150,7 +150,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 ## 11. 다음 할 일 (우선순위)
 
 0. (2026-11-15) GitHub에 올린 뒤 `.github/workflows/ci.yml`을 처음 실행해 결과 기록(현재 NOT_RUN).
-1. `assets/input/`에 본인 영상을 두고 `scripts/build_sparse_map.sh … --origin REAL_VIDEO`, `scripts/run_tracking.sh … --origin REAL_VIDEO` 실행 → `REAL_VIDEO` 게이트 닫기.
+1. 사람이 나오는 본인 영상으로 `scripts/run_tracking.sh … --origin REAL_VIDEO` 실행 → 본인 영상 추적 게이트 닫기(지도 쪽은 복도 영상으로 PASS). 복도에서 나온 캐비닛 오검출은 점수 0.36–0.59라 기본 임계값 0.35 바로 위에 있음 — 임계값 조정은 공개 클립 결과와 함께 따로 판정.
 2. (완료 2026-11-09 22:11) 이번 세션 pytest·UI 스모크 로그 기록 — `docs/VALIDATION_LOG.md` SL 블록. 남은 것: UI 체크 수 88 → 71 차이의 원인 확인.
 3. 모델 출력 steady 레이어의 다음 검사: (a) 국소 보정된 28–38 s 구간의 점이 다른 뷰와 얼마나 일치하는지 별도 측정(지금은 근처 희소점 일치만 조건), (b) 검증 융합 레이어 쪽에서 그 구간을 채우려면 더 짧은 청크를 회전 안쪽에 앵커링(기존 R8 항목), (c) 반사면 점을 희소 지도 단계에서 거를 규칙(현재 없음), (d) 항공 영상에서 모델이 먼 지면을 누르는 정도를 거리대별로 기록.
 4. 미채택 trial 레이어(학습 깊이 포함)의 채택 여부를 사용자가 결정; 조항을 바꾸려면 새 날짜 절과 새 기준선.
