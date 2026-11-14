@@ -10,13 +10,19 @@
 - **관측 가능성.** 처리 시간·지연·누락 프레임·품질 판정을 기록하고 콘솔에서 바로 보여 줍니다.
 - **재현성.** 고정 시드, 원시 증거 보관, 테스트 175개와 CI, 공개 데이터셋만 사용.
 
-| 항공 영상 지도 (모델 추정 레이어) | 강변 산책 영상 지도 (다중 뷰 검증 레이어) |
-|---|---|
-| ![FSC 캠퍼스 항공 영상의 모델 출력 레이어](docs/images/01_fsc_aerial_model_output.png) | ![스미다 강변 산책 영상의 검증 밀집 레이어](docs/images/04_sumida_dense_verified.png) |
-| **라이다 없는 미터 스케일 측정 (미검증 표시)** | **사람 추적과 MOCK yaw 명령 (송신 안 함)** |
-| ![테니스장 항공 영상에서 두 점 거리 재기](docs/images/06_tennis_measure.png) | ![TUM 녹화에서 대상 LOCKED와 가상 yaw](docs/images/07_tracking_target.png) |
+![Skywarden 데모: 복도 지도 따라가기·회전·거리 재기](docs/media/skywarden_demo.gif)
 
-<sub>왼쪽 위: "Drone Footage: Florida Southern College FSC Drone Flyover 5 4K" by Audric Kraus, CC BY — 학습 모델이 추정한 깊이를 우리 SfM 카메라 경로에 놓은 표시 레이어이며 검증된 지도가 아닙니다. 오른쪽 위: "Sumida Park Tokyo Japan 4K Walking Tour …" by 4K Explore On Foot, CC BY — 여러 뷰로 확인된 점만 남긴 기본 지도 레이어. 왼쪽 아래: "Sue Lorimer and Bob Bruns Tennis Complex @ Folsom Lake College" by Zack Dowell, CC BY, https://www.youtube.com/watch?v=a5mun9m1CKY — 표시된 미터 값은 미검증. 오른쪽 아래: TUM RGB-D `fr3/walking_xyz`, CC BY 4.0, Sturm et al., IROS 2012 — 공개 데이터셋의 인물이며 식별·재식별은 하지 않습니다. 각 영상의 출처는 `data/public/*/SOURCE.md`. 화면은 2026-11-15 콘솔 캡처(`outputs/evidence/portfolio/screens.json`).</sub>
+전체 데모 영상(66 s): [docs/media/skywarden_demo.mp4](docs/media/skywarden_demo.mp4) — 장면 구성과 출처는 [docs/media/README.md](docs/media/README.md).
+
+| 직접 촬영한 복도 영상의 3D 지도 (모델 추정 레이어) | 사람 추적과 MOCK yaw 명령 (송신 안 함) |
+|---|---|
+| ![직접 촬영한 복도 영상의 지도](docs/images/10_corridor_map.png) | ![TUM 녹화에서 대상 LOCKED와 가상 yaw](docs/images/07_tracking_target.png) |
+| **미터 스케일 측정 흐름 (합성 장면)** | **라이브 실행: 검출·추적·VO·MOCK 제어** |
+| ![합성 방에서 두 점 거리 재기와 검증](docs/images/11_synthetic_measure_verified.png) | ![복도 영상 라이브 실행](docs/images/12_live_run.png) |
+
+<sub>복도: 프로젝트 작성자가 직접 촬영한 실내 복도 영상(`REAL_VIDEO`). 지도 화면은 학습 모델 깊이를 우리 SfM 카메라 경로에 놓은 **모델 추정** 레이어이며, 검증된 희소 지도는 139/139 프레임·10,406점입니다. 합성 장면: 이 저장소 코드가 만든 방으로, 기능 흐름을 보여 주는 화면입니다 — 입력한 길이가 장면의 정답 배율에서 나온 값이라 오차 0.0 %는 정확도 증거가 아닙니다(실제 정확도는 아래 표의 TUM 결과). 추적: TUM RGB-D `fr3/walking_xyz`, CC BY 4.0, Sturm et al., IROS 2012 — 연구용 공개 데이터셋의 인물이며 얼굴은 픽셀 처리했고 식별·재식별은 하지 않습니다.</sub>
+
+> **공개 영상 사용 범위.** 아래 수치 일부는 YouTube에 Creative Commons Attribution(CC BY)으로 공개된 영상으로 측정했습니다. 이 영상들은 라이선스 조건에 따라 이 컴퓨터에서 **로컬 시험 입력으로만** 썼고, 원작자에게 개별 허락을 받지는 않았습니다. 그래서 이 저장소에는 그 영상의 파일·프레임·스크린샷·그 영상으로 만든 지도를 **넣지 않으며**, 출처와 결과 수치만 적습니다. 원작자가 언급 삭제를 원하면 이슈로 알려 주시면 바로 지우겠습니다.
 
 ## 무엇을 하는가
 
@@ -113,7 +119,9 @@ node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222   # 또는 --browser <
 - **밀집 지도 개선 시도는 모두 미채택.** 바닥 커버리지·정적 장면·학습 깊이 변형이 사전 기준 중 하나를 넘지 못해 trial로만 남았습니다([EXPERIMENTS](docs/EXPERIMENTS.md)).
 - **추적은 모션만 봅니다.** 가림·교차 뒤 같은 id 재획득을 보장하지 않습니다.
 - **미터 깊이 모델은 참고용입니다.** MapAnything·DA3METRIC·DA3NESTED·Pi3X를 로컬(MPS)에서 시험했지만 기본 레이어를 대체한 모델은 없고, 항공 영상에서 모델 간 미터 스케일이 최대 10.96배 달랐습니다. DA3NESTED와 Pi3X 가중치는 비상업(CC BY-NC 4.0)이라 로컬 연구 실행만 했고 저장소에 없습니다.
-- 코드 라이선스(`LICENSE`)는 아직 정하지 않았습니다.
+## 라이선스
+
+코드는 [Apache License 2.0](LICENSE)입니다. 스크린샷 속 영상 프레임과 지도는 각 원본의 라이선스(CC BY, CC BY 4.0)를 따르며, 영상·데이터셋·모델 가중치는 저장소에 들어 있지 않습니다. 자세한 내용은 [NOTICE](NOTICE)와 아래 출처 표에 있습니다.
 
 ## 문서 지도
 
