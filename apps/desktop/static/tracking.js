@@ -174,7 +174,8 @@ export function initTracking(ctx) {
       ...(R.intrinsics?.source === "ESTIMATED" ? [ctx.badge("VO UNCALIBRATED", "warn", `UNCALIBRATED — VO path not reliable: ${R.intrinsics.note || "focal length estimated"}`)] : []),
     );
     const chip = (t, cls = "") => Object.assign(document.createElement("span"), { className: `chip ${cls}`, textContent: t });
-    ov.append(chip(`Replay of recorded clip · ${d.name} on CPU · no identity re-ID`));
+    const reid = / ReID on/.test(trackerMode(R));
+    ov.append(chip(`Replay of recorded clip · ${d.name} on CPU · ${reid ? "in-session appearance, not stored" : "no identity re-ID"}`));
   }
   function renderMetrics() {
     const R = T.run?.report, tm = R?.timing;
@@ -185,6 +186,12 @@ export function initTracking(ctx) {
     $("tm-fps").textContent = tm ? `${tm.processing_fps} fps (detect+track)` : "—";
     $("tm-tracks").textContent = R ? `${R.tracks.tracks_confirmed} of ${R.tracks.track_ids_created} ids` : "—";
     $("tm-acc").textContent = R ? (R.accuracy.MOTA == null ? "undefined (no ground truth)" : `${R.accuracy.MOTA}/${R.accuracy.IDF1}`) : "—";
+    $("tm-assoc").textContent = R ? trackerMode(R) : "—";
+  }
+
+  // Association mode the run was recorded with; runs from before the modes existed used the strict rule.
+  function trackerMode(R) {
+    return R.settings?.tracker_mode || R.tracker_mode || "assoc strict · GMC off · ReID off";
   }
 
   // A live run's report has a different shape; map it onto the fields the panel shows (nothing invented).

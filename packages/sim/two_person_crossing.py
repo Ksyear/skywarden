@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from control.yaw_controller import YawController
-from tracking.tracker import Detection, MultiTracker, TargetSelector, TargetState
+from tracking.tracker import Detection, MultiTracker, TargetSelector, TargetState, TrackerConfig
 
 W, H, FPS = 640, 480, 15.0
 SPEED = 90.0          # px/s, both walkers
@@ -41,9 +41,9 @@ def truth(t: float, who: str, y_sep: float, x_cross: float = W / 2) -> tuple[flo
 
 
 def run_once(occ: float, with_b: bool, seed: int, y_sep: float = 12.0, noise_px: float = 2.0,
-             dropout: float = 0.05, trace_on: bool = False, x_cross: float = W / 2) -> dict:
+             dropout: float = 0.05, trace_on: bool = False, x_cross: float = W / 2, cfg: TrackerConfig | None = None) -> dict:
     rng = np.random.default_rng(seed)
-    tr, sel = MultiTracker(), TargetSelector()
+    tr, sel = MultiTracker(cfg), TargetSelector()
     # Control path (socket-free): the real YawController with virtual, always-fresh telemetry. Reported separately
     # from the tracker's id accuracy: it measures whether a non-zero yaw is produced for the wrong person or while
     # the target is not LOCKED.
@@ -146,18 +146,18 @@ def verdict(summary: dict) -> dict:
     return res
 
 
-def run(out_dir: Path, seeds: int = 50) -> dict:
+def run(out_dir: Path, seeds: int = 50, cfg: TrackerConfig | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    rows = [run_once(o, b, s) for o in OCCLUSIONS for b in (True, False) for s in range(seeds)]
+    rows = [run_once(o, b, s, cfg=cfg) for o in OCCLUSIONS for b in (True, False) for s in range(seeds)]
     summ = summarise(rows)
     # sensitivity: same crossing with the two walkers' rows almost identical (worst geometry), not part of the verdict
-    tight = [run_once(o, True, s, y_sep=0.0) for o in (0.5, 1.0, 1.5) for s in range(seeds)]
+    tight = [run_once(o, True, s, y_sep=0.0, cfg=cfg) for o in (0.5, 1.0, 1.5) for s in range(seeds)]
     tight_s = {f"occ{o}": {"same_id_on_A": round(float(np.mean([r["same_id_on_A"] for r in tight if r["occ"] == o])), 3),
                            "switched_to_B": int(sum(r["switched_to_B"] for r in tight if r["occ"] == o))}
                for o in (0.5, 1.0, 1.5)}
     # Control-path check with the crossing moved right of centre (x=440 px) so that a wrong lock gives a non-zero
     # yaw error; not part of the K1-K3 verdict.
-    off = [run_once(o, True, s, x_cross=440.0) for o in OCCLUSIONS for s in range(seeds)]
+    off = [run_once(o, True, s, x_cross=440.0, cfg=cfg) for o in OCCLUSIONS for s in range(seeds)]
     ctrl_keys = ("yaw_nonzero_frames", "yaw_nonzero_not_locked", "yaw_nonzero_on_B", "yaw_nonzero_A_hidden",
                  "locked_while_A_hidden", "ambiguous_frames", "frames_after_select")
     control_total = {"centre_crossing_all_700_runs": {k: int(sum(r[k] for r in rows)) for k in ctrl_keys},
@@ -168,7 +168,8 @@ def run(out_dir: Path, seeds: int = 50) -> dict:
               "experiment": "E2 two-person crossing during occlusion", "label": "SIMULATED (synthetic detections, known identities)",
               "setup": {"fps": FPS, "speed_px_s": SPEED, "noise_px": 2.0, "dropout": 0.05, "y_separation_px": 12.0,
                         "box_h_A_B": [180, 150], "seeds": seeds, "follow_px": FOLLOW_PX,
-                        "tracker": "MultiTracker defaults (CV Kalman, Mahalanobis gate chi2 9.21, Hungarian, max coast 2.0 s, no appearance Re-ID)"},
+                        "tracker": "MultiTracker defaults (CV Kalman, Mahalanobis gate chi2 9.21, Hungarian, max coast 2.0 s, no appearance Re-ID)"
+                        if cfg is None else (cfg or TrackerConfig()).describe(), "tracker_config": (cfg or TrackerConfig()).__dict__},
               "criteria_fixed_before_run": CRITERIA, "summary": summ, "verdict": verdict(summ),
               "sensitivity_same_row_crossing_not_in_verdict": tight_s}
     (out_dir / "e2_two_person.json").write_text(json.dumps(result, indent=1))

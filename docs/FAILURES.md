@@ -394,3 +394,24 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 - (closed 2026-11-09) Live run / timeline replay: implemented and measured (`docs/PLAN_LIVE_RUN_TIMELINE.md` Result; `outputs/evidence/live/`); no acceptance test failed. Still open from it, not failures: a run with a physical webcam (NOT_RUN, no camera on this Mac; `webcam:0` correctly ends `FAILED NO_DEVICE` in 0.285 s), browser assertions for the live tab's `STALE_DATA` / `STALLED` / `FAILED` / `INCOMPLETE` / `CANCELLED` states (NOT_RUN; labels exist in `live.js`), and the observation that on the Utrecht person-following clip the target was LOCKED in only 155 of 899 frames (17 %) with 7 scripted re-selections after LOST — a tracker limitation on that clip (compare F-11), recorded in `t7_utrecht_realtime_30s.json`, not a live-run defect. Stored-map relocalisation: NOT_IMPLEMENTED (VO and live headers say so). Bangkok per-boundary cause classification (plan D1 field): not written.
 - (2026-11-09, frame selection and depth) Adaptive selection stays opt-in (`--selection adaptive`), not a failure: path PASS on all three clips (F-23). Ruled: D runs on the neutral judge — D12 fails only quiet time (400.0 s) and person points on f001680, D1 fails sky and person (F-24). Open: clause 5 timing alone for every run but D12 (F-25); same-view-set free-space comparison for F1b (F-23); (closed 2026-11-09) learned multi-view depth approved, installed in a separate environment and run (F-26 → F-27–F-32). Closed: `data/models/static/SOURCE.md` now records the segmentation model (Realcat/skywater_seg rev ec20751, MIT, SHA-256).
 - (2026-11-09, learned depth) Not failures: the model runs only as an external tool in `outputs/tools/venv_learned` and nothing of it is committed; `model_estimated/` is a separate, hidden cloud by construction. Open, not failures: the provenance-tag count of 0 inside the learned map layer (plan clause 4) and the time of our own alignment + fusion + dense part (clause 5) were not archived; fp16/bf16 NOT_RUN (never triggered); Sumida 10–20, 26–40, 46–60 s and FSC 26–30, 38–60, 68–71 s have no accepted learned depth (next tests in F-28, F-29); the FSC far-cleanup variant for aerial views (F-31) is a new plan item. Regression after the round: 134 tests (`outputs/evidence/tests/pytest-20261109-183645.log`), UI 88/88.
+
+## F-33 Strict tracker locks on the neighbour after a long side-by-side walk (E2X, 2026-11-15)
+
+**Status:** found in round 1 of `docs/PLAN_OCCLUSION_TRACKING.md`; present in the current default tracker (V0 = strict); fixed only in margin mode (adopted preset `VAB`). Evidence `outputs/evidence/occlusion_tracking/round1/e2x_V0/`, trace `round2_trace_side_by_side.txt`.
+
+**Observed:** E2X `side_by_side` (B walks 40 px beside A for 3 s), 50 seeds: V0 target LOCKED on B in 115 frames (5 seeds), yaw toward B in the same 115 frames. The tracks stay AMBIGUOUS while both people are in each gate; when A's box drops out for one frame (5 % dropout), the coasting target track and B's box form a 1x1 component, which both modes trusted. Round-1 margin variants: 88 frames.
+
+**Fix (margin mode, added after seeing round 1):** after an AMBIGUOUS spell a track re-connects only to a detection within 0.15 × box height of its prediction until its next trusted hit (`TrackerConfig.contested_reconnect_frac`). Round 2: 0 wrong-target frames in every margin variant; retention in this condition 0.10 → 0.94. Cost: without camera motion compensation the guard refuses more re-connections under panning (E2X `camera_pan_occ1.0` retention 0.94 → 0.22 for VA; 1.00 with VAB).
+
+**Not done:** the strict mode (V0) was left unchanged on purpose (it is the reference). Anyone running `--tracker V0` keeps this weakness.
+
+## F-34 Live target is PREDICTING most of the time on a close, large person (Utrecht, 2026-11-15)
+
+**Status:** diagnosed, not fixed (out of scope of the occlusion plan). Evidence `outputs/evidence/occlusion_tracking/real_clips.json`, `outputs/runs/ot_live_utrecht_*`.
+
+**Observed:** in every variant the target is LOCKED in only 16–19 % of the 899 frames and PREDICTING in 604–637. In those PREDICTING frames a detection was always present, its centre 0.10 / 0.17–0.19 / 0.29–0.33 × box height from the target (p25 / p50 / p75), with a median box height of 850–1,100 px.
+
+**Cause:** the Kalman measurement noise is a fixed 6 px and the χ² gate is in pixels, so for a person filling the frame the normal jitter of the box centre (tens of pixels) falls outside the gate. Overlap handling cannot change this.
+
+**Next test:** a measurement / process noise that scales with box height (as in common SORT-family filters), judged with the same E2 / E2X safety gate and MOT17 held-out split, under its own pre-registered plan.
+

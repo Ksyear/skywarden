@@ -100,9 +100,9 @@
 
 ## 3. 사람 탐지·추적
 
-**T-01 (P1 · M) 모션 전용 추적의 한계.** 현재: 위트레흐트 라이브 30 s에서 LOCKED 17 %(155/899), 교차 시 AMBIGUOUS → STOP, 재획득 보장 없음(설계), 옷 색 재식별은 NO_GO. 제안(정책 결정 필요): (a) 학습 재식별 임베딩은 라이선스·개인정보 정책을 먼저 결정, (b) 비생체 대안 — 박스 높이/종횡비 일관성, IMM(다중 모델) Kalman, 짧은 가림 전용 완화 — 를 E2 하네스(700회)와 실제 3클립으로 판정. 근거: `docs/PROGRESS.md` 162행(LV-T7), `docs/FAILURES.md` F-05(75-88행), `docs/VALIDATION_LOG.md` 134행 "Possible next step".
+**T-01 (P1 · M) 모션 전용 추적의 한계.** — **2026-11-15 처리:** `docs/PLAN_OCCLUSION_TRACKING.md` 7절(마진 연관 + GMC 채택, 외모 ReID는 opt-in; 남은 원인 F-33·F-34). 아래는 당시 기록. 현재: 위트레흐트 라이브 30 s에서 LOCKED 17 %(155/899), 교차 시 AMBIGUOUS → STOP, 재획득 보장 없음(설계), 옷 색 재식별은 NO_GO. 제안(정책 결정 필요): (a) 학습 재식별 임베딩은 라이선스·개인정보 정책을 먼저 결정, (b) 비생체 대안 — 박스 높이/종횡비 일관성, IMM(다중 모델) Kalman, 짧은 가림 전용 완화 — 를 E2 하네스(700회)와 실제 3클립으로 판정. 근거: `docs/PROGRESS.md` 162행(LV-T7), `docs/FAILURES.md` F-05(75-88행), `docs/VALIDATION_LOG.md` 134행 "Possible next step".
 
-**T-02 (P1 · M) MOTA/IDF1 미정의.** 현재: 정답 박스 있는 시퀀스가 없음. 제안: 라이선스 확인된 공개 MOT 시퀀스 1개 또는 본인 클립 30 s 수동 라벨로 산출; 라벨 없는 클립은 계속 "미정의". 근거: `docs/PROGRESS.md` 221행.
+**T-02 (P1 · M) MOTA/IDF1 미정의.** — **2026-11-15 처리:** MOT17 train 7개 시퀀스(CC BY-NC-SA 3.0, 로컬 평가 전용)를 TrackEval로 채점(`outputs/evidence/occlusion_tracking/mot17/`). 라벨 없는 클립은 여전히 미정의. 아래는 당시 기록. 현재: 정답 박스 있는 시퀀스가 없음. 제안: 라이선스 확인된 공개 MOT 시퀀스 1개 또는 본인 클립 30 s 수동 라벨로 산출; 라벨 없는 클립은 계속 "미정의". 근거: `docs/PROGRESS.md` 221행.
 
 **T-03 (P2 · S) 검출기 티어·모델 비교 NOT_RUN.** 현재: yolox_tiny 비교, onnxruntime/HOG 티어 미실행. 제안: 같은 3클립에서 p50/p95·검출률 표. 근거: `docs/PROGRESS.md` 188·221행.
 
