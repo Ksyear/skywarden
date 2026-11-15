@@ -14,7 +14,7 @@
 |---|---|
 | S-01 | PARTIAL |
 | S-02 | 폐기(사용자 결정) |
-| T-01 | DONE (기본 `VAB` 채택; 남은 원인 F-34·F-35는 trial `VABS`가 고치지만 미채택) |
+| T-01 | DONE (겹침 라운드 `VAB` 채택 → 잡음 라운드 `VABS`가 기본: F-34·F-35 수정, 1차 속도 FAIL 뒤 사전 등록 프로토콜로 재판정 PASS; F-35의 재연결 빈틈은 열림) |
 | T-02 | DONE (MOT17 train 보정·보류 분할, 라벨 없는 클립은 여전히 미정의) |
 | T-04 | PARTIAL (마진·크기 항·측정/과정 잡음 격자를 MOT17 보정 분할 + E2로 스윕; 만료·확정 히트·점수 임계값은 스윕 안 함) |
 | Q-01 | PARTIAL |
@@ -104,7 +104,7 @@
 
 ## 3. 사람 탐지·추적
 
-**T-01 (P1 · M) 모션 전용 추적의 한계.** — **2026-11-15 처리:** `docs/PLAN_OCCLUSION_TRACKING.md` 7절(마진 연관 + GMC 채택, 외모 ReID는 opt-in; F-33은 margin 모드에서 수정). F-34(큰 박스에서 고정 6 px 잡음)는 `docs/PLAN_SCALE_AWARE_NOISE.md`에서 원인 확인 후 `VABS`로 고쳤지만(위트레흐트 LOCKED 19.2 → 69.1 %) 라이브 속도 기준 하나를 넘지 못해 trial이고, 그 과정에서 기본 `VAB`의 큰 박스 잘못된 대상 잠김(F-35)을 찾았습니다. 아래는 당시 기록. 현재: 위트레흐트 라이브 30 s에서 LOCKED 17 %(155/899), 교차 시 AMBIGUOUS → STOP, 재획득 보장 없음(설계), 옷 색 재식별은 NO_GO. 제안(정책 결정 필요): (a) 학습 재식별 임베딩은 라이선스·개인정보 정책을 먼저 결정, (b) 비생체 대안 — 박스 높이/종횡비 일관성, IMM(다중 모델) Kalman, 짧은 가림 전용 완화 — 를 E2 하네스(700회)와 실제 3클립으로 판정. 근거: `docs/PROGRESS.md` 162행(LV-T7), `docs/FAILURES.md` F-05(75-88행), `docs/VALIDATION_LOG.md` 134행 "Possible next step".
+**T-01 (P1 · M) 모션 전용 추적의 한계.** — **2026-11-15 처리:** `docs/PLAN_OCCLUSION_TRACKING.md` 7절(마진 연관 + GMC 채택, 외모 ReID는 opt-in; F-33은 margin 모드에서 수정). F-34(큰 박스에서 고정 6 px 잡음)는 `docs/PLAN_SCALE_AWARE_NOISE.md`에서 원인 확인 후 `VABS`로 고쳤습니다(위트레흐트 LOCKED 19.2 → 69.1 %). 1차 판정은 단일 실행 라이브 지연으로 미채택이었고, 측정 전에 다시 등록한 5+5회 속도 프로토콜로 재판정해 기본값이 됐습니다. 그 과정에서 `VAB`의 큰 박스 잘못된 대상 잠김(F-35)을 찾았습니다. 아래는 당시 기록. 현재: 위트레흐트 라이브 30 s에서 LOCKED 17 %(155/899), 교차 시 AMBIGUOUS → STOP, 재획득 보장 없음(설계), 옷 색 재식별은 NO_GO. 제안(정책 결정 필요): (a) 학습 재식별 임베딩은 라이선스·개인정보 정책을 먼저 결정, (b) 비생체 대안 — 박스 높이/종횡비 일관성, IMM(다중 모델) Kalman, 짧은 가림 전용 완화 — 를 E2 하네스(700회)와 실제 3클립으로 판정. 근거: `docs/PROGRESS.md` 162행(LV-T7), `docs/FAILURES.md` F-05(75-88행), `docs/VALIDATION_LOG.md` 134행 "Possible next step".
 
 **T-02 (P1 · M) MOTA/IDF1 미정의.** — **2026-11-15 처리:** MOT17 train 7개 시퀀스(CC BY-NC-SA 3.0, 로컬 평가 전용)를 TrackEval로 채점(`outputs/evidence/occlusion_tracking/mot17/`). 라벨 없는 클립은 여전히 미정의. 아래는 당시 기록. 현재: 정답 박스 있는 시퀀스가 없음. 제안: 라이선스 확인된 공개 MOT 시퀀스 1개 또는 본인 클립 30 s 수동 라벨로 산출; 라벨 없는 클립은 계속 "미정의". 근거: `docs/PROGRESS.md` 221행.
 

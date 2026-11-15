@@ -12,10 +12,11 @@ PRESETS = ("V0", "VA", "VAB", "VABC", "VABS")
 # Adopted for the app and CLIs by the pre-registered verdict (outputs/evidence/occlusion_tracking/verdict.json):
 # margin association + camera motion compensation. Appearance (VABC / --reid) stays opt-in. The library default
 # TrackerConfig() is still the original strict rule (V0), so tests and simulations that construct it are unchanged.
-# VABS (VAB + Kalman noise proportional to box height, docs/PLAN_SCALE_AWARE_NOISE.md) is a trial, `--tracker VABS`:
-# it passed every pre-registered criterion except the live latency gate in the single judged run (p95 34.1 ms > 33;
-# outputs/evidence/scale_aware_noise/verdict.json), so the default stays VAB.
-DEFAULT_PRESET = "VAB"
+# Since 2026-11-15 the default is VABS = VAB + Kalman measurement noise proportional to box height
+# (docs/PLAN_SCALE_AWARE_NOISE.md): first verdict NOT_ADOPTED on a single-run latency p95 (34.1 ms > 33), then a live
+# speed protocol pre-registered in section 8 (5 + 5 alternating runs, medians) passed
+# (outputs/evidence/scale_aware_noise/verdict_speed.json). --fixed-noise (or --tracker VAB) gives the previous default.
+DEFAULT_PRESET = "VABS"
 
 
 def preset(name: str) -> TrackerConfig:
@@ -74,7 +75,7 @@ def make_tracker(cfg: TrackerConfig, embedder: TimedEmbedder | None = None) -> M
 def add_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--tracker", choices=PRESETS, default=DEFAULT_PRESET,
                     help=f"association preset (default {DEFAULT_PRESET}; V0 = original strict rule); VABC turns on appearance (opt-in); "
-                         "VABS scales the Kalman noise with box height (trial)")
+                         "VABS = VAB + Kalman noise proportional to box height")
     ap.add_argument("--reid", action="store_true", help="opt-in: in-memory appearance embeddings for contested cases")
     ap.add_argument("--no-gmc", action="store_true")
     ap.add_argument("--fixed-noise", action="store_true",

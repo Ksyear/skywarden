@@ -8,7 +8,7 @@
 - **검증 우선.** 모든 산출물에 출처 라벨(`REAL_VIDEO` / `PUBLIC_DATASET` / `SIMULATED` / `MOCK`)과 신뢰 라벨(검증됨 / 모델 추정 / 미검증)을 붙이고, 합격 기준은 실행 전에 정해 결과를 보고 바꾸지 않습니다. 기준을 못 넘은 변경은 기본값으로 켜지 않고 trial로 남깁니다.
 - **안전 게이트.** 출력 단계는 `HARDWARE_ARMED=false`·루프백 전용이 기본이며, 판단이 애매하면(두 사람이 겹쳐 구분이 안 됨 등) 추격 대신 정지합니다.
 - **관측 가능성.** 처리 시간·지연·누락 프레임·품질 판정·추적 상태를 기록하고 콘솔에서 바로 보여 줍니다.
-- **재현성.** 고정 시드, 원시 증거 보관, 테스트 204개와 CI, 공개 데이터셋만 사용.
+- **재현성.** 고정 시드, 원시 증거 보관, 테스트 206개와 CI, 공개 데이터셋만 사용.
 
 ![Skywarden 데모: 복도 지도 따라가기·회전·거리 재기](docs/media/skywarden_demo.gif)
 
@@ -27,7 +27,7 @@
 ## 무엇을 하는가
 
 1. **카메라 영상 → 3D 지도.** 영상을 프레임으로 고르고 pycolmap(COLMAP) SfM으로 희소 지도와 카메라 궤적을 만든 뒤, CPU 평면 스윕 MVS로 여러 뷰에서 확인된 점만 밀집 점군으로 더합니다. 지도마다 품질 판정(GOOD / PARTIAL / POOR)을 고정 임계값으로 기록합니다.
-2. **사람 검출·추적.** YOLOX-nano(ONNX, OpenCV DNN, CPU)와 Kalman 다중 추적기. 기본 연관은 **마진 연관 + 카메라 움직임 보정**(`VAB`): 두 사람이 가까워져도 증거(위치·박스 크기)가 분명히 갈릴 때만 구분하고, 아니면 대상을 `AMBIGUOUS`로 두고 정지합니다. 외모 임베딩(`--reid`)과 박스 크기 비례 잡음(`--tracker VABS`)은 선택 기능입니다.
+2. **사람 검출·추적.** YOLOX-nano(ONNX, OpenCV DNN, CPU)와 Kalman 다중 추적기. 기본값 `VABS`는 **마진 연관 + 카메라 움직임 보정 + 박스 크기에 비례하는 측정 잡음**입니다: 두 사람이 가까워져도 증거(위치·박스 크기)가 분명히 갈릴 때만 구분하고, 아니면 대상을 `AMBIGUOUS`로 두고 정지하며, 화면을 채우는 큰 사람도 정상 흔들림 때문에 놓치지 않습니다. 외모 임베딩(`--reid`)은 선택 기능입니다.
 3. **MOCK 드론 제어.** yaw 전용 PID → Tello SDK 2.0 텍스트 프로토콜 → 루프백 UDP `MockTello`. 실기체로는 아무것도 보내지 않습니다.
 4. **라이다 없는 미터 스케일.** 지도 파일은 상대 스케일 그대로 두고, 인쇄 마커·두 점 실측·(MOCK) 텔레메트리 높이로 "지도 1단위 = 몇 m"를 별도 `scale.json`에 측정합니다. 독립 검증 길이 2개가 모두 5 % 이내일 때만 "확인됨"으로 표시합니다.
 5. **로컬 콘솔.** `127.0.0.1` 전용 HTTP 서버 + WebGL 점군 뷰어(Mapping / Tracking / Live 탭, 거리 재기 도구).
@@ -44,13 +44,13 @@
 | 검증 밀집 점군 (CPU) | 같은 두 지도 | PASS | 917,498점 / 1,942,876점 | [EXPERIMENTS](docs/EXPERIMENTS.md) |
 | 미터 스케일, 정답 있는 실제 녹화 | TUM fr1/desk (Kinect 깊이·모션캡처 정답) | 1차 FAIL → 2차 PASS | 1차 −11.8 %; 2차(책상 점) −1.24 %, 검증 0.16 % · 1.22 %. 2차 점 기준은 1차 결과를 본 뒤 정함 | [PLAN_METRIC_SCALE](docs/PLAN_METRIC_SCALE.md#10-결과) |
 | 미터 스케일, 항공 영상 | 테니스장 29 s (PUBLIC_DATASET) | 수치 PASS 3/3, `MEASURED_UNVERIFIED` | 검증 오차 4.906 / 0.477 / 4.925 % (규정 치수라 검증으로 세지 않음) | 같은 절 |
-| 다중 추적, 정답 있는 공개 데이터 | MOT17 train 보류 4개, YOLOX-nano (PUBLIC_DATASET) | PASS (사전 기준) | 원래 추적기 → 현재 기본 `VAB`: HOTA 20.30 → 25.99, IDF1 21.26 → 29.67, IDSW 532 → 364 | [PLAN_OCCLUSION_TRACKING](docs/PLAN_OCCLUSION_TRACKING.md#7-결과-2026-11-15-opus-실행작성) |
-| 교차·나란히 걷기에서 잘못된 대상 잠김 | 합성 E2 700회 + E2X 700회 (SIMULATED) | PASS | 잘못된 대상 LOCKED 프레임: 원래 115 → `VAB` 0 | 같은 절 |
-| 사람이 화면을 채울 때의 추적 | 위트레흐트 1080p 라이브 30 s (PUBLIC_DATASET) | trial (기본값 아님) | 대상 LOCKED: `VAB` 19.2 % → `VABS` 69.1 %; MOT17 보류 IDF1 29.67 → 32.46. 라이브 지연 p95 34.08 ms로 사전 속도 기준(≤ 33) 미달 | [PLAN_SCALE_AWARE_NOISE](docs/PLAN_SCALE_AWARE_NOISE.md#7-결과-2026-11-15-opus-실행작성) |
-| 라이브 실행, 원래 시간 기준 | 위트레흐트 1080p 30 s (PUBLIC_DATASET) | PASS | `VAB` 29.96 fps, 지연 p95 30.34 ms, 버린 프레임 1/900 | 같은 절 |
+| 다중 추적, 정답 있는 공개 데이터 | MOT17 train 보류 4개, YOLOX-nano (PUBLIC_DATASET) | PASS (사전 기준) | 원래 추적기 → `VAB` → 현재 기본 `VABS`: HOTA 20.30 → 25.99 → 28.25, IDF1 21.26 → 29.67 → 32.46, IDSW 532 → 364 → 213 | [겹침](docs/PLAN_OCCLUSION_TRACKING.md#7-결과-2026-11-15-opus-실행작성) · [잡음](docs/PLAN_SCALE_AWARE_NOISE.md#7-결과-2026-11-15-opus-실행작성) |
+| 교차·나란히 걷기에서 잘못된 대상 잠김 | 합성 E2 700회 + E2X 700회 (SIMULATED) | PASS | 잘못된 대상 LOCKED 프레임: 원래 115 → `VAB`·`VABS` 0; 4.5배 큰 박스 장면 `VAB` 46 → `VABS` 0 | 같은 절 |
+| 사람이 화면을 채울 때의 추적 | 위트레흐트 1080p 라이브 30 s (PUBLIC_DATASET) | 1차 FAIL(속도) → 재판정 PASS | 대상 LOCKED: `VAB` 19.2 % → `VABS` 69.1 %. 1차 단일 실행 지연 p95 34.08 ms로 미채택 → 속도 프로토콜을 측정 전에 다시 등록 → 새 5+5회 중앙값 `VABS` 29.98 ms / `VAB` 30.34 ms로 채택 | [PLAN_SCALE_AWARE_NOISE](docs/PLAN_SCALE_AWARE_NOISE.md#8-재판정-라이브-속도-프로토콜-1차-fail-뒤-측정-전에-추가-2026-11-15) |
+| 라이브 실행, 원래 시간 기준 | 위트레흐트 1080p 30 s (PUBLIC_DATASET) | PASS | `VABS` 5회 중앙값 29.95 fps, 지연 p95 29.98 ms, 버린 프레임 1/900 | 같은 절 |
 | 사람 검출+추적, 직접 촬영한 영상 | 복도 47 s, 사람 없음 (REAL_VIDEO) | 오검출만 확인 | 466 프레임 중 검출 5회 모두 회색 캐비닛(점수 0.36–0.59). 사람이 나오는 본인 영상은 NOT_RUN | [SYSTEM_STATUS](docs/SYSTEM_STATUS.md) |
 | 뷰어 렌더 (WebGL) | FSC 3,226,170점, dpr 1 / 2 | PASS | 프레임 p50 61.4 → 7.6 ms / 121.2 → 12.6 ms (이전 2D 캔버스 대비) | [VALIDATION_LOG](docs/VALIDATION_LOG.md) |
-| 자동 테스트 | pytest / ruff / UI 스모크 / GitHub Actions | PASS | 204 passed, ruff 통과, UI 118 passed · 0 failed · 4 skipped; CI(main) fast 180 passed / 12 skipped, full 196 passed / 1 skipped | [SYSTEM_STATUS](docs/SYSTEM_STATUS.md#9-테스트ci) |
+| 자동 테스트 | pytest / ruff / UI 스모크 / GitHub Actions | PASS | 206 passed, ruff 통과, UI 118 passed · 0 failed · 4 skipped; CI(main) fast 180 passed / 12 skipped, full 196 passed / 1 skipped | [SYSTEM_STATUS](docs/SYSTEM_STATUS.md#9-테스트ci) |
 
 ## 구조
 
@@ -88,7 +88,7 @@ PYTHONPATH=packages .venv/bin/python -m mapping.markers make --ids 0 1 --side-mm
 PYTHONPATH=packages .venv/bin/python -m mapping.cli scale markers outputs/maps/my_room_01 \
   --measurements assets/input/<clip>.measurements.json
 
-# 사람 추적, SIMULATED 폐루프(MockTello), 라이브 실행 (추적기: --tracker VAB 기본 | VABS | V0, --reid 선택)
+# 사람 추적, SIMULATED 폐루프(MockTello), 라이브 실행 (추적기: --tracker VABS 기본 | VAB | V0, --fixed-noise, --reid 선택)
 scripts/run_tracking.sh assets/input/<clip>.mp4 my_people_01 --origin REAL_VIDEO
 scripts/run_tracking_sim.sh
 PYTHONPATH=packages .venv/bin/python -m vision.live_run assets/input/<clip>.mp4 --session live_01 --rate realtime --max-seconds 30
@@ -114,7 +114,7 @@ node tests/ui/ui_smoke.mjs --attach http://127.0.0.1:9222   # 또는 --browser <
 
 - **지도는 상대 스케일입니다.** 실제 녹화에서 미터 스케일이 "확인됨"까지 간 것은 TUM fr1/desk 한 건이며 그 점 기준은 첫 시도가 실패한 뒤 정했습니다. 항공 테니스장의 폭 방향 4–5 % 체계 오차 원인은 확인하지 않았습니다.
 - **추적은 겹침에서 멈추는 쪽을 택합니다.** 두 사람이 붙어 있으면 대상이 `AMBIGUOUS`로 정지하고, 가림 뒤 같은 id 재획득은 위치·크기 증거가 분명할 때만 됩니다. 외모 임베딩(`--reid`)은 기준은 통과했지만 라이브 지연 p95 45.4 ms로 속도 기준을 넘지 못해 기본값이 아닙니다.
-- **사람이 화면을 채우면 기본 추적기가 자주 놓칩니다.** 고정 6 px 측정 잡음 때문에 정상 흔들림이 게이트 밖으로 빠져, 위트레흐트에서 대상 LOCKED가 19.2 %이고 4.5배 확대 합성 장면에서는 잘못된 대상 LOCKED 46프레임이 나왔습니다(F-34, F-35). 박스 크기 비례 잡음(`VABS`)이 둘 다 고치지만 판정 실행의 라이브 지연이 기준을 1.08 ms 넘어 기본값으로 켜지 않았습니다.
+- **사람이 화면을 채우는 장면은 아직 약 30 % 프레임에서 잠기지 않습니다.** 기본 `VABS`로 위트레흐트 대상 LOCKED가 19.2 → 69.1 %가 됐지만, 박스 아래가 화면에 잘려 중심이 크게 움직이는 프레임에서는 여전히 PREDICTING으로 빠집니다. AMBIGUOUS 뒤 재연결 규칙(0.15 × h)은 그보다 가까운 이웃을 막지 못하며, 손으로 만든 합성 장면 하나에서 이웃에게 잠기는 경우가 있었습니다(F-35). 이 기본값 채택은 1차 속도 판정 FAIL 뒤 새로 등록한 속도 기준으로 다시 판정한 결과입니다.
 - **MOT17 절대 수치는 낮습니다.** YOLOX-nano(416 px)가 1080p 군중의 작은 사람을 많이 놓쳐 HOTA 20–28대이며, 이 표는 추적기 변형 사이의 비교용입니다.
 - **직접 촬영한 영상은 실내 복도 한 편뿐입니다.** 사람이 나오지 않아 본인 영상의 추적 정확도는 확인하지 못했습니다. 실제 웹캠·실기체는 NOT_RUN입니다.
 - **한 대의 Mac에서만 측정했습니다.** 다른 OS·하드웨어는 NOT_RUN이고, GitHub Actions(macos-15)는 테스트만 돌립니다.

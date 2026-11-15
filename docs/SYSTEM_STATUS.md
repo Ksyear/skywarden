@@ -6,13 +6,13 @@
 
 ## 1. 한눈에 보기
 
-Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D 지도(pycolmap SfM)와 그 위의 CPU 밀집 점군을 만들고, (2) YOLOX-nano + Kalman 다중 추적기로 사람을 따라가며, (3) 그 결과를 yaw 전용 PID와 Tello SDK 2.0 Mock에 연결해 **비행 없이** 검증하는 로컬 macOS 프로젝트입니다. 지도·검출·추적·Mock 제어·라이브 실행·콘솔은 모두 동작하고, pytest 204개·UI 스모크 118개·GitHub Actions가 회귀를 막습니다.
+Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D 지도(pycolmap SfM)와 그 위의 CPU 밀집 점군을 만들고, (2) YOLOX-nano + Kalman 다중 추적기로 사람을 따라가며, (3) 그 결과를 yaw 전용 PID와 Tello SDK 2.0 Mock에 연결해 **비행 없이** 검증하는 로컬 macOS 프로젝트입니다. 지도·검출·추적·Mock 제어·라이브 실행·콘솔은 모두 동작하고, pytest 206개·UI 스모크 118개·GitHub Actions가 회귀를 막습니다.
 
 - 한 테이크 영상(스미다 60 s, FSC 항공 71 s, 직접 찍은 실내 복도 47 s)은 GOOD 지도가 나오고, 편집 영상과 고정 카메라 영상은 지도가 되지 않습니다(의도된 거부).
 - 모든 지도는 **상대 스케일**이고 항법에 쓸 수 없습니다(`NOT_NAVIGATION_SAFE`). 미터 스케일은 별도 `scale.json`으로만 붙습니다.
-- 추적 기본값은 2026-11-15 사전 기준으로 채택한 `VAB`(마진 연관 + 카메라 움직임 보정)입니다. 같은 날 박스 크기 비례 잡음(`VABS`)은 라이브 속도 기준 하나를 넘지 못해 trial로 남았습니다(4절).
+- 추적 기본값은 `VABS`(마진 연관 + 카메라 움직임 보정 + 박스 크기 비례 측정 잡음)입니다. `VAB`는 겹침 라운드에서 사전 기준으로 채택됐고, `VABS`는 1차 판정에서 단일 실행 라이브 지연으로 FAIL → 속도 프로토콜을 측정 전에 다시 등록 → 새 5+5회 측정으로 PASS해 채택됐습니다(4절).
 - 실기체 이륙·모터 명령·자동 추격은 없고(`HARDWARE_ARMED=false`), 유료 API·클라우드 추론도 없습니다.
-- 가장 큰 열린 게이트: **사람이 나오는 본인 영상**으로의 추적 실행, 그리고 추적 기본값 결정(F-35 vs 속도 기준).
+- 가장 큰 열린 게이트: **사람이 나오는 본인 영상**으로의 추적 실행.
 
 ## 2. 구성 요소별 현재 상태
 
@@ -24,12 +24,12 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 | PatchMatch 밀집 / Poisson 메시 | **차단 / trial** | PatchMatch는 pycolmap에서 CUDA 전용 → 이 Mac에서 차단. 메시는 시각 검사 FAIL | F-09 |
 | 학습형 깊이 모델 실행 (LingBot-Map, 별도 venv) | **동작 (외부 도구)** | 8 s 청크(겹침 2 s), 우리 경로에 Sim3 정렬, bfloat16·MPS 캐시 해제로 청크당 6–7 s. 약 1.7–2.6 frames/s, 최대 11.2 GB | `packages/learned/`, `outputs/evidence/learned_depth/` |
 | 모델 출력 표시 레이어 (`dense_zipstyle`, `dense_hybrid`, `dense_onpath`) | **trial (표시용)** | 모델 깊이를 우리 SfM 카메라에 놓고 이웃 일관성으로 거른 레이어. FSC 3,226,170점, 스미다 1,367,234점. **다중 뷰 검증이 아니라 모델 추정**으로 표시 | `outputs/evidence/learned_depth/steady_layer_v2.json` |
-| 사람 검출 (YOLOX-nano ONNX, OpenCV DNN CPU) | **동작** | 416 px, 점수 0.35. TUM walking 검출 p95 + 추적 p95 16.2 ms(`VAB`) | `outputs/evidence/scale_aware_noise/real_clips.json` |
-| 다중 추적 (`MultiTracker`, 기본 `VAB`) | **동작** | 만료 우선(2 s), 게이트 그래프, 마진 연관(증거가 갈릴 때만 경합 해제, AMBIGUOUS 뒤 0.15 × h 안에서만 재연결), 카메라 움직임 보정. 원래 추적기 대비 MOT17 보류 HOTA 20.30 → 25.99, IDF1 21.26 → 29.67, IDSW 532 → 364; 합성 잘못된 대상 115 → 0 | `outputs/evidence/occlusion_tracking/verdict.json` |
+| 사람 검출 (YOLOX-nano ONNX, OpenCV DNN CPU) | **동작** | 416 px, 점수 0.35. TUM walking 검출 p95 + 추적 p95 16.38 ms(`VABS`) | `outputs/evidence/scale_aware_noise/real_clips.json` |
+| 다중 추적 (`MultiTracker`, 기본 `VABS`) | **동작** | 만료 우선(2 s), 게이트 그래프, 마진 연관(증거가 갈릴 때만 경합 해제, AMBIGUOUS 뒤 0.15 × h 안에서만 재연결), 카메라 움직임 보정, 박스 크기 비례 측정 잡음(다음 행). `VAB` 단계에서 원래 추적기 대비 MOT17 보류 HOTA 20.30 → 25.99, IDF1 21.26 → 29.67, IDSW 532 → 364; 합성 잘못된 대상 115 → 0 | `outputs/evidence/occlusion_tracking/verdict.json` |
 | 외모 임베딩 (`--reid`, OSNet x0.25) | **trial (opt-in)** | 경합 판정·가림 뒤 재연결에만 사용, 메모리 전용, 얼굴 영역 지움. 기준 통과(IDSW 364 → 319)했지만 라이브 지연 p95 45.4 ms로 속도 탈락 | 같은 파일 |
-| 박스 크기 비례 측정 잡음 (`--tracker VABS`) | **trial** | σ = max(6 px, 0.025 × h). 위트레흐트 대상 LOCKED 19.2 → 69.1 %, MOT17 보류 IDF1 29.67 → 32.46, IDSW 364 → 213, 큰 박스 합성 잘못된 대상 46 → 0. 판정 실행 라이브 지연 p95 34.08 ms > 33 ms로 미채택 | `outputs/evidence/scale_aware_noise/verdict.json` |
+| 박스 크기 비례 측정 잡음 (기본 `VABS`, `--fixed-noise`로 끔) | **동작 (기본)** | σ = max(6 px, 0.025 × h). `VAB` 대비 위트레흐트 대상 LOCKED 19.2 → 69.1 %, MOT17 보류 IDF1 29.67 → 32.46, IDSW 364 → 213, 큰 박스 합성 잘못된 대상 46 → 0. 1차 속도 FAIL(단일 실행 p95 34.08 ms) 뒤 사전 등록한 5+5회 프로토콜로 재판정: 지연 p95 중앙값 29.98 vs 30.34 ms, 추적 시간 p95 2.92 vs 3.10 ms → 채택 | `outputs/evidence/scale_aware_noise/{verdict.json,verdict_speed.json}` |
 | yaw PID · 안전 게이트 · Tello EDU Mock | **동작 (MOCK 전용)** | `YawController`(클램프·anti-windup·STOP 사유), SDK 2.0 파서, 루프백 `MockTello`, `GeofenceGuard`(E3 PASS). 비루프백 송신 0회를 4가지 env 조합으로 테스트 | `adapters/tello/`, `tests/test_tello.py` |
-| 라이브 실행 (파일 원속도 / 최대 속도 / `webcam:N`) | **동작 (파일) / NOT_RUN (웹캠)** | 위트레흐트 1080p 30 s 원속도: `VAB` 29.96 fps, 지연 p95 30.34 ms, 버림 1/900. 이 Mac에 카메라가 없어 `webcam:0`은 `NO_DEVICE`로 올바르게 FAILED | `outputs/evidence/scale_aware_noise/real_clips.json`, `outputs/evidence/live/` |
+| 라이브 실행 (파일 원속도 / 최대 속도 / `webcam:N`) | **동작 (파일) / NOT_RUN (웹캠)** | 위트레흐트 1080p 30 s 원속도: `VABS` 5회 중앙값 29.95 fps, 지연 p95 29.98 ms, 버림 1/900. 이 Mac에 카메라가 없어 `webcam:0`은 `NO_DEVICE`로 올바르게 FAILED | `outputs/evidence/scale_aware_noise/real_clips.json`, `outputs/evidence/live/` |
 | 단안 VO | **trial** | 상대 스케일, 루프 클로저·재측위 없음. 합성 ATE 1.82 % PASS, 스미다 vs SfM 23.3 %(기준 15 %) FAIL | F-10 |
 | 미터 스케일 (`scale.json`: 마커·두 점·텔레메트리) | **동작 (공개 데이터) / NOT_RUN (본인 마커 영상)** | 합성 마커 같은 벽 +0.39 %; TUM 두 점 1차 −11.8 % FAIL, 2차 −1.24 % `MEASURED_VERIFIED`(사후 기준); 테니스장 4.906 / 0.477 / 4.925 % `MEASURED_UNVERIFIED`; MockTello 높이 0.0025 % | `docs/PLAN_METRIC_SCALE.md` 10절 |
 | 미터 깊이 모델 시험 (4종, MPS) | **trial (참고용)** | TUM 깊이 스케일 오차 −2.27 / −4.53 / +48.19 / +1.73 %. 대체 후보 없음, 항공에서 모델 간 최대 10.96배 차이 | `outputs/evidence/metric_scale/metric_models_summary.json` |
@@ -55,7 +55,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 
 ## 4. 사람 추적 현황 (2026-11-15)
 
-| 지표 | 원래(`V0`) | 현재 기본 `VAB` | trial `VABS` | 근거 |
+| 지표 | 원래(`V0`) | 이전 기본 `VAB` | 현재 기본 `VABS` | 근거 |
 |---|---|---|---|---|
 | E2 700회 잘못된 대상 LOCKED / K1–K3 | 0 / PASS | 0 / PASS | 0 / PASS | `occlusion_tracking/`, `scale_aware_noise/verdict.json` |
 | E2X 잘못된 대상 LOCKED (14조건 × 50) | 115 | 0 | 0 | 같음 |
@@ -64,9 +64,9 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 | MOT17 보류 4개, YOLOX-nano: HOTA / IDF1 / IDSW | 20.30 / 21.26 / 532 | 25.99 / 29.67 / 364 | 28.25 / 32.46 / 213 | `*/mot17/scores_heldout_yolox_nano.json` |
 | 위트레흐트 라이브 30 s: 대상 LOCKED / 지연 p95 | 17.8 % / 27.5 ms | 19.2 % / 30.34 ms | 69.1 % / 34.08 ms | `*/real_clips.json` |
 
-(`V0` 열은 겹침 라운드, `VAB`·`VABS` 열은 이번 라운드 측정. `VAB`의 위트레흐트 값은 겹침 라운드에서 19.3 % / 30.2 ms였습니다.)
+(`V0` 열은 겹침 라운드, `VAB`·`VABS` 열은 이번 라운드 1차 측정. 재판정 5+5회 중앙값: 대상 LOCKED 0.195 / 0.682, 지연 p95 30.34 / 29.98 ms, 추적 시간 p95 3.10 / 2.92 ms — `verdict_speed.json`.)
 
-읽는 법: 정지(AMBIGUOUS, PREDICTING)는 안전한 실패이고 잘못된 대상 LOCKED는 위험한 실패입니다. `VAB`는 사람이 작게 보이는 장면에서 위험한 실패를 없앴지만, 사람이 화면을 채우면 고정 6 px 잡음 때문에 대상을 자주 놓치고 확대 합성 장면에서 잘못된 대상 잠김이 생깁니다(F-34, F-35). `VABS`가 둘 다 고치지만 사전 등록한 라이브 속도 기준(p95 ≤ 33 ms)을 판정 실행에서 1.08 ms 넘었습니다. 추가 반복 두 번은 30.81 / 30.33 ms였고(판정에 쓰지 않음), 기본값 전환은 새 기준으로 다시 판정할 일입니다.
+읽는 법: 정지(AMBIGUOUS, PREDICTING)는 안전한 실패이고 잘못된 대상 LOCKED는 위험한 실패입니다. `VAB`는 사람이 작게 보이는 장면에서 위험한 실패를 없앴지만, 사람이 화면을 채우면 고정 6 px 잡음 때문에 대상을 자주 놓치고 확대 합성 장면에서 잘못된 대상 잠김이 생겼습니다(F-34, F-35). `VABS`가 둘 다 고칩니다. 채택 과정은 공개합니다: 사전 등록한 단일 실행 속도 기준에서 34.08 ms로 FAIL → 비판정 반복 2회(30.81 / 30.33 ms)를 본 뒤 더 엄격한 중앙값·차이·추적 시간 기준을 측정 전에 등록(`docs/PLAN_SCALE_AWARE_NOISE.md` 8절, 커밋 `d73f2f8`) → 새 10회로 PASS.
 
 ## 5. 장점
 
@@ -82,7 +82,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 - **지도는 상대 스케일이고 항법용이 아닙니다.** 실제 녹화에서 미터 스케일 검증까지 간 것은 TUM fr1/desk 한 건이며 그 점 기준은 사후에 정했습니다. 테니스장 폭 방향 4–5 % 체계 오차 원인은 미확인. 박스 크기로 거리 추정은 E1(p95 61–90 %) 때문에 금지.
 - **밀집 지도의 채택된 개선이 없습니다.** 기본 레이어는 카메라 앞 보도가 대부분 비어 있습니다.
 - **모델 출력 레이어는 검증이 아닙니다.** 항공 영상에서 모델이 먼 지면을 카메라 쪽으로 눌러(우리 점 대비 1.5–5배) 지지 없는 픽셀은 버립니다. 스미다 강물 반사는 우리 희소 지도에서도 가짜 점이 됩니다.
-- **추적은 겹침에서 멈춥니다.** 두 사람이 붙어 있으면 대상이 AMBIGUOUS로 정지하고, 재획득은 위치·크기 증거가 분명할 때만 됩니다. 기본 `VAB`는 사람이 화면을 채우면 자주 PREDICTING으로 빠지고(위트레흐트 LOCKED 19.2 %) 확대 합성 장면에서 잘못된 대상 잠김 46프레임(F-35). AMBIGUOUS 뒤 재연결 규칙(0.15 × h)은 그보다 가까운 이웃을 막지 못합니다.
+- **추적은 겹침에서 멈춥니다.** 두 사람이 붙어 있으면 대상이 AMBIGUOUS로 정지하고, 재획득은 위치·크기 증거가 분명할 때만 됩니다. 기본 `VABS`에서도 위트레흐트 대상은 약 30 % 프레임에서 잠기지 않습니다(박스 아래가 화면에 잘린 프레임 등). AMBIGUOUS 뒤 재연결 규칙(0.15 × h)은 그보다 가까운 이웃을 막지 못하고, 손으로 만든 합성 장면 하나에서 `VABS`가 이웃에게 잠겼습니다(F-35).
 - **MOT17 절대값은 낮습니다.** YOLOX-nano(416)가 1080p 군중의 작은 사람을 많이 놓쳐 변형 간 비교용입니다.
 - **VO는 보정 카메라가 필요**하고(F-10), 재측위·지도 위 위치는 미구현입니다.
 - **편집 영상·고정 카메라·사람이 화면을 채우는 영상**은 지도가 안 되거나 PARTIAL입니다(방콕 POOR, 몬트리올 거부, 위트레흐트 PARTIAL).
@@ -121,7 +121,7 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 
 ## 9. 테스트·CI
 
-- **로컬(2026-11-15, 이번 라운드):** pytest **204 passed**, ruff 통과, UI 스모크 **118 passed / 0 failed / 4 skipped**(이미 열린 브라우저에 `--attach`; 4 skip은 아카이브된 레이어를 이유와 함께 기록). 증거 `outputs/evidence/scale_aware_noise/{pytest_full.log,ruff.log,ui_smoke.log}`.
+- **로컬(2026-11-15, 이번 라운드):** pytest **206 passed**(재판정·기본값 변경 뒤), ruff 통과, UI 스모크 **118 passed / 0 failed / 4 skipped**(이미 열린 브라우저에 `--attach`; 4 skip은 아카이브된 레이어를 이유와 함께 기록). 증거 `outputs/evidence/scale_aware_noise/{pytest_full_rejudge.log,ruff_rejudge.log,ui_smoke_rejudge.log}`.
 - **GitHub Actions(macos-15):** main의 최신 실행 43673521558(겹침 추적 병합) — fast 잡 180 passed / 12 skipped / 5 deselected, full 잡(가중치·샘플 영상 받은 뒤) 196 passed / 1 skipped, 둘 다 success. 이번 브랜치는 아직 푸시하지 않아 CI 미실행.
 - 간헐 실패 3건(빌드·라이브 자식 프로세스 종료 경쟁, 테스트 보조 클래스 음수 sleep, 느린 러너의 텔레메트리 기록기 경쟁)은 2026-11-15에 고쳤습니다. 이력과 이전 실행 수치는 `docs/VALIDATION_LOG.md`.
 
@@ -129,12 +129,12 @@ Skywarden은 **카메라 한 대의 영상만으로** (1) 오프라인 희소 3D
 
 - 공개 저장소 `Ksyear/skywarden`은 2026-11-15(KST) **새로 만들어** 기존 커밋 이력을 그대로 올렸습니다. 그래서 GitHub의 PR 번호는 **#1부터 다시 시작**했고(현재 #1 = 겹침 추적, 병합 `dc849a6`), 커밋 메시지에 남은 예전 번호(`Merge pull request #1/#9/#10/#11`)는 이전 저장소의 번호라 지금 GitHub의 PR과 다릅니다.
 - 이전 저장소에서 병합된 주요 작업(커밋 해시): E2·E3 실험 `50bd108`, 미터 스케일·WebGL 뷰어·CI `b9060cd`, 학습 깊이·steady 레이어·overview 지도 `74341e4`, CI 안정화·복도 영상 `REAL_VIDEO` 기록 `8a1b824`; 새 저장소에서 라이선스(Apache-2.0)·NOTICE·데모 영상 `431e0dd`, 겹침 추적 `dc849a6`.
-- 이번 라운드 브랜치 `feat/scale-aware-noise`(로컬 커밋만, 푸시·PR 전).
+- 이번 라운드 브랜치 `feat/scale-aware-noise`(로컬 커밋만, 푸시·PR 전): 계획 `4b60e85` → 코드 → 1차 결과 문서 → 재판정 프로토콜 `d73f2f8` → 재측정·기본값 변경.
 
 ## 11. 다음 할 일 (우선순위)
 
-1. **추적 기본값 결정:** `VAB`(F-35: 큰 박스 잘못된 대상 잠김)와 `VABS`(판정 실행 라이브 p95 34.08 ms) 중 하나. 여러 번 실행한 p95 중앙값 같은 속도 기준을 새로 사전 등록해 다시 판정.
-2. AMBIGUOUS 뒤 재연결 규칙을 0.15 × h보다 가까운 이웃에도 안전하게(F-35의 합성 사례), GMC 스케일 누적으로 가림 중 박스가 커지는 문제.
+1. AMBIGUOUS 뒤 재연결 규칙을 0.15 × h보다 가까운 이웃에도 안전하게(F-35의 합성 사례; 기본값 `VABS`에서 게이트가 커져 더 중요해짐).
+2. GMC 스케일 누적으로 가림 중 트랙 박스가 커지는 문제.
 3. 사람이 나오는 본인 영상으로 `scripts/run_tracking.sh … --origin REAL_VIDEO` → 본인 영상 추적 게이트. 복도 캐비닛 오검출(점수 0.36–0.59)과 임계값 0.35의 관계도 함께.
 4. 미터 스케일: 마커 2장 + 줄자 길이 2개를 넣은 본인 영상으로 실행(`docs/PLAN_METRIC_SCALE.md` 7절); 테니스장 폭 방향 오차 원인 확인.
 5. 모델 출력 레이어 점검: 스미다 28–38 s 보정 구간의 다중 뷰 일치, 반사면 점 거르기 규칙.
