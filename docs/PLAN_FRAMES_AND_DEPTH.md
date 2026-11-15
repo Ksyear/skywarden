@@ -77,7 +77,7 @@ Written 2026-11-09 after the runs, from `outputs/evidence/frames_depth/summary.j
 | F1b + D12 combination (Sumida) | run although neither part passed alone (deviation); **FAIL** | `runs.F1bD12_full` |
 | Time clause (5) | **UNMEASURED_QUIET** | every full-clip time was measured while other jobs ran in parallel (the user asked for parallel work), so no dense time is valid for the clause; values are reported, not judged |
 | "Mirage" family of methods | researched; **no-go** | `outputs/evidence/frames_depth/research_mirage.md` |
-| Learned multi-view depth model (the route to a filled, dense look like the reference recording of an indoor dense reconstruction supplied by the user) | **BLOCKED** | installing external model code / weights was refused by the session's permission check; needs the user's approval. The user stated the project is personal and non-commercial, so non-commercial weights would be acceptable licence-wise; nothing was installed. |
+| Learned multi-view depth model (the route to a filled, dense look) | **BLOCKED** | installing external model code / weights was refused by the session's permission check; needs the user's approval. The user stated the project is personal and non-commercial, so non-commercial weights would be acceptable licence-wise; nothing was installed. |
 
 ### Path (clause 3) — F1b vs the fixed 3 fps baseline
 
