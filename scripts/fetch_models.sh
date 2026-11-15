@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Download the pinned YOLOX person-detector weights (Apache-2.0) into data/models/yolox and verify sha256.
-# Usage: scripts/fetch_models.sh [yolox_nano|yolox_tiny ...]   (default: yolox_nano yolox_tiny)
+# Usage: scripts/fetch_models.sh [yolox_nano|yolox_tiny|reid ...]   (default: yolox_nano yolox_tiny)
+# "reid" (opt-in appearance model, non-commercial research weights) is not downloaded as ONNX: it is exported once
+# from the pinned upstream weights in a separate venv with torch (see data/models/reid/SOURCE.md); this only checks it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="$ROOT/data/models/yolox"
@@ -11,6 +13,14 @@ sha_for() { case "$1" in
   yolox_tiny) echo 427cc366d34e27ff7a03e2899b5e3671425c262ea2291f88bb942bc1cc70b0f7 ;;
   *) echo "unknown model $1" >&2; exit 2 ;; esac; }
 for m in "${@:-yolox_nano yolox_tiny}"; do for name in $m; do
+  if [[ "$name" == "reid" ]]; then
+    f="$ROOT/data/models/reid/osnet_x0_25_market1501.onnx"; want=3900a122fe9a02c1fc7a6f9cf3a4b03d61670d6527d953e34723f29188385c58
+    if [[ -f "$f" ]] && [[ "$(shasum -a 256 "$f" | cut -d' ' -f1)" == "$want" ]]; then echo "ok   reid (already present)"; continue; fi
+    echo "reid: $f missing or different. Create it with:" >&2
+    echo "  python3 -m venv outputs/tools/venv_reid_export && outputs/tools/venv_reid_export/bin/pip install torch==2.15.0 onnx onnxscript" >&2
+    echo "  outputs/tools/venv_reid_export/bin/python scripts/export_reid_onnx.py   # prints the ONNX sha256" >&2
+    exit 1
+  fi
   want="$(sha_for "$name")"; f="$DIR/$name.onnx"
   if [[ -f "$f" ]] && [[ "$(shasum -a 256 "$f" | cut -d' ' -f1)" == "$want" ]]; then echo "ok   $name (already present)"; continue; fi
   curl -fL --retry 2 -o "$f.part" "$BASE/$name.onnx"

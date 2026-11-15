@@ -330,6 +330,7 @@ try {
     await evaluate(`[...document.querySelectorAll('#t-runs button')].find(b => b.querySelector('.sid').textContent === '${TRACK}').click()`);
     check(TRACK_CHECKS[0], await waitFor(`document.getElementById('t-empty').hidden && document.getElementById('t-badges').textContent.includes('REAL_MODEL') && document.getElementById('t-badges').textContent.includes('yolox_nano')`), await text("t-badges"));
     check(TRACK_CHECKS[1], (await text("tm-acc")).includes("undefined"), await text("tm-acc"));
+    check("association mode shown for the recorded run", /^assoc (strict|margin)/.test(await text("tm-assoc")), await text("tm-assoc"));
     const rec = await (await fetch(`${BASE}/api/tracks/${TRACK}/files/tracks.json`)).json();
     check(TRACK_CHECKS[2], (await text("t-count")).includes(`/ ${rec.frames.length}`), await text("t-count"));
     // jump to the first frame whose lowest-id LOCKED track is also the first entry of the list (key 1)

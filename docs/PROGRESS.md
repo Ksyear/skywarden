@@ -252,6 +252,21 @@ Written by Opus (Fable 한도로 대체, 사용자 지시) from `outputs/evidenc
 | PQ UI smoke reproducibility and count (Q-04, U-01, U-02) | PASS | `ui_smoke_final.log` (110 passed / 6 failed), `ui_smoke_run2.log`, `ui_smoke_final_opus.log` (**117 passed / 0 failed / 4 skipped**), `u01_check_count.json` | The 6 Measure failures came from the longer scale badge wrapping the top bar onto a second line, which moved the map canvas under the test's clicks; fixed. The 4 skips name archived layers. The earlier 88 → 71 drop is explained in `u01_check_count.json`. Live-tab STALE_DATA / STALLED / FAILED / INCOMPLETE / CANCELLED now asserted in the browser. |
 | PQ README screenshots | PASS (files present) | `outputs/evidence/portfolio/screens/` (8 PNG, `screens.json`, `portfolio_shots.log`); copies in `docs/images/` | Four resized copies used in `README.md`. |
 
+## OT (2026-11-15): occlusion / crossing tracking — status
+
+Written by Opus 5.5 (user instruction: Opus takes over planning and docs) from `outputs/evidence/occlusion_tracking/`. Plan with criteria fixed before measuring: `docs/PLAN_OCCLUSION_TRACKING.md` (SHA-256 of sections 0–6 in `prereg.json`). Branch `feat/occlusion-tracking`, uncommitted.
+
+| Milestone / exit test | Status | Evidence | Notes / limits |
+|---|---|---|---|
+| OT-0 strict mode unchanged | PASS | `e2_V0/` vs `outputs/evidence/e2_two_person_fix_v3/` | E2 summary, verdict, control path and `e2_runs.csv` byte-identical with the new code at default settings. |
+| OT-1 ground-truth data and scorer | PASS | `data/public/mot17/SOURCE.md`, `mot17_sanity/` | MOT17 train (CC BY-NC-SA 3.0, local only, no frames in the repo); TrackEval in a separate venv; ground truth scored as a tracker = HOTA/IDF1/MOTA 100. |
+| OT-2 calibration (calibration split + E2 only) | DONE | `calibration_decision.json`, `calib/`, `calib2/`, `reid_calibration.json` | Margin 4, size term on; low-score stage, ORU, direction term off (no calibration gain). ReID same/different cosine distance p50 0.10 / 0.42, AUC 0.99 on GT boxes. |
+| OT-3 stage A (margin association) | FAIL | `verdict.json` | Safety PASS, AMBIGUOUS −68 %, but MOT17 held-out IDSW 532 → 620 (+16.5 % > +5 %). Kept as trial preset `VA`. |
+| OT-4 stage B (A + camera motion compensation) | PASS → default | `verdict.json`, `real_clips.json` | vs V0: wrong-target frames 115 → 0 (E2X), IDSW 532 → 364, IDF1 21.26 → 29.67, HOTA 20.30 → 25.99 (MOT17 held-out, YOLOX-nano); live p95 30.2 ms. App/CLI default preset `VAB`. |
+| OT-5 stage C (A + B + appearance) | PASS on criteria, FAIL speed → opt-in | `verdict.json`, `real_clips.json` | IDSW 364 → 319, IDF1 29.67 → 30.51; live p95 45.4 ms > 33 ms. Off by default (pre-declared), `--reid` to enable; embeddings memory-only. |
+| OT-6 tests, lint, UI | PASS | `pytest_full.log` (197 passed), `ruff.log`, `ui_smoke.log` (118 / 0 / 4 skipped), `ui_assoc_check.log` | Tracking tab shows one line `association …` from the run's report. |
+| OT-7 post-hoc changes disclosed | NOTE | `round2_changes.json`, `round1/` | Re-connection guard and CLEAR-MOT-style E2X IDSW added after round 1; MOT17 held-out scored twice. |
+
 ## Remaining TODO (ordered)
 
 1. REAL_VIDEO gate with a user clip (command above); record the report path in `docs/VALIDATION_LOG.md`.

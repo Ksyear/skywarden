@@ -41,9 +41,10 @@ import cv2
 import numpy as np
 
 from mapping.frame_source import InputError
-from tracking.tracker import MultiTracker, TargetSelector, TargetState, TrackerConfig, TrackState
+from tracking.tracker import TargetSelector, TargetState, TrackerConfig, TrackState
 from control.yaw_controller import YawController
 
+from . import tracker_setup
 from . import vo as vo_mod
 from .live_source import LatestFrameBuffer, LiveSource, NoDevice, SourceFrame, open_live
 from .person_detector import ModelUnavailable, make_detector, sha256_file
@@ -344,7 +345,7 @@ class _LiveRun:
 
         status.stage("LOAD_MODEL", f"loading {req.model}" if self.pipeline is None else "using injected pipeline")
         if self.pipeline is None:
-            det = make_detector(req.model, score_thr=req.score_thr)
+            det = make_detector(req.model, score_thr=tracker_setup.detector_threshold(req.score_thr, req.tracker))
             self.pipeline = lambda img, _f: det.detect(img)  # noqa: E731
             report["detector"] = det.info()
             self.last_ms = lambda: det.last_ms  # noqa: E731
@@ -362,9 +363,12 @@ class _LiveRun:
         report["intrinsics"] = intr
         settings = {k: (str(v) if isinstance(v, Path) else v) for k, v in req.__dict__.items() if k != "tracker"}
         settings["tracker"] = req.tracker.__dict__
+        settings["tracker_mode"] = req.tracker.describe()
         report["settings"] = settings
 
-        self.tracker = MultiTracker(req.tracker)
+        self.embedder = tracker_setup.make_embedder(req.tracker)
+        self.tracker_cfg = tracker_setup.stage_config(req.tracker, req.score_thr)
+        self.tracker = tracker_setup.make_tracker(self.tracker_cfg, self.embedder)
         self.selector = TargetSelector()
         self.ctl = YawController(self.native_w)
 
@@ -451,7 +455,7 @@ class _LiveRun:
         self.epoch = getattr(source, "epoch", self.epoch + 1)
         self.buf.drain()
         nxt = self.tracker._next_id
-        self.tracker = MultiTracker(self.req.tracker)
+        self.tracker = tracker_setup.make_tracker(self.tracker_cfg, self.embedder)  # appearance dies with the old tracks
         self.tracker._next_id = nxt  # ids stay unique within the run, so a replay can never confuse two epochs
         self.selector = TargetSelector()
         self.target_state = TargetState.SEARCHING
@@ -595,7 +599,7 @@ class _LiveRun:
         dets = self.pipeline(f.image, f)
         dms = self.last_ms() if self.last_ms else (time.monotonic() - p0) * 1000
         self.det_ms.append(dms)
-        tracks = self.tracker.update(f.media_t, dets)
+        tracks = self.tracker.update(f.media_t, dets, frame=f.image)
         self.target_state, ttrack = self.selector.evaluate(self.tracker)
         target_state = self.target_state
         m_now = self.source.media_now()
@@ -757,6 +761,9 @@ class _LiveRun:
             "proc_ms": {"p50": _pct(proc_ms, 50), "p95": _pct(proc_ms, 95)},
             "detect_ms": {"p50": _pct(det_ms, 50), "p95": _pct(det_ms, 95)},
             "vo_ms": {"p50": _pct(vo_ms, 50), "p95": _pct(vo_ms, 95)},
+            "tracker_mode": self.req.tracker.describe(),
+            "tracker_stats": dict(self.tracker.stats.__dict__) if getattr(self, "tracker", None) else None,
+            "reid": self.embedder.summary() if getattr(self, "embedder", None) is not None else None,
             "processed_fps": round((len(frame_rows) - 1) / active, 2) if active > 0 else None,
             "processed_fps_definition": "(frame rows - 1) / (run_t first->last frame row minus operator-paused seconds)",
             "paused_seconds": round(paused_s, 3),
@@ -827,6 +834,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-vo", action="store_true")
     ap.add_argument("--max-seconds", type=float)
     ap.add_argument("--verify", metavar="SESSION_DIR", help="only run the completeness check on a finished run")
+    tracker_setup.add_args(ap)
     a = ap.parse_args(argv)
     if a.verify:
         res = verify_run(a.verify)
@@ -836,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("source is required")
     sid = a.session or datetime.now().strftime("run-%Y%m%d-%H%M%S")
     req = RunRequest(a.source, Path(a.runs_root) / sid, a.rate, a.model, a.score_thr, a.max_seconds, not a.no_vo,
-                     a.vo_width, a.fx, a.calib)
+                     a.vo_width, a.fx, a.calib, tracker=tracker_setup.config_from_args(a))
     cancel = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: cancel.set())

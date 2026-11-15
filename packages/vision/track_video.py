@@ -28,8 +28,9 @@ import numpy as np
 
 from mapping.frame_source import InputError, open_source
 from mapping.labels import DataOrigin
-from tracking.tracker import MultiTracker, TrackerConfig, TrackState
+from tracking.tracker import TrackerConfig, TrackState
 
+from . import tracker_setup
 from .person_detector import ModelUnavailable, make_detector
 
 STAGES = ["LOAD_MODEL", "DETECT_TRACK", "EXPORT"]
@@ -119,15 +120,16 @@ def run_tracking(req: TrackRequest, cancel: threading.Event | None = None) -> di
                     "labels": {"detector_source": "REAL_MODEL", "data_origin": req.origin.value,
                                "playback": "RECORDED_CLIP", "control": "NONE (commands are computed only in the UI replay, MOCK)"},
                     "settings": {"target_fps": req.target_fps, "max_frames": req.max_frames, "score_thr": req.score_thr,
-                                 "tracker": req.tracker.__dict__}}
+                                 "tracker": req.tracker.__dict__, "tracker_mode": req.tracker.describe()}}
     frames: list[dict] = []
     image_wh = None
     det_ms: list[float] = []
     trk_ms: list[float] = []
     try:
         status.stage("LOAD_MODEL", f"loading {req.model} (verifying sha256)")
-        det = make_detector(req.model, score_thr=req.score_thr)
+        det = make_detector(req.model, score_thr=tracker_setup.detector_threshold(req.score_thr, req.tracker))
         report["detector"] = det.info()
+        embedder = tracker_setup.make_embedder(req.tracker)
         src = open_source(req.input_path)
         nominal = src.nominal_fps()
         step = max(1, int(round(nominal / req.target_fps))) if nominal else 1
@@ -136,7 +138,7 @@ def run_tracking(req: TrackRequest, cancel: threading.Event | None = None) -> di
         report["input"].update({"kind": src.kind, "nominal_fps": nominal, "frames_total": total, "step": step})
 
         status.stage("DETECT_TRACK", f"detecting people in {expected} frames ({req.model}, CPU)")
-        tracker = MultiTracker(req.tracker)
+        tracker = tracker_setup.make_tracker(tracker_setup.stage_config(req.tracker, req.score_thr), embedder)
         t_first = None
         for k, fr in enumerate(src.frames(step)):
             if k >= req.max_frames:
@@ -151,7 +153,7 @@ def run_tracking(req: TrackRequest, cancel: threading.Event | None = None) -> di
             dets = det.detect(fr.image)
             det_ms.append(det.last_ms)
             p0 = time.perf_counter()
-            tracks = tracker.update(t, dets) if k == 0 or t > frames[-1]["t"] else tracker.active()
+            tracks = tracker.update(t, dets, frame=fr.image) if k == 0 or t > frames[-1]["t"] else tracker.active()
             trk_ms.append((time.perf_counter() - p0) * 1000)
             s = min(1.0, JPEG_LONG_SIDE / max(w, h))
             img = cv2.resize(fr.image, (int(round(w * s)), int(round(h * s))), interpolation=cv2.INTER_AREA) if s < 1 else fr.image
@@ -185,6 +187,7 @@ def run_tracking(req: TrackRequest, cancel: threading.Event | None = None) -> di
                                 "frames_without_person": sum(1 for f in frames if not f["detections"])}
         report["tracks"] = _track_stats(frames, duration)
         report["tracker_stats"] = tracker.stats.__dict__
+        report["reid"] = embedder.summary() if embedder is not None else None
         report["accuracy"] = {"MOTA": None, "IDF1": None, "reason": "undefined: this input has no ground-truth person boxes"}
         report["status"] = "SUCCEEDED"
         msg = f"{len(frames)} frames · {report['tracks']['tracks_confirmed']} confirmed tracks · detect p50 {report['timing']['detect_ms_p50']} ms"
@@ -215,9 +218,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fps", type=float, default=10.0)
     ap.add_argument("--max-frames", type=int, default=600)
     ap.add_argument("--score-thr", type=float, default=0.35)
+    tracker_setup.add_args(ap)
     a = ap.parse_args(argv)
     sid = a.session or datetime.now().strftime("track-%Y%m%d-%H%M%S")
-    req = TrackRequest(Path(a.input), Path(a.tracks_root) / sid, DataOrigin(a.origin), a.model, a.fps, a.max_frames, a.score_thr)
+    req = TrackRequest(Path(a.input), Path(a.tracks_root) / sid, DataOrigin(a.origin), a.model, a.fps, a.max_frames, a.score_thr,
+                       tracker_setup.config_from_args(a))
     cancel = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: cancel.set())
