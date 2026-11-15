@@ -317,7 +317,7 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 
 **Status:** closed as a blocker. Was BLOCKED (installation refused by the session's permission check); the user approved; the model (LingBot-Map, Apache-2.0) was installed as an external tool in a separate environment under `outputs/tools/` (not committed) and run under `docs/PLAN_LEARNED_DEPTH.md` with Amendment A1. The outcomes of that round are F-27 to F-32 below; the per-clause verdicts are in the plan's Result. "Mirage" family researched separately: no-go.
 
-**Observed:** the route most likely to give a filled, dense look comparable to the reference recording of an indoor dense reconstruction supplied by the user is a learned multi-view depth model run on the existing COLMAP poses. Installing external model code and weights was refused by the session's permission check (`summary.json` `verdicts."learned multi-view depth"`); `import torch` fails in the project `.venv` (`research_mirage.md`). The user has stated that the project is personal and non-commercial, so weights under a non-commercial licence would be acceptable licence-wise; this is recorded, not acted on.
+**Observed:** the route most likely to give a filled, dense look is a learned multi-view depth model run on the existing COLMAP poses. Installing external model code and weights was refused by the session's permission check (`summary.json` `verdicts."learned multi-view depth"`); `import torch` fails in the project `.venv` (`research_mirage.md`). The user has stated that the project is personal and non-commercial, so weights under a non-commercial licence would be acceptable licence-wise; this is recorded, not acted on.
 
 **"Mirage" candidates** (`outputs/evidence/frames_depth/research_mirage.md`): the reconstruction method of that name needs LiDAR + IMU input and presumably CUDA; the monocular-depth benchmark of that name is MIT code over non-commercial weights and dataset, needs torch and an A100-class GPU to fine-tune, and addresses single-image depth that this pipeline does not use; the others are generative, CUDA-only, hosted, or unrelated. Recommendation in the note: no-go for integration; one zero-dependency idea kept (gate any future floor depth prior with a planarity check and keep it labelled as model-guessed).
 
@@ -407,11 +407,27 @@ Which test file covers R-04, R-05, R-07, R-08 and R-10 individually is inferred 
 
 ## F-34 Live target is PREDICTING most of the time on a close, large person (Utrecht, 2026-11-15)
 
-**Status:** diagnosed, not fixed (out of scope of the occlusion plan). Evidence `outputs/evidence/occlusion_tracking/real_clips.json`, `outputs/runs/ot_live_utrecht_*`.
+**Status:** cause confirmed and fixed by `VABS`, **the app/CLI default since 2026-11-15** (`docs/PLAN_SCALE_AWARE_NOISE.md`): first verdict NOT_ADOPTED on a single-run live latency p95, then adopted under a live-speed protocol pre-registered before re-measuring (section 8). Evidence `outputs/evidence/occlusion_tracking/real_clips.json`, `outputs/runs/ot_live_utrecht_*`, `outputs/evidence/scale_aware_noise/`.
 
 **Observed:** in every variant the target is LOCKED in only 16–19 % of the 899 frames and PREDICTING in 604–637. In those PREDICTING frames a detection was always present, its centre 0.10 / 0.17–0.19 / 0.29–0.33 × box height from the target (p25 / p50 / p75), with a median box height of 850–1,100 px.
 
 **Cause:** the Kalman measurement noise is a fixed 6 px and the χ² gate is in pixels, so for a person filling the frame the normal jitter of the box centre (tens of pixels) falls outside the gate. Overlap handling cannot change this.
 
 **Next test:** a measurement / process noise that scales with box height (as in common SORT-family filters), judged with the same E2 / E2X safety gate and MOT17 held-out split, under its own pre-registered plan.
+
+**Confirmed (2026-11-15, `outputs/evidence/scale_aware_noise/diagnose_live_baseline.json`):** the 15 LOCKED → PREDICTING drops of the VAB run start with a detection only 0.027 × h (23 px, p50) from the prediction, squared Mahalanobis distance 11.3 (p50) against the 9.21 gate: with the position covariance converged to ~2.9 px and 6 px measurement noise the gate radius is ~20 px for an 850 px person. The 0.17–0.19 × h distances quoted above are the drift accumulated afterwards while coasting.
+
+**Fix tried:** measurement noise σ = max(6 px, 0.025 × h) (`TrackerConfig.meas_noise_frac`; process-noise scaling was rejected in calibration because it raised E2 AMBIGUOUS frames by ≥ 22 %). Preset `VABS`. Utrecht live 30 s: target LOCKED 19.2 % → 69.1 %, drops to PREDICTING 15 → 4; MOT17 held-out (YOLOX-nano) IDF1 29.67 → 32.46, IDSW 364 → 213; E2 / E2X unchanged (bit-identical, boxes < 240 px). First verdict NOT_ADOPTED: live latency p95 34.08 ms > 33 ms in the single judged run (two informational repeats: 30.81 / 30.33 ms). Re-judgement (protocol fixed in commit `d73f2f8` before measuring; 5 + 5 alternating new runs): median latency p95 VABS 29.98 vs VAB 30.34 ms, tracker-step p95 2.92 vs 3.10 ms, target LOCKED median 0.682 vs 0.195 → adopted (`verdict_speed.json`). Remaining: ~30 % of Utrecht frames still not LOCKED, mostly with the box bottom clipped by the frame edge.
+
+## F-35 Current default locks on the wrong person when people fill the frame (E2X-L, 2026-11-15)
+
+**Status:** found while checking `docs/PLAN_SCALE_AWARE_NOISE.md` (supplementary safety check added after the plan was fixed); present in `VAB`, absent in `VABS`. **Fixed for the app and CLIs since `VABS` became the default** (2026-11-15 re-judgement); still present with `--tracker VAB` or `--fixed-noise`. The guard gap below stays open. Evidence `outputs/evidence/scale_aware_noise/e2xL_VAB/`, `e2xL_VABS/`, `verdict.json` (`per_condition_E2XL`).
+
+**Observed:** the E2X scenes scaled 4.5× (people 675–810 px, 2880×2160, position noise and speeds scaled too, metrics in the original coordinates), 14 conditions × 50 seeds: VAB target LOCKED on the other person in 46 frames (same_row occlusion 0.5 / 1.0 / 1.5 s, camera pan, the X5 variants), yaw toward B in 15 frames; retention 0.871, IDSW 994. The same scenes at 1× give 0 for VAB. Same mechanism as F-34: the fixed 6 px gate drops normal detections, the target coasts, and the coasting track meets the other person.
+
+**With VABS:** 0 wrong-target frames, 0 yaw toward B, retention 1.000, IDSW 155.
+
+**Also seen (hand-made probe, informational, `guard_gap_probe.json`):** with VABS's larger gate, a target coming out of an AMBIGUOUS spell re-connected to a neighbour 0.12 × h away (inside the F-33 guard's 0.15 × h) in 32 of 110 frames when the neighbour's own track had broken after an unrealistically fast approach; VAB 0. Not reproduced with a realistic approach or in E2X-L. The guard does not protect against neighbours closer than 0.15 × h.
+
+**Next test:** a tighter post-ambiguity rule than 0.15 × h for the guard-gap case above, judged on E2 / E2X / E2X-L (now more relevant, since the default's gate is larger for big boxes).
 

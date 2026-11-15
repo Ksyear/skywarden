@@ -12,7 +12,11 @@ association modes (docs/PLAN_OCCLUSION_TRACKING.md section 3). Conditions were f
 
 Fixed camera 640x480, 15 fps, Gaussian position noise 2 px, 5 % dropout, seeds 0..N-1, real MultiTracker +
 TargetSelector + YawController (virtual telemetry, nothing transmitted). Synthetic data, labelled SYNTHETIC.
-python -m sim.crossing_ext --variant V0|VA|VAB|VABC [--seeds 50] [--out outputs/evidence/occlusion_tracking/e2x_<variant>]
+python -m sim.crossing_ext --variant V0|VA|VAB|VABC|VABS [--seeds 50] [--scale 1] [--out outputs/evidence/occlusion_tracking/e2x_<variant>]
+
+--scale s (E2X-L, docs/PLAN_SCALE_AWARE_NOISE.md 7): the same scenes seen s times larger (boxes, noise, speeds and the
+image all multiplied by s; s = 4.5 gives 675-810 px people in a 2880x2160 image). Only the tracker and the controller
+see scaled pixels; every metric is computed in the original coordinates, so results are directly comparable.
 """
 from __future__ import annotations
 
@@ -28,13 +32,16 @@ from control.yaw_controller import YawController
 from tracking.tracker import Detection, MultiTracker, TargetSelector, TargetState, TrackerConfig
 
 W, H, FPS = 640, 480, 15.0
+SCALED_NOISE = dict(meas_noise_frac=0.025, accel_noise_frac=0.0)
 SPEED, T_CROSS, SELECT_AT, T_EVAL, FOLLOW_PX = 90.0, 4.0, 1.0, 6.5, 25.0
 
 
 def variant_config(name: str) -> TrackerConfig:
     """The four compared trackers (+ VA_full, informational). Parameters fixed from E2 + the MOT17 calibration
     sequences only (outputs/evidence/occlusion_tracking/calib*/, decision in calibration_decision.json): margin 4,
-    size term on; low-score stage, ORU and direction term did not improve calibration IDF1 and are off."""
+    size term on; low-score stage, ORU and direction term did not improve calibration IDF1 and are off.
+    VABS = VAB + measurement noise proportional to box height (docs/PLAN_SCALE_AWARE_NOISE.md; 0.025 x h chosen on
+    E2 + the same calibration sequences, outputs/evidence/scale_aware_noise/calibration_decision.json)."""
     if name == "V0":
         return TrackerConfig()
     if name == "VA_full":
@@ -46,6 +53,8 @@ def variant_config(name: str) -> TrackerConfig:
         return TrackerConfig(**a, gmc=True)
     if name == "VABC":
         return TrackerConfig(**a, gmc=True, reid=True)
+    if name == "VABS":
+        return TrackerConfig(**a, gmc=True, **SCALED_NOISE)
     raise ValueError(name)
 
 
@@ -124,10 +133,10 @@ def make_appearance(kind: str, seed: int):
 
 
 def run_once(cond: str, occ: float, seed: int, cfg: TrackerConfig, appearance: str | None = None,
-             noise_px: float = 2.0, dropout: float = 0.05) -> dict:
+             noise_px: float = 2.0, dropout: float = 0.05, scale: float = 1.0) -> dict:
     rng = np.random.default_rng(seed)
     embed = make_appearance(appearance, seed) if appearance else None
-    tr, sel, ctl = MultiTracker(cfg, embedder=embed), TargetSelector(), YawController(W)
+    tr, sel, ctl = MultiTracker(cfg, embedder=embed), TargetSelector(), YawController(int(round(W * scale)))
     bg = Background() if cond == "camera_pan" else None
     target_id, first_relock, final_on = None, None, None
     m = {"wrong_locked_frames": 0, "yaw_on_B": 0, "yaw_not_locked": 0, "ambiguous_frames": 0, "not_locked_frames": 0,
@@ -150,19 +159,21 @@ def run_once(cond: str, occ: float, seed: int, cfg: TrackerConfig, appearance: s
             if cond == "score_drop" and who == "A" and _iou(boxes["A"], boxes["B"]) > 0.3:
                 score = float(rng.uniform(0.12, 0.30))
             cxn, cyn = cx + rng.normal(0, noise_px), cy + rng.normal(0, noise_px)
-            dets.append(Detection(box(cxn, cyn, h), score, "SYNTHETIC"))
+            dets.append(Detection(tuple(v * scale for v in box(cxn, cyn, h)), score, "SYNTHETIC"))
             truth_frame[who] = (cxn, cyn)
         if bg is not None:  # front person drawn last
             order = sorted(view, key=lambda w: view[w][2])
             frame = bg.frame(dx, [(boxes[w], (40, 40, 200) if w == "A" else (200, 60, 40)) for w in order if not view[w][3]])
         else:
-            frame = dict(truth_frame) if embed else None  # only people actually detected this frame
+            frame = {w: (x * scale, y * scale) for w, (x, y) in truth_frame.items()} if embed else None  # detected people only
+        if bg is not None and scale != 1.0:
+            frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
         tr.update(t, dets, frame=frame)
         # ground-truth id switches over LOCKED tracks, CLEAR-MOT style: a person keeps last frame's track while it is
         # still LOCKED within FOLLOW_PX; the rest are matched one-to-one (nearest first); a switch is a person matched
         # to a different track than last time. (Round 1 matched each person greedily and independently, so two people
         # 0-5 px apart at the crossing could both count the same track: idsw_gt_greedy, kept for comparison.)
-        locked = {x.id: x.center for x in tr.active() if x.state.value == "LOCKED"}
+        locked = {x.id: x.center / scale for x in tr.active() if x.state.value == "LOCKED"}
         pos = {w: np.array(p[:2]) for w, p in view.items()}
         match, used = {}, set()
         for who in pos:
@@ -189,7 +200,7 @@ def run_once(cond: str, occ: float, seed: int, cfg: TrackerConfig, appearance: s
                 gt_greedy[who] = tid
         if target_id is None and t >= SELECT_AT:
             ax, ay = view["A"][:2]
-            cands = [x for x in tr.active() if x.state.value == "LOCKED" and np.hypot(*(x.center - np.array([ax, ay]))) < FOLLOW_PX]
+            cands = [x for x in tr.active() if x.state.value == "LOCKED" and np.hypot(*(x.center / scale - np.array([ax, ay]))) < FOLLOW_PX]
             if cands:
                 target_id = cands[0].id
                 sel.select(target_id)
@@ -205,7 +216,7 @@ def run_once(cond: str, occ: float, seed: int, cfg: TrackerConfig, appearance: s
         if cmd.yaw != 0 and state != TargetState.LOCKED:
             m["yaw_not_locked"] += 1
         if track is not None:
-            d = {w: float(np.hypot(*(track.center - np.array(p[:2])))) for w, p in view.items()}
+            d = {w: float(np.hypot(*(track.center / scale - np.array(p[:2])))) for w, p in view.items()}
             near = min(d, key=d.get)
             final_on = near if d[near] < FOLLOW_PX else None
             if state == TargetState.LOCKED and (final_on == "B" or a_hidden):
@@ -235,9 +246,9 @@ def key(cond, occ, app) -> str:
     return f"{cond}_occ{occ}" + (f"_app-{app}" if app else "")
 
 
-def run(variant: str, seeds: int, out: Path) -> dict:
+def run(variant: str, seeds: int, out: Path, scale: float = 1.0) -> dict:
     cfg = variant_config(variant)
-    rows = [run_once(c, o, s, cfg, a) for c, o, a in CONDITIONS for s in range(seeds)]
+    rows = [run_once(c, o, s, cfg, a, scale=scale) for c, o, a in CONDITIONS for s in range(seeds)]
     summ = {}
     for c, o, a in CONDITIONS:
         rs = [r for r in rows if (r["cond"], r["occ"], r["appearance"]) == (c, o, a)]
@@ -249,7 +260,7 @@ def run(variant: str, seeds: int, out: Path) -> dict:
                               "stats": {k: int(sum(r["stats"][k] for r in rs)) for k in rs[0]["stats"]}}
     res = {"experiment": "E2X harder two-person cases", "label": "SIMULATED (synthetic detections, known identities)",
            "variant": variant, "tracker": cfg.describe(), "tracker_config": cfg.__dict__, "seeds": seeds,
-           "setup": {"fps": FPS, "W_H": [W, H], "noise_px": 2.0, "dropout": 0.05, "follow_px": FOLLOW_PX, "t_eval": T_EVAL},
+           "setup": {"fps": FPS, "W_H": [W, H], "scale": scale, "noise_px": 2.0, "dropout": 0.05, "follow_px": FOLLOW_PX, "t_eval": T_EVAL},
            "measurement_change_log": ["2026-11-15 round 2: idsw_gt changed from greedy per-person nearest matching to CLEAR-MOT-style "
                                       "persistent one-to-one matching (round-1 values kept as idsw_gt_greedy). Criteria unchanged."],
            "summary": summ}
@@ -265,10 +276,11 @@ def run(variant: str, seeds: int, out: Path) -> dict:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--variant", default="V0", choices=["V0", "VA", "VA_full", "VAB", "VABC"])
+    ap.add_argument("--variant", default="V0", choices=["V0", "VA", "VA_full", "VAB", "VABC", "VABS"])
     ap.add_argument("--seeds", type=int, default=50)
+    ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
-    r = run(a.variant, a.seeds, Path(a.out or f"outputs/evidence/occlusion_tracking/e2x_{a.variant}"))
+    r = run(a.variant, a.seeds, Path(a.out or f"outputs/evidence/occlusion_tracking/e2x_{a.variant}"), a.scale)
     print(json.dumps({k: {kk: v[kk] for kk in ("same_id_on_A", "wrong_locked_frames", "ambiguous_frames", "not_locked_frames", "idsw_gt")}
                       for k, v in r["summary"].items()}, indent=0))

@@ -9,7 +9,7 @@ Scores come from TrackEval in a separate evaluation environment (scripts/mot_tra
 
 Detector protocols: "yolox_nano" (ours, CPU, threshold 0.10 so the second association stage has low-score boxes;
 stage 1 still uses >= 0.35 like every other run in this project) or "frcnn" (the public MOT17 FRCNN detections).
-python -m vision.mot_bench --variants V0 VA VAB VABC --seqs MOT17-02 ... [--detector yolox_nano|frcnn]
+python -m vision.mot_bench --variants V0 VA VAB VABC VABS --seqs MOT17-02 ... [--detector yolox_nano|frcnn]
 """
 from __future__ import annotations
 

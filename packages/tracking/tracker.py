@@ -37,7 +37,11 @@ Optional, independent of the mode:
   * reid: appearance embeddings from an injected `embedder(frame, boxes) -> (N, D)` (unit rows, NaN = unusable).
     Used ONLY to decide contested components and to veto the re-connection of a coasting track to a detection that
     looks like someone else. Embeddings live in memory inside Track objects and die with them; nothing is written.
-With assoc="strict", oru, gmc and reid off (the defaults) the results are identical to the original tracker.
+  * scale-aware noise (docs/PLAN_SCALE_AWARE_NOISE.md): measurement noise max(meas_noise_px, meas_noise_frac x h)
+    and process noise max(accel_noise_px_s2, accel_noise_frac x h), h = the track's box height, as SORT-family
+    filters do. With a fixed 6 px a person 850 px tall gets a ~20 px gate and normal box jitter falls outside it.
+With assoc="strict", oru, gmc and reid off and both noise fractions 0 (the defaults) the results are identical to the
+original tracker.
 """
 from __future__ import annotations
 
@@ -87,6 +91,9 @@ class Detection:
 class TrackerConfig:
     accel_noise_px_s2: float = 150.0  # white-acceleration process noise (walking person at ~1-5 m)
     meas_noise_px: float = 6.0
+    # Scale-aware noise (docs/PLAN_SCALE_AWARE_NOISE.md); 0 = off (fixed pixels). The pixel values above stay minimums.
+    meas_noise_frac: float = 0.0     # position measurement std as a fraction of box height
+    accel_noise_frac: float = 0.0    # process (white-acceleration) std in box heights per s^2
     gate_chi2: float = CHI2_2DOF_99
     max_coast_s: float = 2.0
     # Physical cap on the association radius: a detection further than this fraction of the track's box height from
@@ -125,6 +132,8 @@ class TrackerConfig:
         if self.assoc == "margin":
             parts.append(f"low-score {'on' if self.low_score is not None else 'off'}")
         parts += [f"ORU {'on' if self.oru else 'off'}", f"GMC {'on' if self.gmc else 'off'}", f"ReID {'on' if self.reid else 'off'}"]
+        if self.meas_noise_frac > 0 or self.accel_noise_frac > 0:
+            parts.append(f"noise scaled ({self.meas_noise_frac:g} h, {self.accel_noise_frac:g} h/s²)")
         return " · ".join(parts)
 
 
@@ -209,16 +218,19 @@ class MultiTracker:
         self._all_dets: list[Detection] = []
 
     # -- Kalman pieces --
+    def _meas_sigma(self, h: float) -> float:
+        return max(self.cfg.meas_noise_px, self.cfg.meas_noise_frac * h)
+
     def _predict(self, tr: Track, dt: float) -> None:
         F = np.eye(4)
         F[0, 2] = F[1, 3] = dt
-        q = self.cfg.accel_noise_px_s2 ** 2
+        q = max(self.cfg.accel_noise_px_s2, self.cfg.accel_noise_frac * float(tr.size[1])) ** 2
         G = np.array([[dt * dt / 2, 0], [0, dt * dt / 2], [dt, 0], [0, dt]])
         tr.x = F @ tr.x
         tr.P = F @ tr.P @ F.T + G @ G.T * q
 
     def _innovation(self, tr: Track, z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        S = _H @ tr.P @ _H.T + np.eye(2) * self.cfg.meas_noise_px ** 2
+        S = _H @ tr.P @ _H.T + np.eye(2) * self._meas_sigma(float(tr.size[1])) ** 2
         return z - _H @ tr.x, S
 
     def _correct_z(self, tr: Track, z: np.ndarray) -> None:
@@ -413,7 +425,7 @@ class MultiTracker:
             self._refresh_embeddings(t, dets, prev_state)
         for j, d in enumerate(dets):
             if j in spawn:
-                P = np.diag([self.cfg.meas_noise_px ** 2] * 2 + [200.0 ** 2] * 2)
+                P = np.diag([self._meas_sigma(float(d.size[1])) ** 2] * 2 + [200.0 ** 2] * 2)
                 tr = Track(self._next_id, np.r_[d.center, 0.0, 0.0], P, d.size.copy(), last_hit_t=t, created_t=t)
                 self._note_hit(tr, t)
                 self.tracks.append(tr)

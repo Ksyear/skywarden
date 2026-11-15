@@ -15,7 +15,7 @@ from tracking.gmc import GlobalMotion
 from tracking.tracker import Detection, MultiTracker, TargetSelector, TargetState, TrackerConfig, TrackState
 
 ROOT = Path(__file__).resolve().parents[1]
-VARIANTS = ["V0", "VA", "VA_full", "VAB", "VABC"]
+VARIANTS = ["V0", "VA", "VA_full", "VAB", "VABC", "VABS"]
 
 
 def det(cx, cy, h=180.0, score=0.9):
@@ -76,7 +76,7 @@ def test_hidden_target_never_inherits_and_never_yaws_toward_b(variant):
     assert not [r["t"] for r in rows if r["yaw"] != 0 and (r["state"] != TargetState.LOCKED or r["on"] == "B")]
 
 
-@pytest.mark.parametrize("variant", ["VA", "VA_full", "VAB"])
+@pytest.mark.parametrize("variant", ["VA", "VA_full", "VAB", "VABS"])
 def test_truly_contested_detection_stays_ambiguous_in_margin_mode(variant):
     """Same heights, B's detection exactly on A's prediction: motion cannot decide, so the target must surface
     AMBIGUOUS (or stay unobserved) and the controller must stop."""
@@ -312,7 +312,8 @@ def test_cli_default_is_the_adopted_preset_and_reid_is_opt_in():
     ap = argparse.ArgumentParser()
     tracker_setup.add_args(ap)
     cfg = tracker_setup.config_from_args(ap.parse_args([]))
-    assert cfg == variant_config("VAB") and not cfg.reid and cfg.gmc and cfg.assoc == "margin"
+    assert cfg == variant_config("VABS") and not cfg.reid and cfg.gmc and cfg.assoc == "margin" and cfg.meas_noise_frac > 0
+    assert tracker_setup.config_from_args(ap.parse_args(["--fixed-noise"])) == variant_config("VAB")
     assert tracker_setup.config_from_args(ap.parse_args(["--reid"])).reid is True
     assert tracker_setup.config_from_args(ap.parse_args(["--tracker", "V0"])) == TrackerConfig()
     assert TrackerConfig().assoc == "strict" and not TrackerConfig().gmc  # library default unchanged
