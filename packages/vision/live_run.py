@@ -302,6 +302,7 @@ class _LiveRun:
         self.lat_ms: list[float] = []
         self.det_ms: list[float] = []
         self.vo_ms: list[float] = []
+        self.trk_ms: list[float] = []  # tracker update (incl. camera motion compensation) + target selection
         self.stop_cap = threading.Event()
         self.cap_thread: _Capture | None = None
         self.buf = LatestFrameBuffer()
@@ -599,8 +600,11 @@ class _LiveRun:
         dets = self.pipeline(f.image, f)
         dms = self.last_ms() if self.last_ms else (time.monotonic() - p0) * 1000
         self.det_ms.append(dms)
+        t0 = time.perf_counter()
         tracks = self.tracker.update(f.media_t, dets, frame=f.image)
         self.target_state, ttrack = self.selector.evaluate(self.tracker)
+        tms = (time.perf_counter() - t0) * 1000
+        self.trk_ms.append(tms)
         target_state = self.target_state
         m_now = self.source.media_now()
         m_now = f.media_t if m_now is None else m_now
@@ -643,7 +647,7 @@ class _LiveRun:
         row = self.base_row("frame", "LIVE", list(cmd.stop_reasons), ev)
         row.update({"k": k, "seq": f.seq, "source_index": f.index, "media_t": round(f.media_t, 4),
                     "media_now": round(m_now, 4), "proc_ms": round(pms, 2), "detect_ms": round(dms, 2),
-                    "latency_ms": round(lms, 2), "dropped_since_last": dropped - self.last_dropped, "image": name,
+                    "track_ms": round(tms, 3), "latency_ms": round(lms, 2), "dropped_since_last": dropped - self.last_dropped, "image": name,
                     "detections": dlist, "tracks": trk, "target_id": self.selector.target_id,
                     "target_state": target_state.value, "yaw": cmd.yaw,
                     "error_norm": None if ttrack is None else round((float(ttrack.center[0]) - native_w / 2) / (native_w / 2), 3),
@@ -761,6 +765,7 @@ class _LiveRun:
             "proc_ms": {"p50": _pct(proc_ms, 50), "p95": _pct(proc_ms, 95)},
             "detect_ms": {"p50": _pct(det_ms, 50), "p95": _pct(det_ms, 95)},
             "vo_ms": {"p50": _pct(vo_ms, 50), "p95": _pct(vo_ms, 95)},
+            "track_ms": {"p50": _pct(self.trk_ms, 50), "p95": _pct(self.trk_ms, 95)},
             "tracker_mode": self.req.tracker.describe(),
             "tracker_stats": dict(self.tracker.stats.__dict__) if getattr(self, "tracker", None) else None,
             "reid": self.embedder.summary() if getattr(self, "embedder", None) is not None else None,
