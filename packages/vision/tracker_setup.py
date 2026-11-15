@@ -8,10 +8,13 @@ from dataclasses import replace
 
 from tracking.tracker import MultiTracker, TrackerConfig  # noqa: F401  (TrackerConfig re-exported for callers)
 
-PRESETS = ("V0", "VA", "VAB", "VABC")
+PRESETS = ("V0", "VA", "VAB", "VABC", "VABS")
 # Adopted for the app and CLIs by the pre-registered verdict (outputs/evidence/occlusion_tracking/verdict.json):
 # margin association + camera motion compensation. Appearance (VABC / --reid) stays opt-in. The library default
 # TrackerConfig() is still the original strict rule (V0), so tests and simulations that construct it are unchanged.
+# VABS (VAB + Kalman noise proportional to box height, docs/PLAN_SCALE_AWARE_NOISE.md) is a trial, `--tracker VABS`:
+# it passed every pre-registered criterion except the live latency gate in the single judged run (p95 34.1 ms > 33;
+# outputs/evidence/scale_aware_noise/verdict.json), so the default stays VAB.
 DEFAULT_PRESET = "VAB"
 
 
@@ -70,9 +73,12 @@ def make_tracker(cfg: TrackerConfig, embedder: TimedEmbedder | None = None) -> M
 
 def add_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--tracker", choices=PRESETS, default=DEFAULT_PRESET,
-                    help=f"association preset (default {DEFAULT_PRESET}; V0 = original strict rule); VABC turns on appearance (opt-in)")
+                    help=f"association preset (default {DEFAULT_PRESET}; V0 = original strict rule); VABC turns on appearance (opt-in); "
+                         "VABS scales the Kalman noise with box height (trial)")
     ap.add_argument("--reid", action="store_true", help="opt-in: in-memory appearance embeddings for contested cases")
     ap.add_argument("--no-gmc", action="store_true")
+    ap.add_argument("--fixed-noise", action="store_true",
+                    help="Kalman noise in fixed pixels (turns off the box-height-proportional noise of VABS)")
 
 
 def config_from_args(a: argparse.Namespace) -> TrackerConfig:
@@ -81,4 +87,6 @@ def config_from_args(a: argparse.Namespace) -> TrackerConfig:
         cfg = replace(cfg, reid=True) if cfg.assoc == "margin" else preset("VABC")  # appearance needs margin mode
     if a.no_gmc:
         cfg = replace(cfg, gmc=False)
+    if getattr(a, "fixed_noise", False):
+        cfg = replace(cfg, meas_noise_frac=0.0, accel_noise_frac=0.0)
     return cfg
